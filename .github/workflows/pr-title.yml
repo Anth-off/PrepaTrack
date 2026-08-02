@@ -1,0 +1,50 @@
+name: Titre de PR
+
+# Avec la fusion en squash, le titre de la pull request devient le message de
+# commit dans main. C'est donc lui — et non les commits de la branche — que
+# Release Please lit pour calculer la version et rédiger le changelog. Un titre
+# hors convention et le changement passe à la trappe.
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # Nécessaire pour afficher le motif du refus directement sur la PR.
+  pull-requests: write
+
+jobs:
+  validate:
+    name: Vérifier le format
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Action de référence pour ce contrôle, épinglée sur une version majeure.
+      # `pull_request_target` lui donne le droit de commenter les PR de forks,
+      # sans jamais exécuter le code de la branche proposée.
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            refactor
+            test
+            build
+            ci
+            chore
+            perf
+            revert
+          requireScope: false
+          subjectPattern: ^(?![A-Z]).+$
+          subjectPatternError: |
+            La description « {subject} » ne convient pas : elle doit commencer
+            par une minuscule et décrire le changement à l'infinitif ou au
+            présent. Exemple : « fix: corriger le chrono après une interruption ».
+          wip: true

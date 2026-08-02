@@ -1,0 +1,130 @@
+name: Release
+
+# Ce workflow fait deux choses selon ce qui arrive dans main :
+#
+#   - un commit ordinaire  -> Release Please crée ou met à jour la Release PR ;
+#   - la fusion de cette Release PR -> version, tag, GitHub Release, puis
+#     déploiement en production.
+#
+# Tout tient dans un seul workflow, volontairement. Un second workflow déclenché
+# par la Release créée avec GITHUB_TOKEN ne partirait jamais : GitHub n'enchaîne
+# pas les workflows sur un événement produit par ce jeton.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Aucune annulation en cours de route : interrompre une release à mi-chemin
+# laisserait un tag sans déploiement, ou l'inverse.
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    name: Release PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # Écrit les commits de version, les tags et la GitHub Release.
+      contents: write
+      # Crée et met à jour la Release PR.
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # Les vérifications sont rejouées sur le commit de release lui-même. Ce commit
+  # n'est pas celui qui a été testé en pull request : la fusion en squash produit
+  # un arbre différent, et Release Please y ajoute encore version et changelog.
+  verify:
+    name: Vérifications
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Le tag vient d'être posé : on vérifie exactement ce qui sera déployé.
+          ref: ${{ needs.release-please.outputs.tag_name }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Vérifier les types
+        run: npm run typecheck
+      - name: Lancer la suite de tests
+        run: npm test
+      - name: Valider le schéma de base
+        run: npm run db:check
+
+  deploy:
+    name: Déploiement production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [release-please, verify]
+    # Double garde : une version doit avoir été créée, et les vérifications
+    # doivent être passées. Sur une pull request ce workflow ne s'exécute même
+    # pas — il n'écoute que les pushes dans main.
+    if: needs.release-please.outputs.release_created == 'true'
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+    # Deux déploiements de production ne peuvent pas se chevaucher, et aucun
+    # n'est annulé en vol.
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Version déployée
+        run: |
+          echo "Version : ${{ needs.release-please.outputs.version }}"
+          echo "Tag     : ${{ needs.release-please.outputs.tag_name }}"
+          echo "### Déploiement ${{ needs.release-please.outputs.tag_name }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Récupérer la configuration Vercel
+        run: npx --yes vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+      - name: Construire pour la production
+        run: npx --yes vercel@latest build --prod --token="$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+      - name: Déployer
+        id: deploy
+        # L'URL est renvoyée sur la sortie standard ; elle est publique, aucun
+        # secret n'est jamais affiché ici.
+        run: |
+          url=$(npx --yes vercel@latest deploy --prebuilt --prod --token="$VERCEL_TOKEN")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Déployé sur $url"
+          echo "$url" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}

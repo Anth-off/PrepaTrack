@@ -1,0 +1,14 @@
+# Fins de ligne normalisées en LF dans le dépôt, quel que soit le poste.
+# Sans cela, un aller-retour entre Windows et les agents Linux de la CI réécrit
+# des fichiers entiers et noie les vraies modifications dans le diff.
+* text=auto eol=lf
+
+# Fichiers binaires : jamais de conversion.
+*.png binary
+*.ico binary
+*.woff2 binary
+
+# Le lockfile et le changelog sont générés : les replier dans les diffs garde
+# les revues lisibles.
+package-lock.json linguist-generated=true -diff
+CHANGELOG.md linguist-generated=true

@@ -1,0 +1,29 @@
+version: 2
+
+updates:
+  # Les versions majeures des actions changent régulièrement, et une action
+  # figée finit par tourner sur un runtime retiré. Dependabot propose les
+  # montées de version plutôt que de les découvrir le jour où la CI casse.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: 'ci'
+    labels:
+      - dépendances
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'build'
+    labels:
+      - dépendances
+    groups:
+      # Regroupées : ces montées se testent ensemble et n'ont pas d'intérêt
+      # séparément.
+      dev-dependencies:
+        dependency-type: development
