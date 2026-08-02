@@ -17,7 +17,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.111.0",
     "dexie": "^4.0.10",
-    "dexie-react-hooks": "^1.1.7",
+    "dexie-react-hooks": "^4.4.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
