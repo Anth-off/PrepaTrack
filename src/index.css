@@ -86,15 +86,23 @@
    * posés sur ceux de l'écran.
    */
   /**
-   * Hauteur **minimale**, calée sur la fenêtre et non sur l'écran.
+   * Hauteur **exacte** de la fenêtre. La page ne défile jamais.
    *
-   * `100dvh` mesure l'écran (932 points) alors que la fenêtre en fait 873 : la
-   * page déborderait de la différence. `100%` hérite de la racine, donc de la
-   * fenêtre réelle. Minimale et non fixe : un écran plus chargé peut défiler
-   * normalement, la barre du bas restant posée par `sticky`.
+   * `min-height` laissait la page grandir avec son contenu, et la barre du bas
+   * ne tenait que par `sticky`. Or sur iOS, un `sticky bottom-0` ne se recale
+   * que pendant un défilement actif : la barre revenait à sa place le doigt
+   * posé, et remontait dès qu'on relâchait, découvrant le fond en dessous.
+   *
+   * Hauteur fixe, et c'est la zone de contenu qui défile en interne. Il n'y a
+   * plus de défilement de page, donc plus rien à recaler : la barre est
+   * posée en bas de la coque, un point c'est tout.
+   *
+   * `100%` et non `100dvh` : `100dvh` mesure l'écran (932 points sur un 15 Plus)
+   * alors que la fenêtre accordée en app installée n'en fait que 873. Le
+   * pourcentage hérite de la racine, donc de la fenêtre réelle.
    */
   .app-shell {
-    min-height: 100%;
+    height: 100%;
   }
 
   /**

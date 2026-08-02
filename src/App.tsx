@@ -149,17 +149,24 @@ export default function App() {
         <SidebarStatus session={session} sync={sync} />
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <main className="flex flex-1 flex-col">{content}</main>
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {/* Seule zone défilante de l'application.
+            `min-h-0` est indispensable : sans lui, un enfant de flex refuse de
+            se réduire sous la taille de son contenu, la zone déborderait et on
+            retomberait sur un défilement de page. */}
+        <main className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
+          {content}
+        </main>
 
         {/* Barre d'onglets réservée au téléphone. */}
         {/* `safe-bottom` ici et nulle part ailleurs : le fond de la barre
             s'étend ainsi jusqu'au bord de l'écran, sous la barre d'accueil,
             au lieu de laisser un bandeau nu en dessous. */}
-        {/* `sticky bottom-0` : c'est le navigateur qui pose la barre sur le bord
-            visible réel. Toute tentative de la placer nous-mêmes, à partir d'une
-            hauteur calculée, la décale en mode « app web ». */}
-        <nav className="safe-bottom sticky bottom-0 z-30 mt-auto flex shrink-0 border-t border-ink-600 bg-ink-800 md:hidden">
+        {/* Ni `sticky` ni `fixed` : la coque fait exactement la hauteur de la
+            fenêtre et ne défile pas, donc la barre est déjà à sa place. Un
+            `sticky bottom-0` ne se recalait que pendant un défilement actif —
+            d'où une barre correcte le doigt posé, et remontée au relâchement. */}
+        <nav className="safe-bottom z-30 flex shrink-0 border-t border-ink-600 bg-ink-800 md:hidden">
           {tabs.map((item) => (
             <button
               key={item.key}
