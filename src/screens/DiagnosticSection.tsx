@@ -10,6 +10,7 @@ interface Info {
   marges: string
   hauteur: string
   chevauche: string
+  barre: string
 }
 
 /**
@@ -66,6 +67,24 @@ export function DiagnosticSection() {
           document.documentElement.scrollHeight > window.innerHeight + 1
             ? `oui, ${document.documentElement.scrollHeight - window.innerHeight} px de trop`
             : 'non',
+        // « La barre n'est pas tout en bas » a deux causes possibles, et elles
+        // n'appellent pas du tout la même correction :
+        //   - la barre s'arrête avant le bas de la **fenêtre** : c'est notre
+        //     mise en page, donc corrigeable ;
+        //   - elle touche le bas de la fenêtre, mais la fenêtre s'arrête avant
+        //     le bord de l'**écran** : hors de portée du CSS, seule la teinte
+        //     de la bande peut alors être ajustée.
+        barre: (() => {
+          // `.safe-bottom` ne porte que sur la barre d'onglets du téléphone.
+          // Viser `nav` tout court attrape la barre latérale du bureau, cachée
+          // ici et donc haute de zéro : la mesure serait fausse sans rien
+          // signaler.
+          const nav = document.querySelector('nav.safe-bottom')
+          if (!nav) return 'sans objet (affichage bureau)'
+          const ecart = Math.round(window.innerHeight - nav.getBoundingClientRect().bottom)
+          const horsFenetre = Math.round(window.screen.height - window.innerHeight)
+          return `${ecart} px sous la barre · ${horsFenetre} px hors fenêtre`
+        })(),
       })
     }
     read()
@@ -83,6 +102,7 @@ export function DiagnosticSection() {
     `Marges : ${info.marges}`,
     `Hauteur : ${info.hauteur}`,
     `Débordement : ${info.chevauche}`,
+    `Barre : ${info.barre}`,
   ]
 
   return (

@@ -22,7 +22,13 @@
   }
 
   html {
-    background: theme('colors.ink.900');
+    /* Teinte de la **barre d'onglets**, pas celle de l'application.
+       `html` est ce qui peint la bande que la fenêtre iOS n'atteint pas (59
+       points sur un 15 Plus en app installée) : en ink-900, plus sombre que la
+       barre, elle se lit comme un vide sous l'application. En ink-800 elle en
+       devient le prolongement. `body`, borné à la fenêtre, garde le fond de
+       l'application juste au-dessus. */
+    background: theme('colors.ink.800');
     /* Empêche le zoom au double-tap : en pleine prépa, un zoom accidentel
        rend l'app inutilisable le temps de le défaire. */
     touch-action: manipulation;
