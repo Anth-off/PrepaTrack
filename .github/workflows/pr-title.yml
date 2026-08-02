@@ -22,6 +22,14 @@ jobs:
     name: Vérifier le format
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Dependabot rédige ses titres lui-même — « ci: Bump actions/checkout from
+    # 5 to 7 » — et ce format n'est pas configurable de notre côté. La majuscule
+    # de « Bump » heurte `subjectPattern`, et aucune de ses PR ne pourrait
+    # passer. La convention garde tout son sens : elle s'applique aux titres
+    # écrits à la main, les seuls sur lesquels on peut agir. Le préfixe `ci:` ou
+    # `build:` que le bot pose vient de `.github/dependabot.yml`, donc Release
+    # Please lit bien un message conventionnel après la fusion en squash.
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
     steps:
       # Action de référence pour ce contrôle, épinglée sur une version majeure.
       # `pull_request_target` lui donne le droit de commenter les PR de forks,

@@ -223,6 +223,36 @@ Supabase.
 
 ---
 
+## Les pull requests de Dependabot
+
+Dependabot ouvre chaque mois des PR de mise à jour. Elles suivent le flux normal :
+la CI tourne, et le contenu ne part en production qu'après une Release PR.
+
+**Le contrôle de titre ne s'y applique pas.** Le bot écrit « ci: Bump actions/checkout
+from 5 to 7 », avec une majuscule qu'on ne peut pas lui faire retirer. Exiger la
+convention d'un auteur qui ne peut pas s'y plier n'aurait fait que peindre en rouge des
+PR parfaitement valides. Le préfixe `ci:` / `build:`, lui, vient de
+`.github/dependabot.yml` : Release Please lit bien un message conventionnel.
+
+**Les montées majeures arrivent isolées, les mineures groupées.** Une majeure noyée dans
+un lot fait échouer la CI sans qu'on sache laquelle est en cause.
+
+### Que faire d'une PR Dependabot dont la CI échoue
+
+Ne pas la fusionner, et ne pas la corriger dans sa branche — Dependabot la réécrit à
+chaque passage. Deux issues :
+
+- la montée vaut le coup → faire la migration dans **une PR à soi**, puis fermer celle du
+  bot ;
+- elle ne vaut pas le coup maintenant → ajouter la dépendance à `ignore` dans
+  `.github/dependabot.yml`, avec le motif en commentaire.
+
+C'est ce qui a été fait pour **Tailwind 4** : ce n'est pas une montée de version mais une
+migration (le plugin PostCSS déménage dans `@tailwindcss/postcss`, la configuration change
+de forme). Les 3.x continuent d'arriver ; la 4 attendra une PR dédiée.
+
+---
+
 ## Secrets à créer
 
 Dans **Settings → Secrets and variables → Actions → New repository secret** :

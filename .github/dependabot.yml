@@ -1,5 +1,13 @@
 version: 2
 
+# Règle commune aux deux écosystèmes : les montées mineures et correctives sont
+# regroupées, les montées **majeures** arrivent isolées.
+#
+# Ce n'est pas cosmétique. Une majeure noyée dans un lot de dix mises à jour fait
+# échouer la CI sans qu'on sache laquelle est en cause, et oblige à tout rejeter
+# pour écarter une seule dépendance. Isolée, elle se lit, se teste et se refuse
+# sans bloquer les autres.
+
 updates:
   # Les versions majeures des actions changent régulièrement, et une action
   # figée finit par tourner sur un runtime retiré. Dependabot propose les
@@ -12,6 +20,13 @@ updates:
       prefix: 'ci'
     labels:
       - dépendances
+    groups:
+      actions-mineures:
+        patterns:
+          - '*'
+        update-types:
+          - minor
+          - patch
 
   - package-ecosystem: npm
     directory: /
@@ -24,6 +39,20 @@ updates:
       - dépendances
     groups:
       # Regroupées : ces montées se testent ensemble et n'ont pas d'intérêt
-      # séparément.
+      # séparément. Les majeures en sont exclues — c'est ce qui a fait échouer
+      # le premier lot, une montée de Tailwind emportant tout le groupe avec
+      # elle.
       dev-dependencies:
         dependency-type: development
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Tailwind 4 n'est pas une montée de version, c'est une migration : le
+      # plugin PostCSS déménage dans `@tailwindcss/postcss`, et la
+      # configuration change de forme. À faire délibérément, dans une PR dédiée
+      # — pas au détour d'une mise à jour automatique qui casserait le build.
+      # Les 3.x continuent d'arriver normalement.
+      - dependency-name: tailwindcss
+        update-types:
+          - version-update:semver-major
