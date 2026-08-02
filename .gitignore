@@ -1,0 +1,13 @@
+node_modules/
+dist/
+dev-dist/
+*.local
+.DS_Store
+.vercel
+.env
+.env.*
+!.env.example
+
+# Caches de compilation TypeScript : régénérés à chaque build, ils créent des
+# conflits inutiles et masquent des erreurs quand ils traînent dans un dépôt.
+*.tsbuildinfo

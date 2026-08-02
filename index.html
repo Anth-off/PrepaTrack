@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="fr" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#000000" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <!--
+      `black` et non `black-translucent`.
+
+      Avec `black-translucent`, iOS place la page sous la barre de statut, mais
+      lui accorde une fenêtre amputée de la hauteur de cette barre — 873 points
+      pour un écran de 932 sur un iPhone 15 Plus — tout en la maintenant collée
+      en haut. Les points manquants apparaissent alors en bas, hors d'atteinte
+      de la mise en page : aucune règle CSS ne peut les occuper.
+
+      Avec `black`, iOS réserve lui-même la barre de statut et la fenêtre
+      descend jusqu'au bas de l'écran. La barre prend la couleur du thème, ce
+      qui convient à une interface sombre.
+    -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="apple-mobile-web-app-title" content="PrepaTrack" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <title>PrepaTrack</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

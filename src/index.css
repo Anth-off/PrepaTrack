@@ -1,0 +1,194 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /**
+   * Hauteur de référence : la fenêtre, pas l'écran.
+   *
+   * En mode « app web », iOS n'accorde que 873 points sur les 932 de l'écran.
+   * Or `100dvh` renvoie 932 : une page dimensionnée ainsi dépasse de 59 points
+   * l'espace visible, ce qui la fait défiler et décale la barre du bas jusqu'à
+   * ce qu'on fasse glisser l'écran. Un pourcentage hérité de la racine suit la
+   * fenêtre réelle, quelle qu'elle soit.
+   */
+  /* La chaîne doit être complète : un maillon manquant et le pourcentage se
+     résout en « auto », l'application ne faisant alors que la hauteur de son
+     contenu. */
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  html {
+    background: theme('colors.ink.900');
+    /* Empêche le zoom au double-tap : en pleine prépa, un zoom accidentel
+       rend l'app inutilisable le temps de le défaire. */
+    touch-action: manipulation;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  /**
+   * Le fond de la page reprend la couleur de la barre d'onglets, pas celle de
+   * l'application.
+   *
+   * Sur iPhone, la fenêtre accordée à une app installée peut être plus courte
+   * que l'écran — 873 points pour 932 sur un 15 Plus. Cette bande basse est
+   * hors de portée de la mise en page : rien en CSS ne peut l'occuper. En lui
+   * donnant la teinte de la barre, elle en devient le prolongement visuel au
+   * lieu d'un vide sous l'application.
+   */
+  body {
+    @apply bg-ink-900 text-slate-100 antialiased;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    /* Le pull-to-refresh de Safari rechargerait l'app en plein chrono. */
+    overscroll-behavior-y: none;
+    margin: 0;
+  }
+
+  button {
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+
+  /* Les chiffres de chrono ne doivent pas « danser » à chaque seconde. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum';
+  }
+}
+
+@layer components {
+  /**
+   * Marge basse de la barre d'onglets.
+   *
+   * Réserver la zone de sécurité entière (34 pt sur les iPhone récents) est ce
+   * que fait iOS, mais laisse une bande vide disproportionnée sous les libellés.
+   * On n'en garde qu'une part : assez pour que les boutons restent au-dessus du
+   * trait de retour à l'accueil, sans le bandeau mort.
+   */
+  /**
+   * Application ancrée directement sur l'écran visible.
+   *
+   * `position: fixed` avec `inset: 0` se cale sur le viewport lui-même, sans
+   * dépendre d'une hauteur héritée ni d'une unité recalculée. Les trois
+   * approches précédentes échouaient toutes pour la même raison : elles
+   * s'appuyaient sur une valeur qu'iOS n'a pas encore établie au premier rendu
+   * — `100dvh`, puis `window.innerHeight` figé, puis une cascade de
+   * pourcentages. Ici il n'y a plus rien à évaluer : les quatre bords sont
+   * posés sur ceux de l'écran.
+   */
+  /**
+   * Hauteur **minimale**, calée sur la fenêtre et non sur l'écran.
+   *
+   * `100dvh` mesure l'écran (932 points) alors que la fenêtre en fait 873 : la
+   * page déborderait de la différence. `100%` hérite de la racine, donc de la
+   * fenêtre réelle. Minimale et non fixe : un écran plus chargé peut défiler
+   * normalement, la barre du bas restant posée par `sticky`.
+   */
+  .app-shell {
+    min-height: 100%;
+  }
+
+  /**
+   * Repères de mise en page, activés depuis le diagnostic.
+   *
+   * Un défaut d'affichage propre à un modèle de téléphone ne se voit pas
+   * autrement : ces bordures rendent visible, sur une simple capture, quel bloc
+   * ne va pas jusqu'au bord.
+   */
+  .debug-layout .app-shell {
+    outline: 2px solid #22c55e;
+    outline-offset: -2px;
+  }
+
+  .debug-layout nav {
+    outline: 2px solid #f59e0b;
+    outline-offset: -2px;
+  }
+
+  .debug-layout main {
+    outline: 2px dashed #38bdf8;
+    outline-offset: -2px;
+  }
+
+  .debug-layout body {
+    background: #7f1d1d;
+  }
+
+  .safe-bottom {
+    padding-bottom: max(calc(env(safe-area-inset-bottom) * 0.5), 0.5rem);
+  }
+
+  .safe-top {
+    padding-top: max(env(safe-area-inset-top), 0.5rem);
+  }
+
+  .card {
+    @apply rounded-2xl border border-ink-600 bg-ink-800 p-4;
+  }
+
+  /* Retour tactile visible : la pression doit se voir même avec des gants. */
+  .pressable {
+    @apply transition-transform duration-75 active:scale-[0.97];
+  }
+}
+
+/**
+ * Impression du récapitulatif d'équipe.
+ *
+ * L'application est conçue pour un entrepôt sombre ; sur papier, le même fond
+ * noir viderait une cartouche d'encre pour une seule page. On repasse donc en
+ * noir sur blanc et on retire tout ce qui ne se lit pas sur papier : navigation,
+ * boutons, éléments interactifs.
+ */
+@media print {
+  @page {
+    margin: 12mm;
+  }
+
+  html,
+  body {
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+    color: #000 !important;
+  }
+
+  /* Les conteneurs à hauteur d'écran couperaient le contenu à la première page. */
+  [class*='h-[100dvh]'],
+  [class*='min-h-[100dvh]'],
+  main,
+  main > div {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  aside,
+  nav,
+  .no-print {
+    display: none !important;
+  }
+
+  .card {
+    border-color: #cbd5e1 !important;
+    background: #fff !important;
+    break-inside: avoid;
+  }
+
+  table {
+    break-inside: auto;
+  }
+
+  tr {
+    break-inside: avoid;
+  }
+
+  /* Les couleurs de fond des barres doivent survivre à l'impression. */
+  * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

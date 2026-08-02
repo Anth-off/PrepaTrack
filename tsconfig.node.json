@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "strict": true,
+    "types": ["node"],
+    // Sans cette borne, TypeScript remonte les dossiers parents à la recherche
+    // d'un `@types`. Un `node_modules` traînant dans le dossier utilisateur
+    // suffit alors à faire passer en local un build qui échouera en ligne.
+    "typeRoots": ["./node_modules/@types"]
+  },
+  "include": ["vite.config.ts", "vitest.config.ts"]
+}

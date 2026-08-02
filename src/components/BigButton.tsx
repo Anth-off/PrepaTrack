@@ -1,0 +1,34 @@
+import type { ReactNode } from 'react'
+
+type Tone = 'accent' | 'ok' | 'bad' | 'neutral' | 'info'
+
+const TONES: Record<Tone, string> = {
+  accent: 'bg-accent text-black',
+  ok: 'bg-ok text-black',
+  bad: 'bg-bad text-white',
+  info: 'bg-info text-black',
+  neutral: 'bg-ink-700 text-slate-100 border border-ink-600',
+}
+
+interface Props {
+  label: ReactNode
+  sub?: ReactNode
+  onClick: () => void
+  tone?: Tone
+  disabled?: boolean
+}
+
+/** Action principale. Pleine largeur et haute : atteignable au pouce, gants compris. */
+export function BigButton({ label, sub, onClick, tone = 'accent', disabled }: Props) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`pressable min-h-touch w-full rounded-2xl px-4 py-4 text-2xl font-bold leading-tight shadow-lg disabled:opacity-40 ${TONES[tone]}`}
+    >
+      <span className="block">{label}</span>
+      {sub && <span className="mt-1 block text-sm font-medium opacity-70">{sub}</span>}
+    </button>
+  )
+}

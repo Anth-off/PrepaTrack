@@ -1,0 +1,299 @@
+import { useMemo, useState } from 'react'
+import { RateCards } from '../components/RateCards'
+import { RecoList } from '../components/RecoList'
+import { recommend } from '../core/recommendations'
+import { TimeBreakdown } from '../components/TimeBreakdown'
+import { Timeline } from '../components/Timeline'
+import { isRateMeaningful, type OrderMetrics } from '../core/metrics'
+import { formatDayLabel, formatShort, hhmm } from '../core/time'
+import type { SupportKind } from '../core/types'
+import { deleteWorkday } from '../db/repo'
+import { useDay } from '../hooks/useDay'
+import { useNow } from '../hooks/useNow'
+import { CorrectSheet } from './CorrectSheet'
+import { OrderEditSheet } from './OrderEditSheet'
+import type { Order, Segment } from '../core/types'
+
+interface Props {
+  workdayId: string
+  onBack: () => void
+}
+
+const SUPPORT_SHORT: Record<SupportKind, string> = {
+  europe: 'Eur',
+  ipp: 'IPP',
+  demi: '½',
+  vmax: 'Vmax',
+  vrac: 'Vrac',
+  perdue: 'Perdue',
+}
+
+/** Bilan complet d'une journée : chiffres, répartition, commandes, tracé. */
+export function DayReportScreen({ workdayId, onBack }: Props) {
+  const now = useNow(15_000)
+  const { snap, events, day, targetRate, loading } = useDay(workdayId)
+  const [editing, setEditing] = useState<Segment | undefined>()
+  const [editingOrder, setEditingOrder] = useState<Order | undefined>()
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  // Les mêmes règles que le tableau de bord, appliquées à cette seule journée :
+  // celles qui demandent un historique se taisent d'elles-mêmes.
+  const recommendations = useMemo(() => {
+    if (!snap?.workday || !day) return []
+    return recommend({
+      days: [
+        {
+          id: snap.workday.id,
+          date: snap.workday.date,
+          segments: snap.segments,
+          events,
+          metrics: day,
+        },
+      ],
+      targetRate,
+    })
+  }, [snap, events, day, targetRate])
+
+  if (loading) return <Placeholder text="Chargement…" onBack={onBack} />
+  if (!snap || !day) return <Placeholder text="Aucune donnée pour ce jour." onBack={onBack} />
+  const date = snap.workday!.date
+
+  return (
+    <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col">
+      <header className="sticky top-0 z-10 border-b border-ink-600 bg-ink-900/95 px-4 pb-3 pt-2 backdrop-blur">
+        <button
+          type="button"
+          onClick={onBack}
+          className="pressable text-sm font-semibold text-slate-400"
+        >
+          ‹ Retour
+        </button>
+        {/* `capitalize` mettrait une majuscule à chaque mot : « Jeudi 30 Juillet ». */}
+        <h1 className="text-xl font-bold first-letter:uppercase">{formatDayLabel(date)}</h1>
+        <p className="tabular text-sm text-slate-500">
+          {hhmm(day.startedAt)}
+          {day.endedAt ? ` → ${hhmm(day.endedAt)}` : ' → en cours'} ·{' '}
+          {formatShort(day.presence)} de présence
+        </p>
+      </header>
+
+      <div className="flex flex-col gap-4 px-4 py-4 md:px-6">
+        <div className="grid grid-cols-3 gap-2">
+          <Kpi label="Colis" value={String(day.colis)} />
+          <Kpi label="Commandes" value={String(day.ordersCount)} />
+          <Kpi
+            label="Colis perdus"
+            value={String(Math.round(day.lostColis))}
+            tone={day.lostColis > 30 ? 'bad' : undefined}
+          />
+        </div>
+
+        <RateCards day={day} targetRate={targetRate} />
+
+        {day.overtime > 0 && (
+          <div className="card flex items-center justify-between">
+            <span className="text-sm font-semibold text-slate-400">
+              ⏱ Heures supplémentaires
+            </span>
+            <span className="tabular text-xl font-bold text-info">
+              {formatShort(day.overtime)}
+            </span>
+          </div>
+        )}
+
+        <TimeBreakdown day={day} />
+
+        <RecoList recommendations={recommendations} dayCount={1} />
+
+        {day.orders.length > 0 && (
+          <section>
+            <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">
+              Commandes
+            </h3>
+            <div className="flex flex-col gap-2">
+              {day.orders.map((m, i) => (
+                <OrderCard
+                  key={m.order.id}
+                  index={i + 1}
+                  m={m}
+                  targetRate={targetRate}
+                  onEdit={() => setEditingOrder(m.order)}
+                />
+              ))}
+            </div>
+          </section>
+        )}
+
+        <section>
+          <div className="mb-2 flex items-baseline justify-between">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
+              Tracé de la journée
+            </h3>
+            <span className="text-xs text-slate-500">appuie pour corriger</span>
+          </div>
+          <Timeline segments={snap.segments} now={now} onSelect={setEditing} />
+        </section>
+
+        <section className="border-t border-ink-600 pt-4">
+          {confirmDelete ? (
+            <div className="flex flex-col gap-2">
+              <p className="text-sm text-slate-300">
+                Supprimer cette journée et tout ce qu'elle contient : {day.ordersCount}{' '}
+                commande{day.ordersCount > 1 ? 's' : ''}, {day.colis} colis et l'ensemble
+                des chronos. Si la synchro est active, la suppression est aussi répercutée
+                sur l'autre appareil.
+              </p>
+              <button
+                type="button"
+                onClick={async () => {
+                  await deleteWorkday(workdayId)
+                  onBack()
+                }}
+                className="pressable min-h-touch rounded-xl bg-bad font-bold text-white"
+              >
+                Oui, supprimer définitivement
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(false)}
+                className="pressable rounded-xl bg-ink-700 py-3 font-semibold text-slate-300"
+              >
+                Annuler
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirmDelete(true)}
+              className="pressable w-full rounded-xl border border-bad/40 py-3 text-sm font-semibold text-bad"
+            >
+              Supprimer cette journée
+            </button>
+          )}
+        </section>
+      </div>
+
+      <CorrectSheet segment={editing} onClose={() => setEditing(undefined)} />
+      <OrderEditSheet order={editingOrder} onClose={() => setEditingOrder(undefined)} />
+    </div>
+  )
+}
+
+function OrderCard({
+  index,
+  m,
+  targetRate,
+  onEdit,
+}: {
+  index: number
+  m: OrderMetrics
+  targetRate: number
+  onEdit: () => void
+}) {
+  const shown = m.rateOrder > 0 && isRateMeaningful(m.totalWorked)
+  const ratio = targetRate > 0 ? m.rateOrder / targetRate : 0
+  const tone = !shown
+    ? 'text-slate-600'
+    : ratio >= 1
+      ? 'text-ok'
+      : ratio >= 0.9
+        ? 'text-warn'
+        : 'text-bad'
+  const supports = (Object.entries(m.order.supports) as [SupportKind, number][]).filter(
+    ([, n]) => n > 0,
+  )
+
+  return (
+    <div className="card">
+      <div className="flex items-baseline justify-between">
+        <button
+          type="button"
+          onClick={onEdit}
+          className="pressable text-left font-bold"
+          title="Corriger cette commande"
+        >
+          #{index} · {m.colis} colis
+          <span className="ml-2 text-sm font-medium capitalize text-slate-500">
+            {m.order.orderType}
+          </span>
+          <span className="ml-2 text-xs font-normal text-slate-600">modifier</span>
+        </button>
+        <span className={`tabular text-xl font-bold ${tone}`}>
+          {shown ? Math.round(m.rateOrder) : '—'}
+          {shown && <span className="text-sm text-slate-500">/h</span>}
+        </span>
+      </div>
+
+      <div className="tabular mt-1 text-sm text-slate-500">
+        {hhmm(m.order.startedAt)}
+        {m.order.endedAt ? ` → ${hhmm(m.order.endedAt)}` : ''} · {formatShort(m.totalWorked)}
+        {m.order.linesCount > 0 &&
+          ` · ${m.order.linesCount} ligne${m.order.linesCount > 1 ? 's' : ''}`}
+        {m.colisPerLine > 0 && ` (${m.colisPerLine.toFixed(1)} colis/ligne)`}
+      </div>
+
+      <div className="mt-2 grid grid-cols-4 gap-1 text-center text-xs">
+        <Mini label="Palette" value={formatShort(m.setup)} />
+        <Mini label="Prépa" value={formatShort(m.picking)} />
+        <Mini label="Filmage" value={formatShort(m.wrapping)} />
+        <Mini label="Quai" value={formatShort(m.docking)} />
+      </div>
+
+      {(m.interruptions > 0 || m.breaks > 0) && (
+        <div className="mt-2 text-xs text-slate-500">
+          {m.interruptions > 0 && `Interruptions ${formatShort(m.interruptions)}`}
+          {m.interruptions > 0 && m.breaks > 0 && ' · '}
+          {m.breaks > 0 && `Pauses ${formatShort(m.breaks)}`}
+          {m.palletChanges > 0 && ` · ${m.palletChanges} changement(s) de palette`}
+        </div>
+      )}
+
+      {supports.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {supports.map(([key, n]) => (
+            <span key={key} className="rounded-md bg-ink-700 px-2 py-0.5 text-xs font-semibold">
+              {n}× {SUPPORT_SHORT[key]}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Mini({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg bg-ink-700 py-1">
+      <div className="text-[0.6rem] uppercase text-slate-500">{label}</div>
+      <div className="tabular text-sm font-bold">{value}</div>
+    </div>
+  )
+}
+
+function Kpi({ label, value, tone }: { label: string; value: string; tone?: 'bad' }) {
+  return (
+    <div className="card px-3 py-3">
+      <div className="text-[0.65rem] font-semibold uppercase tracking-wide text-slate-500">
+        {label}
+      </div>
+      <div className={`tabular text-3xl font-bold ${tone === 'bad' ? 'text-bad' : ''}`}>
+        {value}
+      </div>
+    </div>
+  )
+}
+
+function Placeholder({ text, onBack }: { text: string; onBack: () => void }) {
+  return (
+    <div className="px-4 pt-2">
+      <button
+        type="button"
+        onClick={onBack}
+        className="pressable text-sm font-semibold text-slate-400"
+      >
+        ‹ Retour
+      </button>
+      <p className="mt-8 text-center text-slate-500">{text}</p>
+    </div>
+  )
+}
