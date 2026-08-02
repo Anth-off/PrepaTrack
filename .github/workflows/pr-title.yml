@@ -16,6 +16,11 @@ permissions:
   contents: read
   # Nécessaire pour afficher le motif du refus directement sur la PR.
   pull-requests: write
+  # La v6 publie en plus un statut sur le commit. Sans ce droit, l'action ne
+  # refuse pas le titre : elle échoue avant de l'examiner, sur un « Resource not
+  # accessible by integration » qui ne dit rien du format. Un contrôle qui tombe
+  # en panne doit se voir comme une panne, pas comme un refus.
+  statuses: write
 
 jobs:
   validate:
