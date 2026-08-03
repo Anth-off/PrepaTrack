@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useAlerts } from './hooks/useAlerts'
 import { useCartMotion } from './hooks/useCartMotion'
+import { SyncStatusBadge } from './components/SyncStatusBadge'
 import { DESKTOP_QUERY, useMediaQuery } from './hooks/useMediaQuery'
 import { useSession } from './hooks/useSession'
 import { useSync } from './hooks/useSync'
@@ -134,8 +135,11 @@ export default function App() {
             >
               <span className="text-lg leading-none">{item.emoji}</span>
               {item.label}
+              {item.key === 'settings' && (
+                <span className="ml-auto"><SyncStatusBadge status={sync.status} compact /></span>
+              )}
               {item.key === 'settings' && sync.configured && sync.pending > 0 && (
-                <span className="tabular ml-auto rounded-full bg-slate-600 px-1.5 text-[0.65rem] font-bold text-slate-100">
+                <span className="tabular rounded-full bg-slate-600 px-1.5 text-[0.65rem] font-bold text-slate-100">
                   {sync.pending > 99 ? '99+' : sync.pending}
                 </span>
               )}
@@ -178,8 +182,11 @@ export default function App() {
             >
               <span className="text-xl leading-none">{item.emoji}</span>
               {item.short ?? item.label}
+              {item.key === 'settings' && (
+                <span className="absolute right-[25%] top-1"><SyncStatusBadge status={sync.status} compact /></span>
+              )}
               {item.key === 'settings' && sync.configured && sync.pending > 0 && (
-                <span className="tabular absolute right-[22%] top-1 rounded-full bg-slate-600 px-1.5 text-[0.6rem] font-bold text-slate-100">
+                <span className="tabular absolute right-[10%] top-1 rounded-full bg-slate-600 px-1.5 text-[0.6rem] font-bold text-slate-100">
                   {sync.pending > 99 ? '99+' : sync.pending}
                 </span>
               )}
@@ -221,15 +228,10 @@ function SidebarStatus({
             {sync.profile.name} · {sync.profile.badge}
           </div>
         )}
-        {!sync.configured
-          ? 'Synchro non configurée'
-          : !sync.profile
-            ? 'Non connecté'
-            : sync.pending > 0
-              ? `${sync.pending} en attente d'envoi`
-              : sync.lastSyncAt
-                ? `Synchro à ${hhmm(sync.lastSyncAt)}`
-                : 'Synchronisé'}
+        <SyncStatusBadge status={sync.status} />
+        {sync.lastSyncAt && sync.status.state === 'up-to-date' && (
+          <div className="tabular mt-1">Dernière réussite à {hhmm(sync.lastSyncAt)}</div>
+        )}
       </div>
     </div>
   )

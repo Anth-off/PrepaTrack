@@ -36,7 +36,7 @@ export interface SyncOutcome {
   error?: string
 }
 
-let running = false
+let currentRun: Promise<SyncOutcome> | undefined
 
 export async function countPending(): Promise<number> {
   const counts = await Promise.all(
@@ -49,10 +49,15 @@ export async function getLastSyncAt(): Promise<number | undefined> {
   return getMeta<number | undefined>('sync:lastAt', undefined)
 }
 
+export async function getLastSyncAttemptAt(): Promise<number | undefined> {
+  return getMeta<number | undefined>('sync:lastAttemptAt', undefined)
+}
+
 /** Remet les curseurs à zéro : tout sera redescendu au prochain passage. */
 export async function resetCursors(): Promise<void> {
   await Promise.all(SYNC_TABLES.map((t) => setMeta(cursorKey(t), 0)))
   await setMeta('sync:lastAt', undefined)
+  await setMeta('sync:lastAttemptAt', undefined)
 }
 
 function cursorKey(table: AnySyncTable): string {
@@ -60,23 +65,33 @@ function cursorKey(table: AnySyncTable): string {
 }
 
 export async function runSync(): Promise<SyncOutcome> {
+  if (currentRun) return currentRun
+  const run = performSync()
+  currentRun = run
+  try {
+    return await run
+  } finally {
+    if (currentRun === run) currentRun = undefined
+  }
+}
+
+async function performSync(): Promise<SyncOutcome> {
   const at = Date.now()
-  if (running) return { state: 'running', pulled: 0, pushed: 0, at }
+  await setMeta('sync:lastAttemptAt', at)
 
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
     return { state: 'offline', pulled: 0, pushed: 0, at }
   }
 
-  const client = await getClient()
-  if (!client) return { state: 'unconfigured', pulled: 0, pushed: 0, at }
-
-  const { data: sessionData } = await client.auth.getSession()
-  if (!sessionData.session) return { state: 'signed_out', pulled: 0, pushed: 0, at }
-
-  running = true
   let pulled = 0
   let pushed = 0
   try {
+    const client = await getClient()
+    if (!client) return { state: 'unconfigured', pulled: 0, pushed: 0, at }
+
+    const { data: sessionData } = await client.auth.getSession()
+    if (!sessionData.session) return { state: 'signed_out', pulled: 0, pushed: 0, at }
+
     for (const table of SYNC_TABLES) {
       pulled += await pullTable(client, table)
     }
@@ -92,10 +107,8 @@ export async function runSync(): Promise<SyncOutcome> {
       pulled,
       pushed,
       at: Date.now(),
-      error: describe(error),
+      error: sanitizeSyncError(error),
     }
-  } finally {
-    running = false
   }
 }
 
@@ -133,7 +146,7 @@ async function pullTable(client: SupabaseClient, table: AnySyncTable): Promise<n
   return applied
 }
 
-async function applyRemoteRows(table: AnySyncTable, rows: SyncRow[]): Promise<number> {
+export async function applyRemoteRows(table: AnySyncTable, rows: SyncRow[]): Promise<number> {
   const local = table.table()
   let applied = 0
 
@@ -189,12 +202,27 @@ async function pushTable(client: SupabaseClient, table: AnySyncTable): Promise<n
   return sent
 }
 
-function describe(error: unknown): string {
-  if (error instanceof Error) return error.message
-  if (typeof error === 'object' && error && 'message' in error) {
-    return String((error as { message: unknown }).message)
+export function sanitizeSyncError(error: unknown): string {
+  const raw =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'object' && error && 'message' in error
+        ? String((error as { message: unknown }).message)
+        : ''
+  const message = raw.toLowerCase()
+  if (message.includes('jwt') || message.includes('token') || message.includes('auth')) {
+    return 'La session a expiré. Reconnecte-toi puis réessaie.'
   }
-  return String(error)
+  if (
+    message.includes('network') || message.includes('fetch') ||
+    message.includes('timeout') || message.includes('connexion')
+  ) {
+    return 'Le service est momentanément inaccessible. Tes données restent sur cet appareil.'
+  }
+  if (message.includes('permission') || message.includes('policy') || message.includes('denied')) {
+    return 'Le compte ne permet pas cette synchronisation. Vérifie la connexion du profil.'
+  }
+  return 'La synchronisation a échoué. Tes données locales sont conservées.'
 }
 
 /** Message court et compréhensible pour l'écran de synchro. */

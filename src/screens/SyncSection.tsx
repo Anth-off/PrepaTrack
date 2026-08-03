@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { hhmm } from '../core/time'
+import { SyncStatusBadge } from '../components/SyncStatusBadge'
 import {
   createAccount,
   PIN_LENGTH,
@@ -10,7 +10,6 @@ import {
 } from '../sync/auth'
 import { clearSyncConfig, saveSyncConfig, validateConfig } from '../sync/config'
 import { resetClient } from '../sync/client'
-import { describeState } from '../sync/sync'
 import type { SyncInfo } from '../hooks/useSync'
 
 interface Props {
@@ -52,6 +51,7 @@ function ConfigForm({ sync }: Props) {
 
   return (
     <Card>
+      <div className="mt-2"><SyncStatusBadge status={sync.status} /></div>
       <p className="mb-3 mt-1 text-sm text-slate-500">
         Colle ici les deux valeurs de ton projet Supabase (onglet Project Settings → API).
         La procédure complète est dans le fichier INSTALLATION.md.
@@ -102,6 +102,7 @@ function SignInForm({ sync }: Props) {
 
   return (
     <Card>
+      <div className="mt-2"><SyncStatusBadge status={sync.status} /></div>
       <p className="mb-2 mt-1 text-sm text-slate-500">
         Ton numéro de badge et ton code personnel à {PIN_LENGTH} chiffres. À ta première
         connexion, choisis ton code avec « Définir mon code ».
@@ -153,34 +154,30 @@ function SignInForm({ sync }: Props) {
 }
 
 function Connected({ sync }: Props) {
-  const state = sync.busy ? 'running' : (sync.outcome?.state ?? 'ok')
-  const tone =
-    state === 'ok' ? 'text-ok' : state === 'error' ? 'text-bad' : 'text-slate-400'
-
   return (
     <Card>
-      <div className="mt-2 flex items-baseline justify-between">
-        <span className={`font-bold ${tone}`}>{describeState(state)}</span>
+      <div className="mt-2 flex items-baseline justify-between gap-3">
+        <SyncStatusBadge status={sync.status} />
         {sync.pending > 0 && (
-          <span className="tabular text-sm text-warn">{sync.pending} en attente</span>
+          <span className="tabular shrink-0 text-sm text-warn">{sync.pending} en attente</span>
         )}
       </div>
 
-      <p className="mt-1 text-sm text-slate-500">
-        {sync.profile?.name} · badge {sync.profile?.badge}
-        {sync.profile?.role === 'manager' && (
-          <span className="ml-2 rounded-md bg-info/20 px-1.5 py-0.5 text-xs font-bold text-info">
-            gestionnaire
-          </span>
-        )}
-        {sync.lastSyncAt && ` · synchro à ${hhmm(sync.lastSyncAt)}`}
-      </p>
+      <p className="mt-1 text-sm text-slate-500">{sync.status.detail}</p>
 
-      {sync.outcome?.error && (
-        <p className="mt-2 break-words rounded-lg bg-ink-700 p-2 text-xs text-bad">
-          {sync.outcome.error}
-        </p>
-      )}
+      <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-xl bg-ink-700 p-3 text-sm">
+        <dt className="text-slate-500">Profil</dt>
+        <dd className="min-w-0 truncate text-right text-slate-300">
+          {sync.profile?.name} · badge {sync.profile?.badge}
+          {sync.profile?.role === 'manager' && ' · gestionnaire'}
+        </dd>
+        <dt className="text-slate-500">En attente</dt>
+        <dd className="tabular text-right text-slate-300">{sync.pending}</dd>
+        <dt className="text-slate-500">Dernière tentative</dt>
+        <dd className="tabular text-right text-slate-300">{formatTimestamp(sync.lastAttemptAt)}</dd>
+        <dt className="text-slate-500">Dernière réussite</dt>
+        <dd className="tabular text-right text-slate-300">{formatTimestamp(sync.lastSyncAt)}</dd>
+      </dl>
 
       <div className="mt-3 flex flex-col gap-2">
         <button
@@ -189,7 +186,11 @@ function Connected({ sync }: Props) {
           disabled={sync.busy}
           className="pressable min-h-touch rounded-xl bg-ink-700 font-bold text-slate-100 disabled:opacity-40"
         >
-          {sync.busy ? 'Synchro en cours…' : 'Synchroniser maintenant'}
+          {sync.busy
+            ? 'Synchronisation en cours…'
+            : sync.status.state === 'error'
+              ? 'Réessayer'
+              : 'Synchroniser maintenant'}
         </button>
         <button
           type="button"
@@ -216,6 +217,13 @@ function Connected({ sync }: Props) {
       </div>
     </Card>
   )
+}
+
+function formatTimestamp(value?: number): string {
+  if (!value) return 'Jamais'
+  return new Date(value).toLocaleString('fr-FR', {
+    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+  })
 }
 
 function Field({

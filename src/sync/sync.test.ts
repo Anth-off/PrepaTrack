@@ -1,7 +1,14 @@
 import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { db, getMeta, setMeta, wipeAll } from '../db/db'
-import { countPending } from './sync'
+import {
+  applyRemoteRows,
+  countPending,
+  getLastSyncAt,
+  getLastSyncAttemptAt,
+  runSync,
+  sanitizeSyncError,
+} from './sync'
 import { SYNC_TABLES } from './tables'
 import type { Segment, Workday } from '../core/types'
 
@@ -140,5 +147,55 @@ describe('stockage des valeurs de service', () => {
     expect(await getMeta('sync:cursor:segments', 0)).toBe(0)
     await setMeta('sync:cursor:segments', T)
     expect(await getMeta('sync:cursor:segments', 0)).toBe(T)
+  })
+
+  it('conserve dernière tentative et dernière réussite après réouverture', async () => {
+    const [first, second] = await Promise.all([runSync(), runSync()])
+    expect(first).toEqual(second)
+    expect(await getLastSyncAttemptAt()).toBe(first.at)
+    await setMeta('sync:lastAt', T)
+    await db.close()
+    await db.open()
+    expect(await getLastSyncAt()).toBe(T)
+    expect(await getLastSyncAttemptAt()).toBe(first.at)
+  })
+})
+
+describe('conflits entre deux appareils', () => {
+  it('garde la modification locale la plus récente', async () => {
+    await db.segments.put(segment({ note: 'appareil A', updatedAt: T + 20, syncState: 'pending' }))
+    const applied = await applyRemoteRows(segmentTable, [
+      segment({ note: 'appareil B', updatedAt: T + 10, syncState: 'synced' }),
+    ])
+    expect(applied).toBe(0)
+    expect(await db.segments.get('s1')).toMatchObject({
+      note: 'appareil A', updatedAt: T + 20, syncState: 'pending',
+    })
+  })
+
+  it('applique la modification distante la plus récente', async () => {
+    await db.segments.put(segment({ note: 'appareil A', updatedAt: T + 10, syncState: 'pending' }))
+    const applied = await applyRemoteRows(segmentTable, [
+      segment({ note: 'appareil B', updatedAt: T + 20, syncState: 'synced' }),
+    ])
+    expect(applied).toBe(1)
+    expect(await db.segments.get('s1')).toMatchObject({
+      note: 'appareil B', updatedAt: T + 20, syncState: 'synced',
+    })
+  })
+})
+
+describe('erreurs affichables', () => {
+  it('ne révèle jamais un jeton ou une URL sensible', () => {
+    const message = sanitizeSyncError(
+      new Error('JWT eySecret token rejected by https://private.example.test/path'),
+    )
+    expect(message).toBe('La session a expiré. Reconnecte-toi puis réessaie.')
+    expect(message).not.toContain('eySecret')
+    expect(message).not.toContain('https://')
+  })
+
+  it('explique une panne réseau sans détail technique', () => {
+    expect(sanitizeSyncError(new TypeError('Failed to fetch'))).toContain('inaccessible')
   })
 })
