@@ -65,6 +65,17 @@ export function HelpSection({ role }: Props) {
             </p>
           </Block>
 
+          <Block title="Corriger le dernier appui">
+            <p>
+              Après une action réversible, le bouton <b>Annuler</b> reste disponible pendant
+              10 secondes. Il remet exactement le compteur, la commande ou le chrono dans
+              son état précédent, même sans réseau.
+            </p>
+            <p className="mt-1 text-slate-400">
+              Passé ce délai, la correction reste possible depuis le bilan de la journée.
+            </p>
+          </Block>
+
           <Block title="Si tu oublies d'appuyer">
             <p>
               Ça arrive et ça se répare. Ouvre le bilan de la journée, puis le{' '}

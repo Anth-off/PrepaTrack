@@ -12,6 +12,8 @@ interface Props {
   /** Total relevé par le compteur pendant la prépa, proposé par défaut. */
   counted: number
   onConfirm: (data: { colisActual: number; supports: Supports; orderType: OrderType }) => void
+  /** Revient au prélèvement en annulant la transition vers le filmage. */
+  onResumePicking?: () => void
 }
 
 const SUPPORT_LABELS: { key: SupportKind; label: string }[] = [
@@ -32,10 +34,10 @@ const TYPES: { value: OrderType; label: string }[] = [
 /**
  * S'affiche pendant le filmage : le chrono tourne déjà, la saisie ne crée donc
  * aucun trou dans la timeline et se fait pendant que les palettes sont sous les
- * yeux. Pas de bouton Annuler : la commande est déjà terminée, il n'y a rien à
- * annuler, seulement à renseigner.
+ * yeux. « Reprendre la prépa » annule la transition vers le filmage tant que
+ * rien n'a encore été validé dans cette feuille.
  */
-export function OrderEndSheet({ open, order, counted, onConfirm }: Props) {
+export function OrderEndSheet({ open, order, counted, onConfirm, onResumePicking }: Props) {
   const [supports, setSupports] = useState<Supports>({ ...EMPTY_SUPPORTS })
   const [colis, setColis] = useState('')
   const [editColis, setEditColis] = useState(false)
@@ -121,6 +123,15 @@ export function OrderEndSheet({ open, order, counted, onConfirm }: Props) {
           }
           onClick={() => onConfirm({ colisActual: colisNum, supports, orderType })}
         />
+        {onResumePicking && (
+          <button
+            type="button"
+            onClick={onResumePicking}
+            className="pressable rounded-xl bg-ink-700 py-3 font-semibold text-slate-300"
+          >
+            Reprendre la prépa
+          </button>
+        )}
       </div>
     </Sheet>
   )

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { BigButton } from '../components/BigButton'
 import { Chrono } from '../components/Chrono'
 import { CounterPad } from '../components/CounterPad'
@@ -25,6 +25,14 @@ import {
   startOrder,
   toggleOvertime,
 } from '../db/repo'
+import {
+  clearUndoCheckpoint,
+  getUndoNotice,
+  performUndoable,
+  performWithoutUndo,
+  undoLastAction,
+  type UndoNotice,
+} from '../db/undo'
 import { NewOrderSheet } from './NewOrderSheet'
 import { OrderEndSheet } from './OrderEndSheet'
 
@@ -50,6 +58,40 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
   const [orderEnd, setOrderEnd] = useState(false)
   const [confirmEnd, setConfirmEnd] = useState(false)
   const [confirmIncomplete, setConfirmIncomplete] = useState(false)
+  const [undoNotice, setUndoNotice] = useState<UndoNotice>()
+
+  useEffect(() => {
+    let mounted = true
+    void getUndoNotice().then((notice) => {
+      if (mounted) setUndoNotice(notice)
+    })
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!undoNotice) return
+    const delay = Math.max(0, undoNotice.expiresAt - Date.now())
+    const timer = window.setTimeout(() => setUndoNotice(undefined), delay)
+    return () => window.clearTimeout(timer)
+  }, [undoNotice])
+
+  async function runUndoable(label: string, action: () => Promise<unknown>) {
+    const notice = await performUndoable(label, action)
+    setUndoNotice(notice)
+  }
+
+  async function runWithoutUndo(action: () => Promise<unknown>) {
+    setUndoNotice(undefined)
+    return performWithoutUndo(action)
+  }
+
+  async function handleUndo() {
+    const undone = await undoLastAction()
+    setUndoNotice(undefined)
+    return undone
+  }
 
   const active = view.active
   const def = active ? segmentDef(active.type) : undefined
@@ -72,14 +114,16 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
   async function handlePrimary() {
     switch (view.phase) {
       case 'no_day':
-        return startDay()
+        return runWithoutUndo(() => startDay())
       case 'briefing':
-        return endBriefing()
+        return runWithoutUndo(() => endBriefing())
       case 'poste_prep':
       case 'ready':
+        setUndoNotice(undefined)
+        void clearUndoCheckpoint()
         return setNewOrder(true)
       case 'order_setup':
-        return advanceOrder()
+        return runUndoable('Début de la prépa', () => advanceOrder())
       case 'picking': {
         // Clore une commande dont le compte ne tombe pas juste est presque
         // toujours un oubli d'appui sur le compteur : on le signale avant, car
@@ -91,16 +135,19 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
         setConfirmIncomplete(false)
         // Le filmage démarre immédiatement ; la saisie des supports se fait
         // par-dessus, chrono en marche, donc sans trou dans la timeline.
-        await advanceOrder()
+        await runUndoable('Fin de la prépa', () => advanceOrder())
         return setOrderEnd(true)
       }
       case 'wrapping':
+        return runUndoable('Fin du filmage', () => advanceOrder())
       case 'docking':
-        return advanceOrder()
+        return runUndoable('Fin de la mise à quai', () => advanceOrder())
       case 'cleanup':
-        return finishDay()
+        return runWithoutUndo(() => finishDay())
       case 'interrupted':
-        return endInterruption()
+        return runUndoable(`Fin — ${segmentDef(view.active!.type).label}`, () =>
+          endInterruption(),
+        )
     }
   }
 
@@ -110,7 +157,7 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
     orderType: OrderType
   }) {
     setNewOrder(false)
-    await startOrder(input)
+    await runWithoutUndo(() => startOrder(input))
   }
 
   async function handleOrderEnd(data: {
@@ -118,7 +165,7 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
     supports: Supports
     orderType: OrderType
   }) {
-    if (view.order) await saveOrderResult(view.order.id, data)
+    if (view.order) await runWithoutUndo(() => saveOrderResult(view.order!.id, data))
     setOrderEnd(false)
   }
 
@@ -167,6 +214,23 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
 
   const controls = (
     <div className="flex flex-col gap-3">
+      {undoNotice && (
+        <div
+          role="status"
+          className="flex items-center justify-between gap-3 rounded-xl border border-accent/40 bg-ink-700 px-3 py-2"
+        >
+          <span className="min-w-0 truncate text-sm text-slate-300">
+            {undoNotice.label}
+          </span>
+          <button
+            type="button"
+            onClick={() => void handleUndo()}
+            className="pressable shrink-0 rounded-lg bg-accent px-3 py-1.5 text-sm font-bold text-black"
+          >
+            Annuler
+          </button>
+        </div>
+      )}
       {/* Le compteur voyage avec les contrôles, hors de la zone défilante : sur
           un petit écran il se retrouverait sinon sous la ligne de flottaison,
           alors que c'est le geste le plus répété de la vacation. */}
@@ -174,7 +238,12 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
         <CounterPad
           counted={live?.counted ?? 0}
           sound={settings.soundAlerts}
-          onAdd={(delta) => void addColis(delta)}
+          onAdd={(delta) =>
+            void runUndoable(
+              `${delta > 0 ? '+' : ''}${delta} colis`,
+              () => addColis(delta),
+            )
+          }
         />
       )}
 
@@ -189,7 +258,7 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
           <SmallButton
             label={snap.workday?.overtimeStartedAt ? '⏱ Heures supp ✓' : '⏱ Heures supp'}
             active={Boolean(snap.workday?.overtimeStartedAt)}
-            onClick={() => toggleOvertime()}
+            onClick={() => void runWithoutUndo(() => toggleOvertime())}
           />
           <SmallButton label="🏁 Fin de journée" onClick={() => setConfirmEnd(true)} />
         </div>
@@ -203,7 +272,14 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
         view={view}
         settings={settings}
         breaksTaken={breaksTaken(snap)}
-        onTrigger={(type: SegmentType) => startInterruption(type)}
+        onTrigger={(type: SegmentType) =>
+          void runUndoable(
+            view.active?.type === type
+              ? `Fin — ${segmentDef(type).label}`
+              : segmentDef(type).label,
+            () => startInterruption(type),
+          )
+        }
       />
     ) : null
 
@@ -219,6 +295,13 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
         order={view.order}
         counted={live?.counted ?? 0}
         onConfirm={handleOrderEnd}
+        onResumePicking={
+          undoNotice
+            ? async () => {
+                if (await handleUndo()) setOrderEnd(false)
+              }
+            : undefined
+        }
       />
       {confirmIncomplete && view.order && (
         <ConfirmDialog
@@ -228,7 +311,7 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
           onCancel={() => setConfirmIncomplete(false)}
           onConfirm={async () => {
             setConfirmIncomplete(false)
-            await advanceOrder()
+            await runUndoable('Fin de la prépa', () => advanceOrder())
             setOrderEnd(true)
           }}
         />
@@ -246,7 +329,7 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
           onCancel={() => setConfirmEnd(false)}
           onConfirm={async () => {
             setConfirmEnd(false)
-            await startCleanup()
+            await runWithoutUndo(() => startCleanup())
           }}
         />
       )}
