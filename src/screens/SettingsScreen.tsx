@@ -3,13 +3,21 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { getSettings, saveSettings, wipeAll } from '../db/db'
 import type { Settings } from '../core/types'
 import type { SyncInfo } from '../hooks/useSync'
+import type { CartMotionControl } from '../hooks/useCartMotion'
 import { BackupSection } from './BackupSection'
+import { CartMotionSection } from './CartMotionSection'
 import { DiagnosticSection } from './DiagnosticSection'
 import { HelpSection } from './HelpSection'
 import { SyncSection } from './SyncSection'
 
 /** Réglages. Tout est modifiable sans intervention sur le code. */
-export function SettingsScreen({ sync }: { sync: SyncInfo }) {
+export function SettingsScreen({
+  sync,
+  motion,
+}: {
+  sync: SyncInfo
+  motion: CartMotionControl
+}) {
   const settings = useLiveQuery(() => getSettings(), [])
   const [confirmWipe, setConfirmWipe] = useState(false)
   if (!settings) return <p className="px-4 py-8 text-center text-slate-500">Chargement…</p>
@@ -37,6 +45,8 @@ export function SettingsScreen({ sync }: { sync: SyncInfo }) {
           onChange={(targetRate) => patch({ targetRate })}
         />
       </section>
+
+      <CartMotionSection settings={settings} motion={motion} />
 
       <section className="card">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">

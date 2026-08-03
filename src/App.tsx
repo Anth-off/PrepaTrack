@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useAlerts } from './hooks/useAlerts'
+import { useCartMotion } from './hooks/useCartMotion'
 import { DESKTOP_QUERY, useMediaQuery } from './hooks/useMediaQuery'
 import { useSession } from './hooks/useSession'
 import { useSync } from './hooks/useSync'
@@ -30,6 +31,7 @@ const TABS: TabDef[] = [
 
 export default function App() {
   const session = useSession()
+  const cartMotion = useCartMotion(session)
   const sync = useSync()
   const isDesktop = useMediaQuery(DESKTOP_QUERY)
   // Sur grand écran on arrive sur les statistiques : le PC sert à consulter le
@@ -90,7 +92,7 @@ export default function App() {
 
       {activeTab === 'settings' && (
         <div className="mx-auto w-full max-w-2xl">
-          <SettingsScreen sync={sync} />
+          <SettingsScreen sync={sync} motion={cartMotion} />
         </div>
       )}
     </>

@@ -158,6 +158,15 @@ export interface IncidentDef {
   emoji: string
 }
 
+export interface CartMotionSettings {
+  enabled: boolean
+  /** Énergie RMS relevée pendant les deux étapes de calibration. */
+  stationaryEnergy?: number
+  movingEnergy?: number
+  /** Seuil dérivé des mesures, utilisé par le classificateur local. */
+  threshold?: number
+}
+
 export interface Settings {
   id: 'settings'
   /** Objectif de cadence en colis par heure. */
@@ -177,6 +186,8 @@ export interface Settings {
   /** Liste éditable : permet d'ajouter un type d'aléa sans toucher au code. */
   incidents: IncidentDef[]
   soundAlerts: boolean
+  /** Détection hors ligne des déplacements du chariot à partir des capteurs. */
+  cartMotion: CartMotionSettings
   updatedAt: number
 }
 
@@ -198,5 +209,6 @@ export const DEFAULT_SETTINGS: Settings = {
     { key: 'incident_human', label: 'Humain', emoji: '👥' },
   ],
   soundAlerts: true,
+  cartMotion: { enabled: false },
   updatedAt: 0,
 }

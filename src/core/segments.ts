@@ -108,7 +108,7 @@ export const SEGMENTS: Record<KnownSegmentType, SegmentDef> = {
   travel: {
     label: 'Trajet',
     short: 'Trajet',
-    emoji: '🚶',
+    emoji: '🚜',
     category: 'waste',
     interruption: true,
     color: 'bg-amber-500',

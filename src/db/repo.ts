@@ -83,7 +83,7 @@ function newSegment(
   workdayId: string,
   type: SegmentType,
   at: number,
-  opts: { orderId?: string; stack?: SuspendedRef[] } = {},
+  opts: { orderId?: string; stack?: SuspendedRef[]; note?: string } = {},
 ): Segment {
   return stamp({
     id: uid(),
@@ -92,6 +92,7 @@ function newSegment(
     startedAt: at,
     orderId: opts.orderId,
     stack: opts.stack && opts.stack.length > 0 ? opts.stack : undefined,
+    note: opts.note,
     updatedAt: 0,
     syncState: 'pending',
   })
@@ -357,6 +358,45 @@ export async function endInterruption(at: number = Date.now()): Promise<void> {
       stack: popped.rest,
     }),
   )
+}
+
+export const AUTOMATIC_TRAVEL_NOTE = 'Détection automatique du chariot'
+
+/**
+ * Bascule un trajet détecté par les capteurs. L'automate n'agit que pendant le
+ * prélèvement et ne ferme que les trajets qu'il a lui-même ouverts : une pause,
+ * un aléa ou un trajet manuel reste toujours sous le contrôle de l'utilisateur.
+ */
+export async function setAutomaticTravel(
+  moving: boolean,
+  at: number = Date.now(),
+): Promise<boolean> {
+  const snap = await loadSnapshot()
+  const view = deriveView(snap)
+  if (!snap.workday) return false
+
+  if (!moving) {
+    if (view.active?.type !== 'travel' || view.active.note !== AUTOMATIC_TRAVEL_NOTE) {
+      return false
+    }
+    await endInterruption(at)
+    return true
+  }
+
+  // Ne jamais empiler l'automatisation sur une interruption ou sur une phase
+  // autre que le prélèvement proprement dit.
+  if (view.phase !== 'picking' || view.basePhase !== 'picking' || !view.order) return false
+
+  const stack = pushStack(view.active)
+  await closeActive(at)
+  await db.segments.put(
+    newSegment(snap.workday.id, 'travel', at, {
+      orderId: view.order.id,
+      stack,
+      note: AUTOMATIC_TRAVEL_NOTE,
+    }),
+  )
+  return true
 }
 
 // --- Progression -----------------------------------------------------------

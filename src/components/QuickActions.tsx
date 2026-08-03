@@ -85,10 +85,16 @@ export function QuickActions({ view, settings, breaksTaken, onTrigger }: Props) 
       {/* Pas de `safe-bottom` ici : la barre d'onglets se trouve juste en
           dessous et gère déjà la zone réservée du téléphone. */}
       <div className="flex shrink-0 gap-2 border-t border-ink-600 bg-ink-800 px-2 py-2">
-        {cell('travel', segmentDef('travel').emoji, 'Trajet', () => trigger('travel'), {
-          active: activeType === 'travel',
-          disabled: !canInterrupt(view, 'travel'),
-        })}
+        {cell(
+          'travel',
+          segmentDef('travel').emoji,
+          settings.cartMotion.enabled ? 'Trajet auto' : 'Trajet',
+          () => trigger('travel'),
+          {
+            active: activeType === 'travel',
+            disabled: !canInterrupt(view, 'travel'),
+          },
+        )}
         {cell('toilet', segmentDef('toilet').emoji, 'WC', () => trigger('toilet'), {
           active: activeType === 'toilet',
           disabled: !canInterrupt(view, 'toilet'),

@@ -17,6 +17,7 @@ import {
   startCleanup,
   startDay,
   startInterruption,
+  setAutomaticTravel,
   startOrder,
   toggleOvertime,
 } from './repo'
@@ -153,6 +154,28 @@ describe('interruptions', () => {
     view = deriveView(await loadSnapshot())
     expect(view.active?.type).toBe('picking')
     expect(view.depth).toBe(0)
+  })
+
+  it('automatise uniquement ses propres trajets pendant le prélèvement', async () => {
+    await startDay(at(0))
+    expect(await setAutomaticTravel(true, at(2))).toBe(false)
+    await endBriefing(at(10))
+    await startOrder({ colisPlanned: 60, linesCount: 20, orderType: 'normale' }, at(15))
+    expect(await setAutomaticTravel(true, at(18))).toBe(false)
+    await advanceOrder(at(20))
+
+    expect(await setAutomaticTravel(true, at(25))).toBe(true)
+    let view = deriveView(await loadSnapshot())
+    expect(view.active?.type).toBe('travel')
+    expect(view.active?.note).toBe('Détection automatique du chariot')
+
+    expect(await setAutomaticTravel(false, at(30))).toBe(true)
+    view = deriveView(await loadSnapshot())
+    expect(view.active?.type).toBe('picking')
+
+    await startInterruption('travel', at(35))
+    expect(await setAutomaticTravel(false, at(40))).toBe(false)
+    expect(deriveView(await loadSnapshot()).active?.type).toBe('travel')
   })
 
   it('reprend en attente si l’interruption n’a rien suspendu', async () => {
