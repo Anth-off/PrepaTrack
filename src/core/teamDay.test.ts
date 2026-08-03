@@ -141,6 +141,32 @@ describe('bilan d’une journée d’équipe', () => {
     ]
     expect(availableDates(days)).toEqual(['2026-08-07', '2026-08-05'])
   })
+
+  it('regroupe les ruptures par journée et par préparateur', () => {
+    const anthony = makeDay(
+      '2026-08-05',
+      [{ colis: 96, lines: 25, startHour: 13, pickingMinutes: 60 }],
+      110,
+      'anthony',
+    )
+    anthony.shortages = [
+      {
+        id: 'r1',
+        workdayId: anthony.id,
+        orderId: anthony.metrics.orders[0].order.id,
+        at: Date.now(),
+        quantity: 4,
+        resolved: false,
+        ownerId: 'anthony',
+        updatedAt: Date.now(),
+        syncState: 'synced',
+      },
+    ]
+
+    const row = byOwnerForDate([anthony], '2026-08-05')[0]
+    expect(row.shortageQuantity).toBe(4)
+    expect(row.unresolvedShortages).toBe(1)
+  })
 })
 
 describe('aléas par préparateur', () => {

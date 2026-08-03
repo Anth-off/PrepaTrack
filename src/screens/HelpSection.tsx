@@ -76,6 +76,18 @@ export function HelpSection({ role }: Props) {
             </p>
           </Block>
 
+          <Block title="Un colis est en rupture">
+            <p>
+              Pendant la prépa, appuie sur <b>📦 +1 hors stock</b> à la place du bouton
+              <b> +1</b>. Le colis n'entre pas dans le total préparé et le total hors stock
+              augmente immédiatement, sans formulaire.
+            </p>
+            <p className="mt-1 text-slate-400">
+              Un mauvais appui peut être annulé pendant 10 secondes. Le total reste
+              modifiable dans le bilan et sera transmis au gestionnaire au retour du réseau.
+            </p>
+          </Block>
+
           <Block title="Si tu oublies d'appuyer">
             <p>
               Ça arrive et ça se répare. Ouvre le bilan de la journée, puis le{' '}

@@ -51,6 +51,8 @@ export function TeamDayView({ days, team, targetRate, onOpenDay, onOpenPreparer 
     [days, active, activeOwners],
   )
   const totals = useMemo(() => teamDayTotals(rows), [rows])
+  const shortageQuantity = rows.reduce((sum, row) => sum + row.shortageQuantity, 0)
+  const unresolvedShortages = rows.reduce((sum, row) => sum + row.unresolvedShortages, 0)
   const dayLosses = useMemo(
     () => losses(days.filter((d) => d.date === active), targetRate),
     [days, active, targetRate],
@@ -97,7 +99,7 @@ export function TeamDayView({ days, team, targetRate, onOpenDay, onOpenPreparer 
         </button>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
         <Kpi label="Colis" value={String(totals.colis)} />
         <Kpi
           label="Cadence équipe"
@@ -107,6 +109,11 @@ export function TeamDayView({ days, team, targetRate, onOpenDay, onOpenPreparer 
         />
         <Kpi label="Commandes" value={String(totals.ordersCount)} />
         <Kpi label="Temps perdu" value={formatShort(totals.wasteTime)} />
+        <Kpi
+          label="Ruptures"
+          value={String(shortageQuantity)}
+          tone={unresolvedShortages > 0 ? 'warn' : undefined}
+        />
       </div>
 
       {(missing.length > 0 || stale.length > 0) && (
@@ -138,6 +145,7 @@ export function TeamDayView({ days, team, targetRate, onOpenDay, onOpenPreparer 
               <th className="pb-2 text-right">Cadence</th>
               <th className="pb-2 text-right">Perdu</th>
               <th className="pb-2 text-right">Aléas</th>
+              <th className="pb-2 text-right">Ruptures</th>
               <th className="pb-2 text-right">État</th>
             </tr>
           </thead>
@@ -264,6 +272,14 @@ function Row({
         {row.wasteTime > 0 ? formatShort(row.wasteTime) : '—'}
       </td>
       <td className="tabular py-2 text-right text-slate-400">{row.incidentCount || '—'}</td>
+      <td className="tabular py-2 text-right text-slate-400">
+        {row.shortageQuantity > 0 ? (
+          <span className={row.unresolvedShortages > 0 ? 'text-warn' : 'text-ok'}>
+            {row.shortageQuantity}
+            {row.unresolvedShortages > 0 && ` (${row.unresolvedShortages} à traiter)`}
+          </span>
+        ) : '—'}
+      </td>
       <td className={`py-2 text-right text-xs font-semibold ${state.className}`}>
         {state.label}
       </td>

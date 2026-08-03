@@ -1,13 +1,13 @@
 import type { Table } from 'dexie'
-import type { ColisEvent, Order, Segment, Workday } from '../core/types'
+import type { ColisEvent, Order, Segment, StockShortage, Workday } from '../core/types'
 import { db } from './db'
 import { loadSnapshot } from './repo'
 
 export const UNDO_WINDOW_MS = 10_000
 const UNDO_META_KEY = 'undo:last-action'
 
-type UndoTable = 'workdays' | 'orders' | 'segments' | 'colisEvents'
-type UndoRow = Workday | Order | Segment | ColisEvent
+type UndoTable = 'workdays' | 'orders' | 'segments' | 'colisEvents' | 'stockShortages'
+type UndoRow = Workday | Order | Segment | ColisEvent | StockShortage
 
 interface UndoChange {
   table: UndoTable
@@ -45,7 +45,7 @@ export function performUndoable(
   return enqueue(() =>
     db.transaction(
       'rw',
-      [db.workdays, db.orders, db.segments, db.colisEvents, db.meta],
+      [db.workdays, db.orders, db.segments, db.colisEvents, db.stockShortages, db.meta],
       async () => {
         await clearUndoCheckpointInternal()
         const snap = await loadSnapshot()
@@ -119,7 +119,7 @@ async function undoLastActionInternal(at: number): Promise<boolean> {
 
   return db.transaction(
     'rw',
-    [db.workdays, db.orders, db.segments, db.colisEvents, db.meta],
+    [db.workdays, db.orders, db.segments, db.colisEvents, db.stockShortages, db.meta],
     async () => {
       const currentRows = await Promise.all(
         checkpoint.changes.map((change) => undoTable(change.table).get(change.id)),
@@ -182,17 +182,19 @@ async function readCheckpoint(): Promise<UndoCheckpoint | undefined> {
 }
 
 async function capture(workdayId: string): Promise<WorkdayState> {
-  const [workday, orders, segments, colisEvents] = await Promise.all([
+  const [workday, orders, segments, colisEvents, stockShortages] = await Promise.all([
     db.workdays.get(workdayId),
     db.orders.where('workdayId').equals(workdayId).toArray(),
     db.segments.where('workdayId').equals(workdayId).toArray(),
     db.colisEvents.where('workdayId').equals(workdayId).toArray(),
+    db.stockShortages.where('workdayId').equals(workdayId).toArray(),
   ])
   return {
     workdays: workday ? [workday] : [],
     orders,
     segments,
     colisEvents,
+    stockShortages,
   }
 }
 

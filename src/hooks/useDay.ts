@@ -1,14 +1,15 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import type { Snapshot } from '../core/machine'
 import { computeDayMetrics, type DayMetrics } from '../core/metrics'
-import type { ColisEvent } from '../core/types'
+import type { ColisEvent, StockShortage } from '../core/types'
 import { getSettings } from '../db/db'
-import { colisEventsFor, loadSnapshotById } from '../db/repo'
+import { colisEventsFor, loadSnapshotById, stockShortagesFor } from '../db/repo'
 import { useNow } from './useNow'
 
 export interface DayView {
   snap?: Snapshot
   events: ColisEvent[]
+  shortages: StockShortage[]
   day?: DayMetrics
   targetRate: number
   loading: boolean
@@ -23,20 +24,22 @@ export function useDay(workdayId?: string): DayView {
     if (!workdayId) return null
     const snap = await loadSnapshotById(workdayId)
     if (!snap?.workday) return null
-    const [events, settings] = await Promise.all([
+    const [events, shortages, settings] = await Promise.all([
       colisEventsFor(snap.workday.id),
+      stockShortagesFor(snap.workday.id),
       getSettings(),
     ])
-    return { snap, events, targetRate: settings.targetRate }
+    return { snap, events, shortages, targetRate: settings.targetRate }
   }, [workdayId])
 
   if (!data) {
-    return { events: [], targetRate: 110, loading: data === undefined }
+    return { events: [], shortages: [], targetRate: 110, loading: data === undefined }
   }
 
   return {
     snap: data.snap,
     events: data.events,
+    shortages: data.shortages,
     day: computeDayMetrics(data.snap, data.events, data.targetRate, now),
     targetRate: data.targetRate,
     loading: false,

@@ -2,7 +2,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import type { DayData } from '../core/analysis'
 import { computeDayMetrics } from '../core/metrics'
 import { getSettings } from '../db/db'
-import { colisEventsFor, listWorkdays, loadSnapshotFor } from '../db/repo'
+import { colisEventsFor, listWorkdays, loadSnapshotFor, stockShortagesFor } from '../db/repo'
 
 /** Une vacation, avec tout ce qu'il faut pour l'analyser. */
 export interface RecentDay extends DayData {
@@ -34,9 +34,10 @@ export function useRecentDays(limit = 30): RecentDays {
     const [workdays, settings] = await Promise.all([listWorkdays(limit), getSettings()])
     const days = await Promise.all(
       workdays.map(async (workday) => {
-        const [snap, events] = await Promise.all([
+        const [snap, events, shortages] = await Promise.all([
           loadSnapshotFor(workday),
           colisEventsFor(workday.id),
+          stockShortagesFor(workday.id),
         ])
         const metrics = computeDayMetrics(snap, events, settings.targetRate)
         const open = workday.status === 'open'
@@ -47,6 +48,7 @@ export function useRecentDays(limit = 30): RecentDays {
           stale: open && metrics.presence > STALE_AFTER,
           segments: snap.segments,
           events,
+          shortages,
           metrics,
         }
       }),

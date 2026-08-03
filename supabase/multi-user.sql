@@ -100,7 +100,7 @@ create policy "preparers write" on public.preparers
 do $$
 declare t text;
 begin
-  foreach t in array array['workdays', 'orders', 'segments', 'colis_events'] loop
+  foreach t in array array['workdays', 'orders', 'segments', 'colis_events', 'stock_shortages'] loop
     execute format('drop policy if exists %I on public.%I', t || ' owner', t);
     execute format('drop policy if exists %I on public.%I', t || ' access', t);
     execute format(
@@ -128,7 +128,7 @@ begin
         on kcu.constraint_name = tc.constraint_name
      where tc.constraint_type = 'FOREIGN KEY'
        and tc.table_schema = 'public'
-       and tc.table_name in ('workdays', 'orders', 'segments', 'colis_events')
+       and tc.table_name in ('workdays', 'orders', 'segments', 'colis_events', 'stock_shortages')
        and kcu.column_name = 'user_id'
   loop
     execute format('alter table public.%I drop constraint %I', r.table_name, r.constraint_name);

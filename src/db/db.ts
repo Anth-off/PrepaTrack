@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie'
-import type { ColisEvent, Order, Segment, Settings, Workday } from '../core/types'
+import type { ColisEvent, Order, Segment, Settings, StockShortage, Workday } from '../core/types'
 import { DEFAULT_SETTINGS } from '../core/types'
 
 /**
@@ -18,6 +18,7 @@ export class PrepaDB extends Dexie {
   orders!: Table<Order, string>
   segments!: Table<Segment, string>
   colisEvents!: Table<ColisEvent, string>
+  stockShortages!: Table<StockShortage, string>
   settings!: Table<Settings, string>
   meta!: Table<MetaRow, string>
 
@@ -32,6 +33,9 @@ export class PrepaDB extends Dexie {
     })
     this.version(2).stores({
       meta: 'key',
+    })
+    this.version(3).stores({
+      stockShortages: 'id, workdayId, orderId, at, syncState',
     })
   }
 }
@@ -79,9 +83,15 @@ export async function wipeAll(): Promise<void> {
   const at = Date.now()
   await db.transaction(
     'rw',
-    [db.workdays, db.orders, db.segments, db.colisEvents],
+    [db.workdays, db.orders, db.segments, db.colisEvents, db.stockShortages],
     async () => {
-      for (const table of [db.workdays, db.orders, db.segments, db.colisEvents]) {
+      for (const table of [
+        db.workdays,
+        db.orders,
+        db.segments,
+        db.colisEvents,
+        db.stockShortages,
+      ]) {
         // `modify()` réécrit en place, sans charger toute la table en mémoire.
         await (
           table as Table<

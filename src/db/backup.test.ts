@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { buildBackup, restoreBackup } from './backup'
 import { db } from './db'
-import type { Segment, Workday } from '../core/types'
+import type { Segment, StockShortage, Workday } from '../core/types'
 
 const T = new Date(2026, 6, 31, 13, 0, 0).getTime()
 
@@ -37,14 +37,29 @@ function segment(over: Partial<Segment> = {}): Segment {
   }
 }
 
+function shortage(over: Partial<StockShortage> = {}): StockShortage {
+  return {
+    id: 'r1',
+    workdayId: 'w1',
+    orderId: 'o1',
+    at: T + 300_000,
+    quantity: 4,
+    resolved: false,
+    updatedAt: T,
+    syncState: 'synced',
+    ...over,
+  }
+}
+
 describe('export', () => {
   it('emporte tout et annonce ce qu’il contient', async () => {
     await db.workdays.put(workday())
     await db.segments.bulkPut([segment(), segment({ id: 's2' })])
+    await db.stockShortages.put(shortage())
 
     const backup = await buildBackup()
     expect(backup.format).toBe('prepatrack-backup')
-    expect(backup.counts).toMatchObject({ workdays: 1, segments: 2 })
+    expect(backup.counts).toMatchObject({ workdays: 1, segments: 2, stockShortages: 1 })
     expect(backup.workdays[0].id).toBe('w1')
     // Les réglages voyagent avec, pour ne pas avoir à les refaire à la main.
     expect(backup.settings.targetRate).toBe(110)
@@ -53,6 +68,7 @@ describe('export', () => {
   it('reste relisible après un aller-retour par JSON', async () => {
     await db.workdays.put(workday())
     await db.segments.put(segment())
+    await db.stockShortages.put(shortage())
     const json = JSON.stringify(await buildBackup())
 
     await db.delete()
@@ -60,11 +76,12 @@ describe('export', () => {
     expect(await db.workdays.count()).toBe(0)
 
     const result = await restoreBackup(json)
-    expect(result.added).toBe(2)
+    expect(result.added).toBe(3)
 
     const restored = await db.segments.get('s1')
     expect(restored?.startedAt).toBe(T)
     expect(restored?.endedAt).toBe(T + 600_000)
+    expect(await db.stockShortages.get('r1')).toMatchObject({ quantity: 4, syncState: 'pending' })
   })
 })
 
@@ -78,6 +95,16 @@ describe('restauration', () => {
     await restoreBackup(json)
     // Sans cela, une base restaurée resterait invisible de l'autre appareil.
     expect((await db.workdays.get('w1'))?.syncState).toBe('pending')
+  })
+
+  it('accepte une ancienne sauvegarde sans rupture de stock', async () => {
+    await db.workdays.put(workday())
+    const backup = await buildBackup()
+    delete backup.stockShortages
+
+    await db.delete()
+    await db.open()
+    await expect(restoreBackup(JSON.stringify(backup))).resolves.toMatchObject({ added: 1 })
   })
 
   it('ne remplace jamais une donnée locale plus récente', async () => {

@@ -43,7 +43,7 @@ if (problems.length === 0) {
   const all = Object.values(sql).join('\n')
 
   // Tables de production.
-  for (const table of ['workdays', 'orders', 'segments', 'colis_events', 'preparers']) {
+  for (const table of ['workdays', 'orders', 'segments', 'colis_events', 'stock_shortages', 'preparers']) {
     check(
       new RegExp(`create table if not exists public\\.${table}\\b`, 'i').test(all),
       `la table « ${table} » n'est plus créée par le schéma`,
@@ -51,7 +51,7 @@ if (problems.length === 0) {
   }
 
   // Sécurité au niveau ligne : c'est elle qui isole les données de chacun.
-  for (const table of ['workdays', 'orders', 'segments', 'colis_events', 'preparers']) {
+  for (const table of ['workdays', 'orders', 'segments', 'colis_events', 'stock_shortages', 'preparers']) {
     check(
       new RegExp(`alter table public\\.${table} enable row level security`, 'i').test(all),
       `la sécurité au niveau ligne n'est plus activée sur « ${table} »`,

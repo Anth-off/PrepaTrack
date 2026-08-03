@@ -1,5 +1,12 @@
 import { db, getSettings } from './db'
-import type { ColisEvent, Order, Segment, Settings, Workday } from '../core/types'
+import type {
+  ColisEvent,
+  Order,
+  Segment,
+  Settings,
+  StockShortage,
+  Workday,
+} from '../core/types'
 
 /**
  * Sauvegarde et restauration complètes, en un seul fichier.
@@ -11,7 +18,7 @@ import type { ColisEvent, Order, Segment, Settings, Workday } from '../core/type
  */
 
 export const BACKUP_FORMAT = 'prepatrack-backup'
-export const BACKUP_VERSION = 1
+export const BACKUP_VERSION = 2
 
 export interface Backup {
   format: typeof BACKUP_FORMAT
@@ -22,15 +29,18 @@ export interface Backup {
   orders: Order[]
   segments: Segment[]
   colisEvents: ColisEvent[]
+  /** Facultatif à la lecture pour rester compatible avec les sauvegardes v1. */
+  stockShortages?: StockShortage[]
   settings: Settings
 }
 
 export async function buildBackup(): Promise<Backup> {
-  const [workdays, orders, segments, colisEvents, settings] = await Promise.all([
+  const [workdays, orders, segments, colisEvents, stockShortages, settings] = await Promise.all([
     db.workdays.toArray(),
     db.orders.toArray(),
     db.segments.toArray(),
     db.colisEvents.toArray(),
+    db.stockShortages.toArray(),
     getSettings(),
   ])
 
@@ -45,11 +55,13 @@ export async function buildBackup(): Promise<Backup> {
       orders: orders.length,
       segments: segments.length,
       colisEvents: colisEvents.length,
+      stockShortages: stockShortages.length,
     },
     workdays,
     orders,
     segments,
     colisEvents,
+    stockShortages,
     settings,
   }
 }
@@ -135,12 +147,13 @@ export async function restoreBackup(json: string): Promise<RestoreResult> {
 
   await db.transaction(
     'rw',
-    [db.workdays, db.orders, db.segments, db.colisEvents],
+    [db.workdays, db.orders, db.segments, db.colisEvents, db.stockShortages],
     async () => {
       await merge(db.workdays, parsed.workdays, result)
       await merge(db.orders, parsed.orders, result)
       await merge(db.segments, parsed.segments, result)
       await merge(db.colisEvents, parsed.colisEvents, result)
+      await merge(db.stockShortages, parsed.stockShortages ?? [], result)
     },
   )
 

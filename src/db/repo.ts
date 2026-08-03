@@ -18,6 +18,7 @@ import type {
   OrderType,
   Segment,
   SegmentType,
+  StockShortage,
   SuspendedRef,
   Supports,
   Workday,
@@ -430,6 +431,91 @@ export async function colisEventsFor(workdayId: string): Promise<ColisEvent[]> {
   return events.filter((e) => !e.deletedAt).sort((a, b) => a.at - b.at)
 }
 
+// --- Ruptures de stock ----------------------------------------------------
+
+export interface StockShortageInput {
+  quantity: number
+}
+
+function cleanShortageInput(input: StockShortageInput): StockShortageInput {
+  const quantity = Math.trunc(input.quantity)
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    throw new Error('La quantité manquante doit être strictement positive.')
+  }
+  return { quantity }
+}
+
+/** Signale une rupture uniquement lorsqu'une commande est réellement engagée. */
+export async function createStockShortage(
+  input: StockShortageInput,
+  at: number = Date.now(),
+): Promise<StockShortage | undefined> {
+  const snap = await loadSnapshot()
+  const view = deriveView(snap)
+  if (!snap.workday || !view.inOrder || !view.order) return undefined
+
+  const shortage: StockShortage = stamp({
+    id: uid(),
+    workdayId: snap.workday.id,
+    orderId: view.order.id,
+    at,
+    ...cleanShortageInput(input),
+    resolved: false,
+    updatedAt: 0,
+    syncState: 'pending',
+  })
+  await db.stockShortages.put(shortage)
+  return shortage
+}
+
+export async function updateStockShortage(
+  id: string,
+  patch: Partial<StockShortageInput> & { resolved?: boolean },
+): Promise<void> {
+  const current = await db.stockShortages.get(id)
+  if (!current || current.deletedAt) return
+  const cleaned = cleanShortageInput({
+    quantity: patch.quantity ?? current.quantity,
+  })
+  await db.stockShortages.put(
+    stamp({ ...current, ...cleaned, resolved: patch.resolved ?? current.resolved }),
+  )
+}
+
+export async function setStockShortageResolved(id: string, resolved: boolean): Promise<void> {
+  await updateStockShortage(id, { resolved })
+}
+
+export async function deleteStockShortage(id: string, at: number = Date.now()): Promise<void> {
+  const shortage = await db.stockShortages.get(id)
+  if (!shortage || shortage.deletedAt) return
+  shortage.deletedAt = at
+  const deleted = stamp(shortage)
+  deleted.updatedAt = Math.max(deleted.updatedAt, at)
+  await db.stockShortages.put(deleted)
+}
+
+export async function stockShortagesFor(workdayId: string): Promise<StockShortage[]> {
+  const rows = await db.stockShortages.where('workdayId').equals(workdayId).toArray()
+  return rows.filter((row) => !row.deletedAt).sort((a, b) => a.at - b.at)
+}
+
+export function shortageTotal(rows: StockShortage[], orderId: string): number {
+  return rows
+    .filter((row) => row.orderId === orderId && !row.deletedAt)
+    .reduce((sum, row) => sum + row.quantity, 0)
+}
+
+/** Écart qui reste réellement inexpliqué après les ruptures signalées. */
+export function unexplainedColis(
+  planned: number,
+  prepared: number,
+  rows: StockShortage[],
+  orderId: string,
+): number {
+  return Math.max(0, planned - prepared - shortageTotal(rows, orderId))
+}
+
 // --- Corrections a posteriori ---------------------------------------------
 
 /**
@@ -536,9 +622,15 @@ export async function claimOrphans(ownerId: string): Promise<number> {
 
   await db.transaction(
     'rw',
-    [db.workdays, db.orders, db.segments, db.colisEvents],
+    [db.workdays, db.orders, db.segments, db.colisEvents, db.stockShortages],
     async () => {
-      for (const table of [db.workdays, db.orders, db.segments, db.colisEvents]) {
+      for (const table of [
+        db.workdays,
+        db.orders,
+        db.segments,
+        db.colisEvents,
+        db.stockShortages,
+      ]) {
         claimed += await (
           table as Table<
             { ownerId?: string; updatedAt: number; syncState: 'pending' | 'synced' },
@@ -575,7 +667,7 @@ export async function deleteWorkday(workdayId: string): Promise<void> {
 
   await db.transaction(
     'rw',
-    [db.workdays, db.orders, db.segments, db.colisEvents],
+    [db.workdays, db.orders, db.segments, db.colisEvents, db.stockShortages],
     async () => {
       const workday = await db.workdays.get(workdayId)
       if (!workday) return
@@ -588,6 +680,7 @@ export async function deleteWorkday(workdayId: string): Promise<void> {
       await db.orders.where('workdayId').equals(workdayId).modify(mark)
       await db.segments.where('workdayId').equals(workdayId).modify(mark)
       await db.colisEvents.where('workdayId').equals(workdayId).modify(mark)
+      await db.stockShortages.where('workdayId').equals(workdayId).modify(mark)
     },
   )
 }

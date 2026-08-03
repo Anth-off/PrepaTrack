@@ -7,12 +7,14 @@ import {
   addColis,
   advanceOrder,
   colisEventsFor,
+  createStockShortage,
   endBriefing,
   endInterruption,
   loadSnapshot,
   startDay,
   startInterruption,
   startOrder,
+  stockShortagesFor,
 } from './repo'
 import {
   getUndoNotice,
@@ -55,6 +57,27 @@ describe('annulation de la dernière action', () => {
     const raw = await db.colisEvents.where('orderId').equals(orderId).first()
     expect(raw?.deletedAt).toBeDefined()
     expect(raw?.syncState).toBe('pending')
+  })
+
+  it('annule un appui hors stock sans toucher au compteur préparé', async () => {
+    const orderId = await beginPicking()
+
+    await performUndoable(
+      '1 colis hors stock',
+      () => createStockShortage({ quantity: 1 }, at(20)),
+      at(20),
+    )
+    const workdayId = (await loadSnapshot()).workday!.id
+    expect(await stockShortagesFor(workdayId)).toHaveLength(1)
+    expect(await colisEventsFor(workdayId)).toHaveLength(0)
+
+    expect(await undoLastAction(at(20) + 1_000)).toBe(true)
+    expect(await stockShortagesFor(workdayId)).toHaveLength(0)
+    expect(await colisEventsFor(workdayId)).toHaveLength(0)
+
+    const raw = await db.stockShortages.where('orderId').equals(orderId).first()
+    expect(raw).toMatchObject({ syncState: 'pending' })
+    expect(raw?.deletedAt).toBeDefined()
   })
 
   it('annule le démarrage d’un trajet et rouvre la prépa', async () => {

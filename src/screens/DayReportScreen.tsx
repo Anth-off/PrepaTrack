@@ -6,12 +6,18 @@ import { TimeBreakdown } from '../components/TimeBreakdown'
 import { Timeline } from '../components/Timeline'
 import { isRateMeaningful, type OrderMetrics } from '../core/metrics'
 import { formatDayLabel, formatShort, hhmm } from '../core/time'
-import type { SupportKind } from '../core/types'
-import { deleteWorkday } from '../db/repo'
+import type { StockShortage, SupportKind } from '../core/types'
+import {
+  deleteStockShortage,
+  deleteWorkday,
+  setStockShortageResolved,
+  updateStockShortage,
+} from '../db/repo'
 import { useDay } from '../hooks/useDay'
 import { useNow } from '../hooks/useNow'
 import { CorrectSheet } from './CorrectSheet'
 import { OrderEditSheet } from './OrderEditSheet'
+import { StockShortageSheet } from './StockShortageSheet'
 import type { Order, Segment } from '../core/types'
 
 interface Props {
@@ -31,10 +37,11 @@ const SUPPORT_SHORT: Record<SupportKind, string> = {
 /** Bilan complet d'une journée : chiffres, répartition, commandes, tracé. */
 export function DayReportScreen({ workdayId, onBack }: Props) {
   const now = useNow(15_000)
-  const { snap, events, day, targetRate, loading } = useDay(workdayId)
+  const { snap, events, shortages, day, targetRate, loading } = useDay(workdayId)
   const [editing, setEditing] = useState<Segment | undefined>()
   const [editingOrder, setEditingOrder] = useState<Order | undefined>()
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [editingShortage, setEditingShortage] = useState<StockShortage | undefined>()
 
   // Les mêmes règles que le tableau de bord, appliquées à cette seule journée :
   // celles qui demandent un historique se taisent d'elles-mêmes.
@@ -57,6 +64,8 @@ export function DayReportScreen({ workdayId, onBack }: Props) {
   if (loading) return <Placeholder text="Chargement…" onBack={onBack} />
   if (!snap || !day) return <Placeholder text="Aucune donnée pour ce jour." onBack={onBack} />
   const date = snap.workday!.date
+  const planned = snap.orders.reduce((sum, order) => sum + order.colisPlanned, 0)
+  const shortageQuantity = shortages.reduce((sum, shortage) => sum + shortage.quantity, 0)
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col">
@@ -90,6 +99,17 @@ export function DayReportScreen({ workdayId, onBack }: Props) {
 
         <RateCards day={day} targetRate={targetRate} />
 
+        <section className="card">
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
+            Colis de la journée
+          </h3>
+          <div className="mt-2 grid grid-cols-3 gap-2 text-center">
+            <Mini label="Prévus" value={String(planned)} />
+            <Mini label="Préparés" value={String(day.colis)} />
+            <Mini label="En rupture" value={String(shortageQuantity)} />
+          </div>
+        </section>
+
         {day.overtime > 0 && (
           <div className="card flex items-center justify-between">
             <span className="text-sm font-semibold text-slate-400">
@@ -120,6 +140,37 @@ export function DayReportScreen({ workdayId, onBack }: Props) {
                   onEdit={() => setEditingOrder(m.order)}
                 />
               ))}
+            </div>
+          </section>
+        )}
+
+        {shortages.length > 0 && (
+          <section>
+            <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">
+              Ruptures de stock
+            </h3>
+            <div className="flex flex-col gap-2">
+              {shortages.map((shortage) => {
+                const orderIndex = snap.orders.findIndex((order) => order.id === shortage.orderId)
+                return (
+                  <button
+                    key={shortage.id}
+                    type="button"
+                    onClick={() => setEditingShortage(shortage)}
+                    className="card pressable text-left"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-bold text-warn">
+                        📦 {shortage.quantity} colis · commande #{orderIndex + 1}
+                      </span>
+                      <span className={shortage.resolved ? 'text-ok' : 'text-warn'}>
+                        {shortage.resolved ? 'Résolue' : 'À traiter'}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-600">{hhmm(shortage.at)} · modifier</p>
+                  </button>
+                )
+              })}
             </div>
           </section>
         )}
@@ -175,6 +226,19 @@ export function DayReportScreen({ workdayId, onBack }: Props) {
 
       <CorrectSheet segment={editing} onClose={() => setEditing(undefined)} />
       <OrderEditSheet order={editingOrder} onClose={() => setEditingOrder(undefined)} />
+      <StockShortageSheet
+        shortage={editingShortage}
+        onClose={() => setEditingShortage(undefined)}
+        onSave={async (input) => {
+          if (editingShortage) await updateStockShortage(editingShortage.id, input)
+        }}
+        onSetResolved={async (resolved) => {
+          if (editingShortage) await setStockShortageResolved(editingShortage.id, resolved)
+        }}
+        onDelete={async () => {
+          if (editingShortage) await deleteStockShortage(editingShortage.id)
+        }}
+      />
     </div>
   )
 }

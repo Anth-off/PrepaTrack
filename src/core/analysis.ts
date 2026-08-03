@@ -2,7 +2,14 @@ import type { DayMetrics, OrderMetrics } from './metrics'
 import { isRateMeaningful, rate, segmentDuration } from './metrics'
 import { segmentDef } from './segments'
 import { HOUR } from './time'
-import type { ColisEvent, OrderType, Segment, SegmentType, SupportKind } from './types'
+import type {
+  ColisEvent,
+  OrderType,
+  Segment,
+  SegmentType,
+  StockShortage,
+  SupportKind,
+} from './types'
 
 /**
  * Analyses croisées sur plusieurs vacations.
@@ -18,6 +25,8 @@ export interface DayData {
   date: string
   segments: Segment[]
   events: ColisEvent[]
+  /** Absent sur les anciennes données et les fixtures antérieures à cette fonctionnalité. */
+  shortages?: StockShortage[]
   metrics: DayMetrics
 }
 
@@ -327,6 +336,8 @@ export interface OwnerDay {
   wasteTime: number
   incidentCount: number
   ordersCount: number
+  shortageQuantity: number
+  unresolvedShortages: number
   /** Dernier instant enregistré, pour situer la fraîcheur de ce qui est remonté. */
   lastActivity?: number
   /** Vrai quand les chiffres peuvent entrer dans les totaux de l'équipe. */
@@ -365,6 +376,7 @@ export function byOwnerForDate(
       (s) =>
         !s.deletedAt && (s.type.startsWith('incident_') || s.type.startsWith('custom_')),
     ).length
+    const shortages = (day.shortages ?? []).filter((shortage) => !shortage.deletedAt)
 
     const lastActivity = day.segments.reduce(
       (max, s) => Math.max(max, s.endedAt ?? s.startedAt),
@@ -381,6 +393,8 @@ export function byOwnerForDate(
       wasteTime: day.metrics.wasteTime,
       incidentCount,
       ordersCount: day.metrics.ordersCount,
+      shortageQuantity: shortages.reduce((sum, shortage) => sum + shortage.quantity, 0),
+      unresolvedShortages: shortages.filter((shortage) => !shortage.resolved).length,
       lastActivity: lastActivity > 0 ? lastActivity : undefined,
       countable,
     })
@@ -397,6 +411,8 @@ export function byOwnerForDate(
       wasteTime: 0,
       incidentCount: 0,
       ordersCount: 0,
+      shortageQuantity: 0,
+      unresolvedShortages: 0,
       countable: false,
     })
   }
