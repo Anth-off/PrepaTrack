@@ -4,8 +4,8 @@
 
 @layer base {
   /**
-   * Chaîne de hauteurs calée sur le viewport plein écran fourni par
-   * `black-translucent`, sans les variations des unités `vh` dans Safari.
+   * Chaîne de hauteurs calée sur le viewport accordé par iOS, sans les
+   * variations des unités `vh` dans Safari.
    */
   /* La chaîne doit être complète : un maillon manquant et le pourcentage se
      résout en « auto », l'application ne faisant alors que la hauteur de son
@@ -17,8 +17,11 @@
   }
 
   html {
-    /* Fond de l'application dans toute la zone plein écran. */
-    background: theme('colors.ink.900');
+    /* En app installée, iOS laisse 59 px sous son viewport sur l'iPhone 15
+       Plus. Cette zone ne peut contenir aucun élément HTML : le fond racine la
+       peint donc comme le prolongement exact de la barre d'onglets. La coque
+       opaque conserve, elle, le fond ink-900 du contenu. */
+    background: theme('colors.ink.800');
     /* Empêche le zoom au double-tap : en pleine prépa, un zoom accidentel
        rend l'app inutilisable le temps de le défaire. */
     touch-action: manipulation;

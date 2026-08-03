@@ -18,10 +18,11 @@ export default defineConfig({
         name: 'PrepaTrack',
         short_name: 'PrepaTrack',
         description: 'Suivi de production preparateur de commandes',
-        // Noir pur : la bande que le système laisse sous une app installée est
-        // noire, ces couleurs doivent s'y accorder.
-        theme_color: '#000000',
-        background_color: '#000000',
+        // Même teinte que la barre d'onglets : sur iOS, la bande située hors
+        // du viewport de l'app installée est peinte par le système à partir de
+        // ces couleurs, et non par un élément de la page.
+        theme_color: '#0b0f14',
+        background_color: '#0b0f14',
         display: 'standalone',
         orientation: 'portrait',
         start_url: '/',
