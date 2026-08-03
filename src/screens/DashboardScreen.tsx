@@ -88,7 +88,7 @@ export function DashboardScreen({ onOpen }: Props) {
   const averageRate = totals.worked > 0 ? totals.colis / (totals.worked / 3_600_000) : 0
 
   return (
-    <div className="flex flex-col gap-4 px-4 py-4 md:px-6 md:py-6">
+    <div className="flex flex-col gap-4 px-4 pb-4 md:px-6 md:py-6">
       <div className="flex gap-1.5">
         {PERIODS.map((p) => (
           <button

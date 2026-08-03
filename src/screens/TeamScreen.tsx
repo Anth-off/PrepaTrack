@@ -93,7 +93,7 @@ export function TeamScreen({ profile, onOpenDay }: Props) {
   }
 
   return (
-    <div className="flex flex-col gap-4 px-4 py-4 md:px-6 md:py-6">
+    <div className="flex flex-col gap-4 px-4 pb-4 md:px-6 md:py-6">
       {error && (
         <p className="card text-sm text-bad">
           {error}

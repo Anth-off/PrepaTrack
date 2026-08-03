@@ -17,7 +17,7 @@ export function SettingsScreen({ sync }: { sync: SyncInfo }) {
   const patch = (p: Partial<Settings>) => saveSettings(p)
 
   return (
-    <div className="flex flex-col gap-4 px-4 py-4">
+    <div className="flex flex-col gap-4 px-4 pb-4">
       <HelpSection role={sync.profile?.role} />
 
       <BackupSection />
