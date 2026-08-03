@@ -1,0 +1,102 @@
+name: "✨ Proposer une amélioration"
+description: "Une nouvelle fonction ou une amélioration du fonctionnement de PrepaTrack."
+title: "[Fonctionnalité] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Décris d'abord le besoin pendant la vacation ou l'analyse sur PC. La solution technique pourra ensuite être choisie sans perdre de vue l'usage réel.
+
+  - type: textarea
+    id: need
+    attributes:
+      label: "Besoin"
+      description: "Quel problème concret souhaites-tu résoudre, et pour qui ?"
+      placeholder: "Pendant la préparation, je voudrais… afin de…"
+    validations:
+      required: true
+
+  - type: textarea
+    id: current_workflow
+    attributes:
+      label: "Fonctionnement actuel"
+      description: "Comment fais-tu aujourd'hui, et qu'est-ce qui te fait perdre du temps ou crée des erreurs ?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: "Solution souhaitée"
+      description: "Décris l'écran, le bouton ou le comportement imaginé. Une capture annotée est bienvenue."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: users
+    attributes:
+      label: "Utilisateurs concernés"
+      multiple: true
+      options:
+        - "Préparateur sur iPhone"
+        - "Préparateur sur PC"
+        - "Gestionnaire"
+        - "Toute l'équipe"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: "Partie de l'application"
+      options:
+        - "Journée et chronos"
+        - "Commandes"
+        - "Aléas, pauses ou trajets"
+        - "Statistiques"
+        - "Équipe et gestionnaire"
+        - "Synchronisation"
+        - "Réglages"
+        - "Sauvegarde ou export"
+        - "Autre"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: offline
+    attributes:
+      label: "Doit fonctionner hors ligne ?"
+      options:
+        - "Oui, indispensable pendant la vacation"
+        - "Non, une connexion est acceptable"
+        - "Je ne sais pas"
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: "Critères de réussite"
+      description: "Liste les résultats qui permettraient de considérer la fonctionnalité terminée."
+      placeholder: |
+        - [ ] Le préparateur peut …
+        - [ ] La donnée apparaît sur le PC après synchronisation
+        - [ ] Le fonctionnement hors ligne est conservé
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: "Informations supplémentaires"
+      description: "Maquette, exemple, contrainte métier ou solution alternative."
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: "Vérification"
+      options:
+        - label: "J'ai recherché une demande similaire déjà ouverte."
+          required: true

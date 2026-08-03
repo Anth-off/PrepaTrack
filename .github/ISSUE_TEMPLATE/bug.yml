@@ -1,0 +1,108 @@
+name: "🐛 Signaler un bug"
+description: "Un écran, un chrono, un calcul ou une action ne fonctionne pas comme prévu."
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Merci de décrire le problème avec des faits observables. Une capture d'écran et le diagnostic d'affichage permettent généralement de le reproduire rapidement.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: "Problème constaté"
+      description: "Que s'est-il passé ? Indique le message affiché et les données concernées."
+      placeholder: "Exemple : après avoir terminé une commande, le chrono reste actif et apparaît encore dans la journée."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: "Résultat attendu"
+      placeholder: "Ce qui aurait dû se passer à la place."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: "Étapes pour reproduire"
+      description: "Pars de l'ouverture de l'application et numérote chaque action."
+      placeholder: |
+        1. Ouvrir Journée
+        2. Démarrer une commande de 20 colis
+        3. Appuyer sur …
+        4. Constater que …
+    validations:
+      required: true
+
+  - type: dropdown
+    id: device
+    attributes:
+      label: "Appareil concerné"
+      options:
+        - "iPhone"
+        - "PC"
+        - "iPhone et PC"
+        - "Autre"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: display_mode
+    attributes:
+      label: "Mode d'utilisation"
+      options:
+        - "Application installée sur l'écran d'accueil"
+        - "Safari"
+        - "Chrome / Edge sur PC"
+        - "Autre navigateur"
+        - "Je ne sais pas"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: network
+    attributes:
+      label: "État du réseau au moment du problème"
+      options:
+        - "Hors ligne / mode avion"
+        - "Connexion instable"
+        - "Connecté à Internet"
+        - "Je ne sais pas"
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostic
+    attributes:
+      label: "Diagnostic PrepaTrack"
+      description: "Dans Réglages → Diagnostic d'affichage, appuie sur « Copier ces informations » puis colle le résultat ici."
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: "Captures d'écran ou vidéo"
+      description: "Glisse les fichiers ici. Masque toute donnée personnelle si nécessaire."
+
+  - type: textarea
+    id: context
+    attributes:
+      label: "Contexte supplémentaire"
+      description: "Fréquence, première apparition, contournement trouvé ou autre détail utile."
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: "Vérifications"
+      options:
+        - label: "J'ai recherché une issue identique déjà ouverte."
+          required: true
+        - label: "Je n'ai publié ni code personnel, ni secret, ni mot de passe."
+          required: true

@@ -1,0 +1,110 @@
+name: "🔄 Problème de synchronisation"
+description: "Une donnée existe sur l'iPhone mais manque, diffère ou disparaît sur le PC, ou inversement."
+title: "[Synchronisation] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ce formulaire sert aux écarts entre appareils. Ne publie jamais ton code personnel à 6 chiffres, un mot de passe ou une clé Supabase.
+
+  - type: dropdown
+    id: direction
+    attributes:
+      label: "Sens de synchronisation en échec"
+      options:
+        - "iPhone → PC"
+        - "PC → iPhone"
+        - "Dans les deux sens"
+        - "Je ne sais pas"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: data_type
+    attributes:
+      label: "Donnée concernée"
+      options:
+        - "Journée"
+        - "Commande"
+        - "Chrono / segment"
+        - "Aléa"
+        - "Colis"
+        - "Compte ou équipe"
+        - "Suppression ou correction"
+        - "Autre"
+    validations:
+      required: true
+
+  - type: textarea
+    id: difference
+    attributes:
+      label: "Différence entre les appareils"
+      description: "Indique précisément ce qui apparaît sur chaque appareil."
+      placeholder: |
+        iPhone : l'aléa « Matériel » apparaît pendant 12 min.
+        PC : la même période apparaît comme « Aléa supprimé ».
+    validations:
+      required: true
+
+  - type: textarea
+    id: chronology
+    attributes:
+      label: "Actions effectuées et horaires"
+      description: "Décris l'ordre des actions, les passages hors ligne/en ligne et l'heure approximative de chaque étape."
+      placeholder: |
+        1. 08:15 — création de la journée sur iPhone, hors ligne
+        2. 12:30 — connexion au Wi-Fi et ouverture de PrepaTrack
+        3. 18:00 — ouverture de l'équipe sur PC
+    validations:
+      required: true
+
+  - type: dropdown
+    id: same_account
+    attributes:
+      label: "Compte utilisé"
+      description: "Ne donne pas le code personnel."
+      options:
+        - "Même numéro de badge sur les deux appareils"
+        - "Comptes différents (préparateur et gestionnaire)"
+        - "Un appareil n'est pas connecté"
+        - "Je ne sais pas"
+    validations:
+      required: true
+
+  - type: textarea
+    id: iphone_diagnostic
+    attributes:
+      label: "Diagnostic de l'iPhone"
+      description: "Réglages → Diagnostic d'affichage → Copier ces informations."
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: pc_diagnostic
+    attributes:
+      label: "Diagnostic du PC"
+      description: "Réglages → Diagnostic d'affichage → Copier ces informations."
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: "Captures des deux appareils"
+      description: "Si possible, montre la même journée ou la même commande sur les deux écrans."
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: "Vérifications"
+      options:
+        - label: "J'ai ouvert l'application sur les deux appareils avec une connexion Internet pour laisser la synchronisation se terminer."
+          required: true
+        - label: "J'ai vérifié le numéro de build affiché sur les deux appareils."
+          required: true
+        - label: "Je n'ai publié aucun code personnel, mot de passe ou secret."
+          required: true
