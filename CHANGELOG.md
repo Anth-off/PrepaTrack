@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.2.0...v0.2.1) (2026-08-03)
+
+
+### Corrections
+
+* **mobile:** supprimer le défilement de l'écran Journée ([c85622e](https://github.com/N0thyTVOff/PrepaTrack/commit/c85622e9edf35b9f9a007248982a7a89ed4367ad))
+
 ## [0.2.0](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.1.7...v0.2.0) (2026-08-03)
 
 
