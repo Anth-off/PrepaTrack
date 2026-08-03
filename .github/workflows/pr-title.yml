@@ -36,6 +36,8 @@ jobs:
     # Please lit bien un message conventionnel après la fusion en squash.
     if: github.event.pull_request.user.login != 'dependabot[bot]'
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
       # Action de référence pour ce contrôle, épinglée sur une version majeure.
       # `pull_request_target` lui donne le droit de commenter les PR de forks,
       # sans jamais exécuter le code de la branche proposée.
@@ -61,3 +63,12 @@ jobs:
             par une minuscule et décrire le changement à l'infinitif ou au
             présent. Exemple : « fix: corriger le chrono après une interruption ».
           wip: true
+
+      # Release Please sait remplacer le commit fusionné par un bloc détaillé
+      # présent dans le corps de la PR. Ce contrôle évite qu'une fonctionnalité
+      # ou une correction sorte avec le texte générique du gabarit.
+      - name: Vérifier les notes de version
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: node scripts/check-release-notes.mjs

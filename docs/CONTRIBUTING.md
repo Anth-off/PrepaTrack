@@ -120,9 +120,47 @@ l'intérieur de la branche sont libres.
 
 1. Pousser la branche, ouvrir la PR vers `main`.
 2. Donner un titre au format Conventional Commits.
-3. Remplir le gabarit — en particulier **Points d'attention** si le changement touche
-   un calcul de temps, le schéma de base ou le format des données stockées.
+3. Remplir le gabarit — en particulier **Notes de version** et **Points d'attention**
+   si le changement touche un calcul de temps, le schéma de base ou le format des
+   données stockées.
 4. Attendre la CI.
+
+### Rédiger les notes de version
+
+Le bloc compris entre `BEGIN_COMMIT_OVERRIDE` et `END_COMMIT_OVERRIDE` est la source
+des informations affichées dans `CHANGELOG.md` et dans la page **Releases** de GitHub.
+Release Please prend officiellement en charge ce mécanisme avec les fusions en squash
+utilisées par le dépôt.
+
+Pour une modification visible, remplace la ligne générique du gabarit par une phrase
+concrète, compréhensible sans connaître le code :
+
+```text
+BEGIN_COMMIT_OVERRIDE
+fix(mobile): supprimer l'espace vide sous la barre de navigation sur iPhone
+END_COMMIT_OVERRIDE
+```
+
+Si la même PR apporte plusieurs effets utiles, sépare-les par une ligne vide. Chacun
+deviendra une entrée distincte dans la même release :
+
+```text
+BEGIN_COMMIT_OVERRIDE
+feat(prepa): compter un colis hors stock en un seul appui
+
+fix(stats): séparer les colis préparés des colis hors stock
+END_COMMIT_OVERRIDE
+```
+
+Le premier type doit rester identique à celui du titre de la PR afin que le calcul de
+version reste correct. Les détails d'implémentation, noms de fichiers et termes
+techniques restent dans **Ce que fait ce changement** ; les notes de version décrivent
+uniquement ce que la personne utilisant l'application gagne ou voit changer.
+
+Le workflow **Vérifier le format** refuse une PR visible qui conserve la phrase
+générique, oublie les marqueurs ou utilise une entrée mal formée. Les maintenances
+internes (`chore`, `ci`, `build`, `test`) gardent la ligne générique et restent masquées
+du changelog.
 
 ---
 
@@ -158,6 +196,10 @@ Elle contient :
 
 - la nouvelle version dans `package.json` et `.release-please-manifest.json` ;
 - le `CHANGELOG.md` rédigé à partir des commits.
+
+Les entrées détaillées viennent des blocs **Notes de version** remplis dans chaque PR.
+Il est donc possible de regrouper plusieurs PR dans une seule release tout en gardant
+une liste lisible de chaque changement réellement visible.
 
 **Tant qu'elle n'est pas fusionnée, rien n'est déployé.** Elle s'enrichit à chaque
 changement fusionné dans `main`.

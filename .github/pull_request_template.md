@@ -18,6 +18,28 @@
 
 <!-- Le problème constaté, ou le besoin exprimé. -->
 
+## Notes de version
+
+<!--
+  Ce bloc alimente directement le changelog et la page Releases de GitHub.
+
+  Pour une fonctionnalité, correction, performance, refactorisation ou
+  documentation, remplace la ligne `chore:` ci-dessous par une phrase claire du
+  point de vue de l'utilisateur. Ajoute un paragraphe Conventional Commit par
+  effet visible si la PR en contient plusieurs, par exemple :
+
+      feat(prepa): compter un colis hors stock en un seul appui
+
+      fix(stats): séparer les colis préparés des colis hors stock
+
+  Garde impérativement les deux marqueurs. Pour une maintenance purement
+  interne (`chore`, `ci`, `build` ou `test`), conserve la ligne proposée.
+-->
+
+BEGIN_COMMIT_OVERRIDE
+chore: aucune note utilisateur pour cette maintenance interne
+END_COMMIT_OVERRIDE
+
 ## Vérifications
 
 - [ ] `npm test` passe
