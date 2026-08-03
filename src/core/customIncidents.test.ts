@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { losses } from './analysis'
 import { computeDayMetrics } from './metrics'
-import { categoryOf, isInterruption, registerCustomIncidents, segmentDef } from './segments'
+import {
+  categoryOf,
+  INCIDENT_TYPES,
+  isInterruption,
+  registerCustomIncidents,
+  segmentDef,
+} from './segments'
 import type { Snapshot } from './machine'
 import type { Segment } from './types'
 
@@ -33,6 +39,23 @@ describe('résolution des types de segments', () => {
   it('résout les types livrés', () => {
     expect(segmentDef('picking').label).toBe('Préparation')
     expect(segmentDef('break_30').category).toBe('break')
+  })
+
+  it('propose les cinq mêmes aléas canoniques sur tous les appareils', () => {
+    expect(INCIDENT_TYPES).toEqual([
+      'incident_material',
+      'incident_bug',
+      'incident_discussion',
+      'incident_forklift',
+      'incident_drink',
+    ])
+    expect(INCIDENT_TYPES.map((type) => segmentDef(type).short)).toEqual([
+      'Matériel',
+      'Bug',
+      'Discussion',
+      'Cariste',
+      'Boire',
+    ])
   })
 
   it('ne renvoie jamais undefined sur un type inconnu', () => {

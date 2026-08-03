@@ -4,6 +4,7 @@ import { getSettings, saveSettings, wipeAll } from '../db/db'
 import type { Settings } from '../core/types'
 import type { SyncInfo } from '../hooks/useSync'
 import type { CartMotionControl } from '../hooks/useCartMotion'
+import { INCIDENT_TYPES, segmentDef } from '../core/segments'
 import { BackupSection } from './BackupSection'
 import { CartMotionSection } from './CartMotionSection'
 import { DiagnosticSection } from './DiagnosticSection'
@@ -118,7 +119,7 @@ export function SettingsScreen({
         />
       </section>
 
-      <IncidentEditor settings={settings} />
+      <IncidentList />
 
       <section className="card">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
@@ -168,118 +169,25 @@ export function SettingsScreen({
   )
 }
 
-const SUGGESTED_EMOJI = ['📦', '🚫', '💥', '🔍', '❄️', '🧾', '🚧', '🅿️']
-
-/**
- * Éditeur des types d'aléas.
- *
- * Un aléa supprimé reste résolu à l'affichage par le registre de repli : les
- * journées où il avait servi gardent un libellé lisible plutôt qu'un écran cassé.
- */
-function IncidentEditor({ settings }: { settings: Settings }) {
-  const [label, setLabel] = useState('')
-  const [emoji, setEmoji] = useState(SUGGESTED_EMOJI[0])
-  const [error, setError] = useState<string | undefined>()
-
-  async function add() {
-    const name = label.trim()
-    if (name.length < 2) return setError('Donne un nom à cet aléa.')
-    if (settings.incidents.some((i) => i.label.toLowerCase() === name.toLowerCase())) {
-      return setError('Un aléa porte déjà ce nom.')
-    }
-    setError(undefined)
-    await saveSettings({
-      incidents: [
-        ...settings.incidents,
-        // Clé stable et unique : renommer l'aléa plus tard ne doit pas couper le
-        // lien avec les segments déjà enregistrés.
-        { key: `custom_${Date.now().toString(36)}`, label: name, emoji },
-      ],
-    })
-    setLabel('')
-  }
-
-  async function remove(key: string) {
-    await saveSettings({ incidents: settings.incidents.filter((i) => i.key !== key) })
-  }
-
-  async function rename(key: string, next: string) {
-    await saveSettings({
-      incidents: settings.incidents.map((i) => (i.key === key ? { ...i, label: next } : i)),
-    })
-  }
-
+/** Liste fixe et identique sur tous les appareils. */
+function IncidentList() {
   return (
     <section className="card">
       <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
         Types d'aléas
       </h3>
       <p className="mb-3 mt-1 text-sm text-slate-500">
-        Les boutons proposés derrière « Aléa » pendant la vacation. Cinq maximum, pour
-        rester utilisables d'un coup d'œil.
+        Ces cinq aléas sont identiques sur l'iPhone et le PC, y compris hors ligne.
       </p>
 
       <ul className="flex flex-col gap-2">
-        {settings.incidents.map((incident) => (
-          <li key={incident.key} className="flex items-center gap-2">
-            <span className="w-8 text-center text-xl">{incident.emoji}</span>
-            <input
-              value={incident.label}
-              onChange={(e) => rename(incident.key, e.target.value)}
-              className="min-w-0 flex-1 rounded-lg border border-ink-600 bg-ink-900 px-2 py-2 text-sm"
-            />
-            <button
-              type="button"
-              onClick={() => remove(incident.key)}
-              className="pressable rounded-lg bg-ink-700 px-3 py-2 text-sm font-semibold text-bad"
-              aria-label={`Supprimer ${incident.label}`}
-            >
-              ✕
-            </button>
+        {INCIDENT_TYPES.map((type) => (
+          <li key={type} className="flex items-center gap-3 rounded-lg bg-ink-900 px-3 py-2">
+            <span className="w-8 text-center text-xl">{segmentDef(type).emoji}</span>
+            <span className="text-sm font-semibold text-slate-200">{segmentDef(type).short}</span>
           </li>
         ))}
       </ul>
-
-      {settings.incidents.length < 5 && (
-        <div className="mt-3 border-t border-ink-600 pt-3">
-          <div className="mb-2 flex flex-wrap gap-1">
-            {SUGGESTED_EMOJI.map((e) => (
-              <button
-                key={e}
-                type="button"
-                onClick={() => setEmoji(e)}
-                className={`pressable h-9 w-9 rounded-lg text-lg ${
-                  emoji === e ? 'bg-accent' : 'bg-ink-700'
-                }`}
-              >
-                {e}
-              </button>
-            ))}
-          </div>
-          <div className="flex gap-2">
-            <input
-              value={label}
-              onChange={(e) => setLabel(e.target.value)}
-              placeholder="Rupture, article introuvable…"
-              className="min-w-0 flex-1 rounded-lg border border-ink-600 bg-ink-900 px-3 py-2.5 text-sm"
-            />
-            <button
-              type="button"
-              onClick={add}
-              className="pressable rounded-lg bg-accent px-4 py-2.5 text-sm font-bold text-black"
-            >
-              Ajouter
-            </button>
-          </div>
-          {error && <p className="mt-2 text-sm text-bad">{error}</p>}
-        </div>
-      )}
-
-      <p className="mt-3 text-xs text-slate-600">
-        Ces réglages restent sur cet appareil : ils ne suivent pas la synchro. Chacun a donc
-        ses propres aléas, ce qui est voulu — mais pense à les recréer si tu changes de
-        téléphone.
-      </p>
     </section>
   )
 }

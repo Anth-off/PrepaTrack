@@ -159,6 +159,42 @@ export const SEGMENTS: Record<KnownSegmentType, SegmentDef> = {
     color: 'bg-pink-500',
     hex: '#ec4899',
   },
+  incident_bug: {
+    label: 'Bug',
+    short: 'Bug',
+    emoji: '🐛',
+    category: 'waste',
+    interruption: true,
+    color: 'bg-red-500',
+    hex: '#ef4444',
+  },
+  incident_discussion: {
+    label: 'Discussion',
+    short: 'Discussion',
+    emoji: '💬',
+    category: 'waste',
+    interruption: true,
+    color: 'bg-sky-500',
+    hex: '#0ea5e9',
+  },
+  incident_forklift: {
+    label: 'Cariste',
+    short: 'Cariste',
+    emoji: '🚜',
+    category: 'waste',
+    interruption: true,
+    color: 'bg-amber-500',
+    hex: '#f59e0b',
+  },
+  incident_drink: {
+    label: 'Boire',
+    short: 'Boire',
+    emoji: '💧',
+    category: 'waste',
+    interruption: true,
+    color: 'bg-cyan-500',
+    hex: '#06b6d4',
+  },
 
   break_10: {
     label: 'Pause 10 min',
@@ -185,8 +221,10 @@ export const ORDER_PHASES: SegmentType[] = ['order_setup', 'picking', 'wrapping'
 
 export const INCIDENT_TYPES: SegmentType[] = [
   'incident_material',
-  'incident_wait',
-  'incident_human',
+  'incident_bug',
+  'incident_discussion',
+  'incident_forklift',
+  'incident_drink',
 ]
 
 export const BREAK_TYPES: SegmentType[] = ['break_10', 'break_30']

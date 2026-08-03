@@ -28,6 +28,10 @@ export type KnownSegmentType =
   | 'incident_material'
   | 'incident_wait'
   | 'incident_human'
+  | 'incident_bug'
+  | 'incident_discussion'
+  | 'incident_forklift'
+  | 'incident_drink'
   // --- Pauses réglementaires ----------------------------------------------
   | 'break_10'
   | 'break_30'
@@ -158,6 +162,19 @@ export interface IncidentDef {
   emoji: string
 }
 
+/**
+ * Liste canonique des aléas. Les clés sont embarquées dans l'application afin
+ * qu'un segment créé hors ligne sur l'iPhone soit résolu de la même façon sur
+ * le PC après synchronisation.
+ */
+export const STANDARD_INCIDENTS: readonly IncidentDef[] = [
+  { key: 'incident_material', label: 'Matériel', emoji: '🔧' },
+  { key: 'incident_bug', label: 'Bug', emoji: '🐛' },
+  { key: 'incident_discussion', label: 'Discussion', emoji: '💬' },
+  { key: 'incident_forklift', label: 'Cariste', emoji: '🚜' },
+  { key: 'incident_drink', label: 'Boire', emoji: '💧' },
+]
+
 export interface CartMotionSettings {
   enabled: boolean
   /** Énergie RMS relevée pendant les deux étapes de calibration. */
@@ -183,7 +200,10 @@ export interface Settings {
     order: number
     break: number
   }
-  /** Liste éditable : permet d'ajouter un type d'aléa sans toucher au code. */
+  /**
+   * Anciennes définitions locales, conservées pour résoudre l'historique.
+   * Les nouveaux segments utilisent toujours `STANDARD_INCIDENTS`.
+   */
   incidents: IncidentDef[]
   soundAlerts: boolean
   /** Détection hors ligne des déplacements du chariot à partir des capteurs. */
@@ -203,11 +223,7 @@ export const DEFAULT_SETTINGS: Settings = {
     order: 150,
     break: 45,
   },
-  incidents: [
-    { key: 'incident_material', label: 'Matériel', emoji: '🔧' },
-    { key: 'incident_wait', label: 'Attente', emoji: '⏳' },
-    { key: 'incident_human', label: 'Humain', emoji: '👥' },
-  ],
+  incidents: [...STANDARD_INCIDENTS],
   soundAlerts: true,
   cartMotion: { enabled: false },
   updatedAt: 0,

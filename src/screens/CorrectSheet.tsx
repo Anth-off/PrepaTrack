@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { BigButton } from '../components/BigButton'
 import { Sheet } from '../components/Sheet'
-import { segmentDef } from '../core/segments'
+import { INCIDENT_TYPES, segmentDef } from '../core/segments'
 import { formatShort, fromLocalInput, toLocalInput } from '../core/time'
 import type { Segment, SegmentType } from '../core/types'
 import { deleteSegment, editSegmentBounds, retypeSegment, setSegmentNote } from '../db/repo'
@@ -19,9 +19,7 @@ const RETYPE_CHOICES: SegmentType[] = [
   'travel',
   'toilet',
   'pallet_change',
-  'incident_material',
-  'incident_wait',
-  'incident_human',
+  ...INCIDENT_TYPES,
   'break_10',
   'break_30',
   'idle',
