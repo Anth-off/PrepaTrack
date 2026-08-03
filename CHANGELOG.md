@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.1.4...v0.1.5) (2026-08-03)
+
+
+### Corrections
+
+* **mobile:** restaurer la zone sûre en haut ([#21](https://github.com/N0thyTVOff/PrepaTrack/issues/21)) ([814f494](https://github.com/N0thyTVOff/PrepaTrack/commit/814f494637aac324f6e70030bc01acbe89fe3b2d))
+
 ## [0.1.4](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.1.3...v0.1.4) (2026-08-03)
 
 
