@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.1.2...v0.1.3) (2026-08-03)
+
+
+### Corrections
+
+* **mobile:** supprimer l'espace sous la navigation iOS ([#17](https://github.com/N0thyTVOff/PrepaTrack/issues/17)) ([9eb84a9](https://github.com/N0thyTVOff/PrepaTrack/commit/9eb84a95c6ff04f6b05409c62457537dd68db69a))
+
 ## [0.1.2](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.1.1...v0.1.2) (2026-08-02)
 
 
