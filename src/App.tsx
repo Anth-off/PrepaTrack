@@ -97,12 +97,12 @@ export default function App() {
   )
 
   return (
-    // Les marges latérales restent sur la coque. La marge haute appartient à
-    // la zone de contenu défilante : elle protège la Dynamic Island en haut de
-    // page, puis défile avec le contenu au lieu de laisser un bandeau fixe.
+    // La marge haute reste sur la coque fixe : le contenu ne peut ainsi jamais
+    // passer sous l'heure ou la Dynamic Island pendant un défilement.
     <div
-      className="app-shell flex"
+      className="app-shell flex bg-ink-900"
       style={{
+        paddingTop: 'env(safe-area-inset-top)',
         paddingLeft: 'env(safe-area-inset-left)',
         paddingRight: 'env(safe-area-inset-right)',
       }}
@@ -149,10 +149,7 @@ export default function App() {
             `min-h-0` est indispensable : sans lui, un enfant de flex refuse de
             se réduire sous la taille de son contenu, la zone déborderait et on
             retomberait sur un défilement de page. */}
-        <main
-          className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain"
-          style={{ paddingTop: 'env(safe-area-inset-top)' }}
-        >
+        <main className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
           {content}
         </main>
 

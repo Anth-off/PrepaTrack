@@ -158,8 +158,8 @@ export function DiagnosticSection() {
       {debug && (
         <p className="mt-2 text-xs text-slate-500">
           Cadre vert : l'application. Cadre orange : la barre du bas. Pointillés bleus : la
-          zone de contenu. Tout rouge visible est de l'espace vide sous l'application. Une
-          capture d'écran suffit alors à situer le problème.
+          zone de contenu. Le rouge visible hors du cadre vert est extérieur à
+          l'application. Une capture d'écran suffit alors à situer le problème.
         </p>
       )}
     </section>

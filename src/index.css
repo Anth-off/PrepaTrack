@@ -96,6 +96,8 @@
   }
 
   .debug-layout body {
+    /* Le fond opaque de `.app-shell` empêche ce rouge de traverser les zones
+       transparentes situées à l'intérieur de l'application. */
     background: #7f1d1d;
   }
 
