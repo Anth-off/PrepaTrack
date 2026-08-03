@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.1.6...v0.1.7) (2026-08-03)
+
+
+### Corrections
+
+* **mobile:** harmoniser la bande système sous la navigation ([#25](https://github.com/N0thyTVOff/PrepaTrack/issues/25)) ([673dbc2](https://github.com/N0thyTVOff/PrepaTrack/commit/673dbc2e95ddabcfe232d4014bde8c8fdab8cdbb))
+
 ## [0.1.6](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.1.5...v0.1.6) (2026-08-03)
 
 
