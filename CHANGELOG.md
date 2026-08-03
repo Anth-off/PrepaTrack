@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.2.0](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.1.7...v0.2.0) (2026-08-03)
+
+
+### Fonctionnalités
+
+* **bilan:** séparer les colis préparés des colis hors stock dans les bilans ([70ef68e](https://github.com/N0thyTVOff/PrepaTrack/commit/70ef68e1cab9647e3dc3a79bdc6b0c355dd3f386))
+* **hors-ligne:** conserver l’annulation même sans connexion puis la synchroniser automatiquement ([fd723f4](https://github.com/N0thyTVOff/PrepaTrack/commit/fd723f4a1b25ec90e131947f155c5ef9e49ce020))
+* **mobile:** détecter automatiquement les trajets du chariot ([#27](https://github.com/N0thyTVOff/PrepaTrack/issues/27)) ([89b548a](https://github.com/N0thyTVOff/PrepaTrack/commit/89b548a0e45ae23096bfc7e3e8732e2a8a6d156e))
+* **objectifs:** adapter la cadence cible au type de commande, à sa densité et à ses supports ([9e1c31e](https://github.com/N0thyTVOff/PrepaTrack/commit/9e1c31e9f7ddc99a43ce44ece5d63cf0b4087f88))
+* **prepa:** annuler la dernière action pendant 10 secondes en cas de mauvais appui ([fd723f4](https://github.com/N0thyTVOff/PrepaTrack/commit/fd723f4a1b25ec90e131947f155c5ef9e49ce020))
+* **prepa:** filmer une palette sans terminer la commande ([#37](https://github.com/N0thyTVOff/PrepaTrack/issues/37)) ([86aa8bb](https://github.com/N0thyTVOff/PrepaTrack/commit/86aa8bbdd164f016e75d14edb29f4aa409f604bd))
+* **stats:** expliquer la provenance de l’objectif personnel affiché pendant la préparation ([9e1c31e](https://github.com/N0thyTVOff/PrepaTrack/commit/9e1c31e9f7ddc99a43ce44ece5d63cf0b4087f88))
+* **stock:** compter un colis hors stock en un seul appui sans ralentir la préparation ([70ef68e](https://github.com/N0thyTVOff/PrepaTrack/commit/70ef68e1cab9647e3dc3a79bdc6b0c355dd3f386))
+* **sync:** afficher en permanence si les données sont enregistrées, en attente ou en erreur ([bbd754b](https://github.com/N0thyTVOff/PrepaTrack/commit/bbd754b6a6387ffde72d686e7cf6197229495e9f))
+
+
+### Corrections
+
+* **metrics:** remplacer les colis perdus par des colis manquants estimés dans toute l’application ([e328efc](https://github.com/N0thyTVOff/PrepaTrack/commit/e328efc4b2d4ba7077dff6a8808980bcf055ff4b))
+* **stats:** expliquer la différence entre un manque estimé et une rupture de stock réelle ([e328efc](https://github.com/N0thyTVOff/PrepaTrack/commit/e328efc4b2d4ba7077dff6a8808980bcf055ff4b))
+* **sync:** partager les types d'aléas entre appareils ([#30](https://github.com/N0thyTVOff/PrepaTrack/issues/30)) ([34083a5](https://github.com/N0thyTVOff/PrepaTrack/commit/34083a5917745707c37f8a0f1d6ed51caacdc262))
+* **sync:** relancer automatiquement la synchronisation lorsque la connexion revient ([bbd754b](https://github.com/N0thyTVOff/PrepaTrack/commit/bbd754b6a6387ffde72d686e7cf6197229495e9f))
+
+
+### Documentation
+
+* professionnaliser le dépôt public ([#35](https://github.com/N0thyTVOff/PrepaTrack/issues/35)) ([90e1831](https://github.com/N0thyTVOff/PrepaTrack/commit/90e1831dea2964bb4640bca4dba9f52833fd058e))
+
 ## [0.1.7](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.1.6...v0.1.7) (2026-08-03)
 
 
