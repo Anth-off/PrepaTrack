@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.1.3...v0.1.4) (2026-08-03)
+
+
+### Corrections
+
+* **mobile:** faire défiler la marge haute iOS ([#19](https://github.com/N0thyTVOff/PrepaTrack/issues/19)) ([e34f302](https://github.com/N0thyTVOff/PrepaTrack/commit/e34f3023a08cdac6ee163a1bab575907dc00f3d8))
+
 ## [0.1.3](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.1.2...v0.1.3) (2026-08-03)
 
 
