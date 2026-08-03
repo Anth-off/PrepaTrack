@@ -97,16 +97,12 @@ export default function App() {
   )
 
   return (
-    // En `black-translucent`, l'application occupe tout l'écran. Cette marge
-    // garde le contenu sous l'heure et la Dynamic Island.
-    //
-    // Elle est comprise dans la hauteur minimale (`border-box`) : elle ne rend
-    // donc pas la page plus haute que la fenêtre, et ne réintroduit pas de
-    // défilement.
+    // Les marges latérales restent sur la coque. La marge haute appartient à
+    // la zone de contenu défilante : elle protège la Dynamic Island en haut de
+    // page, puis défile avec le contenu au lieu de laisser un bandeau fixe.
     <div
       className="app-shell flex"
       style={{
-        paddingTop: 'env(safe-area-inset-top)',
         paddingLeft: 'env(safe-area-inset-left)',
         paddingRight: 'env(safe-area-inset-right)',
       }}
@@ -153,7 +149,10 @@ export default function App() {
             `min-h-0` est indispensable : sans lui, un enfant de flex refuse de
             se réduire sous la taille de son contenu, la zone déborderait et on
             retomberait sur un défilement de page. */}
-        <main className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
+        <main
+          className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain"
+          style={{ paddingTop: 'env(safe-area-inset-top)' }}
+        >
           {content}
         </main>
 
