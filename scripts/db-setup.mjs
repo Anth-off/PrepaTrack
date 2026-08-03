@@ -125,7 +125,7 @@ const client = new pg.Client({
   connectionTimeoutMillis: 20_000,
 })
 
-if (ca) console.log(`Certificat : ${ca.path}`)
+if (ca) console.log('Certificat TLS Supabase chargé.')
 
 console.log('Connexion à la base…')
 
@@ -153,7 +153,12 @@ Télécharge-le dans Project Settings → Database → SSL Configuration et plac
 prod-ca-2021.crt dans le dossier supabase/ du projet.`,
     )
   }
-  fail(`Connexion impossible : ${message}`)
+  // Les erreurs du pilote peuvent contenir l'URI PostgreSQL complète. On les
+  // utilise pour orienter le diagnostic sans jamais les recopier dans le terminal.
+  fail(
+    'Connexion impossible.',
+    'Vérifie la chaîne SUPABASE_DB_URL, le certificat TLS et la disponibilité du projet.',
+  )
 }
 
 try {
@@ -197,7 +202,7 @@ try {
       fail('MANAGER_BADGE doit être un numéro de badge (4 à 12 chiffres).')
     }
     await client.query('select public.seed_manager($1, $2)', [badge, name || `Badge ${badge}`])
-    console.log(`\nGestionnaire déclaré : ${badge}${name ? ` (${name})` : ''}`)
+    console.log('\nGestionnaire initial déclaré.')
   }
 
   const { rows: managers } = await client.query(
@@ -218,17 +223,21 @@ try {
   MANAGER_NAME=Ton Nom`,
     )
   } else {
-    console.log('\nGestionnaires :')
-    for (const m of managers) {
-      console.log(`  ${m.badge} — ${m.name}${m.user_id ? '' : ' (compte à créer à la 1re connexion)'}`)
-    }
+    const pending = managers.filter((manager) => !manager.user_id).length
+    console.log(`\nGestionnaires actifs : ${managers.length}`)
+    if (pending > 0) console.log(`Comptes restant à initialiser : ${pending}`)
     console.log(
       `\nProchaine étape : dans l'app, Réglages → Synchro, colle l'adresse du projet
 et la clé « anon public », puis connecte-toi avec ton badge et un code personnel.`,
     )
   }
-} catch (error) {
-  fail(`Échec de l'application du schéma : ${error?.message ?? error}`)
+} catch {
+  // Une erreur SQL peut inclure une valeur métier ou un extrait de requête. Le
+  // détail n'est donc pas journalisé par défaut dans un terminal potentiellement partagé.
+  fail(
+    "Échec de l'application du schéma.",
+    'Vérifie que les fichiers SQL correspondent à la dernière version puis relance la commande.',
+  )
 } finally {
   await client.end()
 }

@@ -5,6 +5,7 @@ import { INCIDENT_TYPES, segmentDef } from '../core/segments'
 import { formatShort, fromLocalInput, toLocalInput } from '../core/time'
 import type { Segment, SegmentType } from '../core/types'
 import { deleteSegment, editSegmentBounds, retypeSegment, setSegmentNote } from '../db/repo'
+import { useNow } from '../hooks/useNow'
 
 interface Props {
   segment?: Segment
@@ -32,6 +33,7 @@ const RETYPE_CHOICES: SegmentType[] = [
  * continue quoi qu'on corrige.
  */
 export function CorrectSheet({ segment, onClose }: Props) {
+  const now = useNow()
   const [start, setStart] = useState('')
   const [end, setEnd] = useState('')
   const [note, setNote] = useState('')
@@ -72,7 +74,7 @@ export function CorrectSheet({ segment, onClose }: Props) {
         <p className="text-sm text-slate-400">
           Durée actuelle :{' '}
           <span className="font-bold text-slate-200">
-            {formatShort((segment.endedAt ?? Date.now()) - segment.startedAt)}
+            {formatShort((segment.endedAt ?? now) - segment.startedAt)}
           </span>
           . Modifier une borne décale automatiquement le segment voisin, pour qu'il ne
           reste ni trou ni chevauchement.

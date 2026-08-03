@@ -284,26 +284,30 @@ secrets.
 
 ---
 
-## Réglages à faire dans GitHub
+## Réglages GitHub du dépôt officiel
 
-À faire une fois, à la main :
+Le dépôt officiel applique les protections suivantes :
 
 1. **Environnement de production** — Settings → Environments → **New environment**,
    nommé `production`.
    Y ajouter éventuellement des *required reviewers* : le déploiement attendra alors
    une approbation, en plus de la fusion de la Release PR.
 
-2. **Protection de la branche `main`** — Settings → Rules → Rulesets :
+2. **Protection de la branche `main`** :
    - exiger une pull request avant fusion ;
    - exiger le check **`CI`** ;
-   - autoriser **uniquement la fusion en squash** (Settings → General → Pull Requests) ;
-   - ne pas cocher « Require linear history » si Release Please doit pouvoir pousser.
+   - exiger une branche à jour et la résolution des conversations ;
+   - interdire force-push et suppression, y compris au mainteneur ;
+   - autoriser **uniquement la fusion en squash** et conserver un historique linéaire.
 
 3. **Permissions des workflows** — Settings → Actions → General :
    - *Workflow permissions* : **Read repository contents and packages permissions** ;
      les workflows demandent explicitement ce dont ils ont besoin ;
-   - cocher **Allow GitHub Actions to create and approve pull requests**, sans quoi
-     Release Please ne pourra pas ouvrir la Release PR.
+   - les workflows ne peuvent pas approuver une pull request ;
+   - tout workflow proposé depuis un fork attend l'approbation du mainteneur.
+
+4. **Sécurité** : secret scanning, push protection, Dependabot, rapports privés de
+   vulnérabilité et analyse CodeQL JavaScript/TypeScript sont activés.
 
 ### Une limite connue
 

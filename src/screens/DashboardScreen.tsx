@@ -11,6 +11,7 @@ import { byDensity, byHour, byOrderType, bySupport, byWeekday, losses } from '..
 import { recommend } from '../core/recommendations'
 import { formatDayLabel, formatShort } from '../core/time'
 import { useRecentDays } from '../hooks/useRecentDays'
+import { useNow } from '../hooks/useNow'
 import { closeWorkdayAt, plausibleEndFor } from '../db/repo'
 
 interface Props {
@@ -30,13 +31,14 @@ const PERIODS = [
  */
 export function DashboardScreen({ onOpen }: Props) {
   const [period, setPeriod] = useState<number>(30)
+  const now = useNow(60_000)
   const { days: allDays, targetRate, loading } = useRecentDays(365)
 
   const inPeriod = useMemo(() => {
     if (period >= 365) return allDays
-    const limit = Date.now() - period * 24 * 3600_000
+    const limit = now - period * 24 * 3600_000
     return allDays.filter((d) => d.metrics.startedAt >= limit)
-  }, [allDays, period])
+  }, [allDays, now, period])
 
   // Une vacation oubliée ouverte compte des heures de présence fictives : la
   // laisser dans les moyennes ferait passer une bonne semaine pour une mauvaise.

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { computeAlerts, type ActiveAlert } from '../core/alerts'
 import type { Segment, Settings } from '../core/types'
 
@@ -40,7 +40,7 @@ export function useAlerts(
   settings: Settings,
   now: number,
 ): ActiveAlert[] {
-  const alerts = computeAlerts(active, settings, now)
+  const alerts = useMemo(() => computeAlerts(active, settings, now), [active, settings, now])
   const signalled = useRef(new Set<string>())
 
   useEffect(() => {
@@ -52,7 +52,7 @@ export function useAlerts(
     }
     // Les identifiants portent celui du segment : fermer le segment purge
     // naturellement les alertes correspondantes.
-  }, [alerts.map((a) => a.id).join('|'), settings.soundAlerts])
+  }, [alerts, settings.soundAlerts])
 
   return alerts
 }
