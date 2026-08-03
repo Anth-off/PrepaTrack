@@ -130,6 +130,25 @@ describe('interruptions', () => {
     expect(snap.segments.filter((s) => s.type === 'travel')).toHaveLength(1)
   })
 
+  it('filme une palette en pleine prépa puis reprend le prélèvement', async () => {
+    await startDay(at(0))
+    await endBriefing(at(10))
+    await startOrder({ colisPlanned: 120, linesCount: 40, orderType: 'normale' }, at(15))
+    await advanceOrder(at(20))
+
+    await startInterruption('wrapping', at(30))
+    let view = deriveView(await loadSnapshot())
+    expect(view.phase).toBe('interrupted')
+    expect(view.active?.type).toBe('wrapping')
+    expect(view.basePhase).toBe('picking')
+    expect(view.resuming).toBe('picking')
+
+    await endInterruption(at(35))
+    view = deriveView(await loadSnapshot())
+    expect(view.phase).toBe('picking')
+    expect(view.active?.orderId).toBe(view.order?.id)
+  })
+
   it('gère une pause déclenchée pendant un trajet', async () => {
     await startDay(at(0))
     await endBriefing(at(10))
@@ -246,6 +265,28 @@ describe('cadences', () => {
     expect(m.rateOrder).toBeCloseTo(120 / (72 / 60), 4)
     expect(m.colisPerLine).toBeCloseTo(3, 6)
     expect(m.palletChanges).toBe(1)
+  })
+
+  it('fusionne le filmage intermédiaire et le filmage final dans les statistiques', async () => {
+    await startDay(at(0))
+    await endBriefing(at(10))
+    await startOrder({ colisPlanned: 100, linesCount: 25, orderType: 'normale' }, at(15))
+    await advanceOrder(at(20))
+
+    await startInterruption('wrapping', at(30))
+    await endInterruption(at(34))
+    await advanceOrder(at(70))
+    await advanceOrder(at(76))
+    await advanceOrder(at(80))
+
+    const snap = await loadSnapshot()
+    const events = await colisEventsFor(snap.workday!.id)
+    const metrics = computeOrderMetrics(snap.orders[0], snap.segments, events)
+
+    expect(snap.segments.filter((s) => s.type === 'wrapping')).toHaveLength(2)
+    expect(metrics.wrapping).toBe(10 * MINUTE)
+    expect(metrics.interruptions).toBe(0)
+    expect(metrics.totalWorked).toBe(65 * MINUTE)
   })
 
   it('exclut les pauses réglementaires du temps de commande', async () => {

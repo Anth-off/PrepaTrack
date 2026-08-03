@@ -1,8 +1,15 @@
 import type { Table } from 'dexie'
 import { db, uid } from './db'
-import { activeSegment, deriveView, nextOrderPhase, popStack, pushStack } from '../core/machine'
+import {
+  activeSegment,
+  canInterrupt,
+  deriveView,
+  isSuspendingSegment,
+  nextOrderPhase,
+  popStack,
+  pushStack,
+} from '../core/machine'
 import type { Snapshot } from '../core/machine'
-import { isInterruption } from '../core/segments'
 import { dayKey } from '../core/time'
 import { currentOwnerId, ownedByCurrent } from '../sync/profile'
 import type {
@@ -321,9 +328,9 @@ export async function startInterruption(
 ): Promise<void> {
   const snap = await loadSnapshot()
   const view = deriveView(snap)
-  if (!snap.workday || !isInterruption(type)) return
+  if (!snap.workday || !canInterrupt(view, type)) return
 
-  if (view.active?.type === type) {
+  if (view.active?.type === type && isSuspendingSegment(view.active)) {
     await endInterruption(at)
     return
   }
@@ -343,7 +350,7 @@ export async function startInterruption(
 export async function endInterruption(at: number = Date.now()): Promise<void> {
   const snap = await loadSnapshot()
   const active = activeSegment(snap)
-  if (!snap.workday || !active || !isInterruption(active.type)) return
+  if (!snap.workday || !active || !isSuspendingSegment(active)) return
 
   const popped = popStack(active)
   await closeActive(at)

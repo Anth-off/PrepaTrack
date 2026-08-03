@@ -39,11 +39,17 @@ export function HelpSection({ role }: Props) {
             </p>
           </Block>
 
-          <Block title="Les cinq boutons du bas">
+          <Block title="Les six boutons du bas">
             <p>
-              <b>Trajet</b>, <b>WC</b>, <b>Palette</b>, <b>Aléa</b>, <b>Pause</b>. Un appui
+              <b>Trajet</b>, <b>WC</b>, <b>Filmage</b>, <b>Palette</b>, <b>Aléa</b>,{' '}
+              <b>Pause</b>. Un appui
               démarre, un second arrête — c'est le même bouton. Ce qui tournait avant
               reprend tout seul à la fermeture.
+            </p>
+            <p>
+              <b>Filmage</b> est disponible pendant la prépa pour sécuriser une palette
+              sans terminer la commande. Ce temps s'ajoute au filmage final dans les
+              statistiques.
             </p>
             <p className="mt-1 text-slate-400">
               Tu peux les utiliser à tout moment, même en pleine commande. Le temps est

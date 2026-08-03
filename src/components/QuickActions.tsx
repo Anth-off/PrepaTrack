@@ -100,6 +100,16 @@ export function QuickActions({ view, settings, breaksTaken, onTrigger }: Props) 
           disabled: !canInterrupt(view, 'toilet'),
         })}
         {cell(
+          'wrapping',
+          segmentDef('wrapping').emoji,
+          'Filmage',
+          () => trigger('wrapping'),
+          {
+            active: view.phase === 'interrupted' && activeType === 'wrapping',
+            disabled: !canInterrupt(view, 'wrapping'),
+          },
+        )}
+        {cell(
           'pallet',
           segmentDef('pallet_change').emoji,
           'Palette',

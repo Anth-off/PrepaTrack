@@ -69,6 +69,18 @@ export function activeSegment(snap: Snapshot): Segment | undefined {
   return snap.segments.find((s) => s.endedAt === undefined && !s.deletedAt)
 }
 
+/**
+ * Un filmage peut suspendre provisoirement le prélèvement sans devenir un
+ * nouveau type d'aléa. Sa pile non vide le distingue du filmage final, qui est
+ * une phase normale de la commande et n'a donc rien à reprendre.
+ */
+export function isSuspendingSegment(segment: Segment): boolean {
+  return (
+    isInterruption(segment.type) ||
+    (segment.type === 'wrapping' && (segment.stack?.length ?? 0) > 0)
+  )
+}
+
 export function deriveView(snap: Snapshot): MachineView {
   if (!snap.workday || snap.workday.status === 'closed') {
     return { phase: 'no_day', basePhase: 'idle', depth: 0, inOrder: false }
@@ -80,7 +92,7 @@ export function deriveView(snap: Snapshot): MachineView {
   }
 
   const stack = active.stack ?? []
-  const interrupted = isInterruption(active.type)
+  const interrupted = isSuspendingSegment(active)
 
   // La commande concernée est celle du segment actif, sinon celle du segment
   // suspendu le plus profond : une pause prise pendant une prépa reste
@@ -146,11 +158,17 @@ export function nextOrderPhase(type: SegmentType): SegmentType | undefined {
 /** Peut-on démarrer une interruption de ce type maintenant ? */
 export function canInterrupt(view: MachineView, type: SegmentType): boolean {
   if (view.phase === 'no_day') return false
-  if (!isInterruption(type)) return false
+  const inPrepWrapping = type === 'wrapping'
+  if (!isInterruption(type) && !inPrepWrapping) return false
   // Appuyer sur le bouton d'une interruption déjà en cours la referme : c'est
   // un basculement, pas un empilement.
-  if (view.active?.type === type) return true
+  if (view.active?.type === type) return isSuspendingSegment(view.active)
   if (view.depth >= MAX_STACK_DEPTH) return false
+  // Le filmage intermédiaire part uniquement du prélèvement lui-même. Le
+  // filmage final porte le même type, mais reste piloté par le bouton principal.
+  if (inPrepWrapping) {
+    return view.phase === 'picking' && view.inOrder && view.basePhase === 'picking'
+  }
   // Un changement de palette n'a de sens qu'en cours de prélèvement : pendant
   // la recherche de palette, le filmage ou la mise à quai, il n'y a rien à
   // déposer. L'autoriser ailleurs ne produirait que des saisies erronées.

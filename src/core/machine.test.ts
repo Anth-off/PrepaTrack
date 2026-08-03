@@ -188,6 +188,14 @@ describe('canInterrupt', () => {
     expect(canInterrupt(view, 'pallet_change')).toBe(false)
   })
 
+  it('autorise un filmage intermédiaire uniquement pendant le prélèvement', () => {
+    const picking = deriveView(snap([seg('picking', T, { orderId: 'o1' })]))
+    expect(canInterrupt(picking, 'wrapping')).toBe(true)
+
+    const finalWrapping = deriveView(snap([seg('wrapping', T, { orderId: 'o1' })]))
+    expect(canInterrupt(finalWrapping, 'wrapping')).toBe(false)
+  })
+
   it('refuse d’empiler au-delà de la profondeur maximale', () => {
     const view = deriveView(
       snap([

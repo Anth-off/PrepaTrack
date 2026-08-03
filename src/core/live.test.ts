@@ -103,6 +103,17 @@ describe('avance et retard en direct', () => {
     expect(Math.round(live.delta)).toBe(-11)
   })
 
+  it('creuse le retard pendant un filmage intermédiaire', () => {
+    const live = computeLive(
+      order,
+      [seg('picking', 0, 60), seg('wrapping', 60, 6)],
+      [colis(110, 60)],
+      110,
+      T + 66 * MINUTE,
+    )
+    expect(Math.round(live.delta)).toBe(-11)
+  })
+
   it('ne pénalise pas les pauses réglementaires', () => {
     const live = computeLive(
       order,
