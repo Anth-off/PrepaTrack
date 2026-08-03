@@ -164,7 +164,17 @@ export function SettingsScreen({
 
       <DiagnosticSection />
 
-      <p className="text-center text-xs text-slate-600">PrepaTrack</p>
+      <p className="text-center text-xs text-slate-600">
+        PrepaTrack ·{' '}
+        <a
+          href="https://github.com/N0thyTVOff/PrepaTrack"
+          target="_blank"
+          rel="noreferrer"
+          className="underline underline-offset-2"
+        >
+          code source (AGPL-3.0)
+        </a>
+      </p>
     </div>
   )
 }

@@ -1,5 +1,16 @@
 # Contribuer à PrepaTrack
 
+## Contributions publiques
+
+Les retours et signalements sont bienvenus dans les issues GitHub. Pour préserver le
+contrôle de la production et des données métier, seuls les mainteneurs du dépôt créent
+et fusionnent les pull requests. Une proposition externe peut être décrite dans une
+issue ; le mainteneur réalisera ensuite le changement sur une branche du dépôt.
+
+Ne publie jamais dans une issue, une capture ou un commentaire : code personnel,
+numéro de badge réel, mot de passe, jeton, clé d'API ou donnée nominative d'un membre
+de l'équipe. Une vulnérabilité doit être signalée selon la procédure de `SECURITY.md`.
+
 Le principe : **rien ne part en production sans une décision explicite**. Fusionner
 dans `main` n'expédie rien chez les préparateurs ; seule la fusion de la Release PR
 le fait.

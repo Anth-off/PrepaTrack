@@ -1,8 +1,11 @@
 # PrepaTrack
 
-Suivi de production pour préparateur de commandes — base entrepôt de grande distribution.
+Suivi de production pour préparateur de commandes en entrepôt.
 Application web hors ligne, utilisée à une main sur iPhone pendant la vacation et
 consultée sur PC le soir.
+
+Distribué sous licence [GNU AGPL v3](LICENSE). Toute redistribution doit conserver
+l'attribution indiquée dans [NOTICE](NOTICE).
 
 **Installation : voir [INSTALLATION.md](INSTALLATION.md).**
 

@@ -242,7 +242,7 @@ Si ça marche en mode avion, ça marchera dans l'entrepôt.
 
 ## Détail technique à corriger sur ton PC
 
-Ton fichier `C:\Users\utilisateur\.npmrc` contient la ligne `os = "linux"`. Elle fait croire à
+Si ton fichier `C:\Users\utilisateur\.npmrc` contient la ligne `os = "linux"`, elle fait croire à
 npm qu'il tourne sous Linux, et l'empêche d'installer certains composants réservés à
 Windows — c'est ce qui a fait échouer la première installation ici, et ça se reproduira
 sur tous tes projets JavaScript.
