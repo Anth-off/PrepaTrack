@@ -8,6 +8,7 @@ interface Props {
   settings: Settings
   breaksTaken: Record<string, number>
   onTrigger: (type: SegmentType) => void
+  compact?: boolean
 }
 
 /**
@@ -16,7 +17,13 @@ interface Props {
  * L'interruption en cours est mise en évidence, ce qui rend l'état lisible
  * d'un coup d'œil sans lire de texte.
  */
-export function QuickActions({ view, settings, breaksTaken, onTrigger }: Props) {
+export function QuickActions({
+  view,
+  settings,
+  breaksTaken,
+  onTrigger,
+  compact = false,
+}: Props) {
   const [menu, setMenu] = useState<'incident' | 'break' | null>(null)
   const activeType = view.active?.type
 
@@ -37,11 +44,11 @@ export function QuickActions({ view, settings, breaksTaken, onTrigger }: Props) 
       type="button"
       onClick={onClick}
       disabled={opts.disabled}
-      className={`pressable flex min-h-[4rem] flex-1 flex-col items-center justify-center gap-0.5 rounded-xl px-1 py-2 disabled:opacity-25 ${
-        opts.active ? 'bg-accent text-black' : 'bg-ink-700 text-slate-200'
-      }`}
+      className={`pressable flex flex-1 flex-col items-center justify-center gap-0.5 rounded-xl px-1 disabled:opacity-25 ${
+        compact ? 'min-h-[3.25rem] py-1' : 'min-h-[4rem] py-2'
+      } ${opts.active ? 'bg-accent text-black' : 'bg-ink-700 text-slate-200'}`}
     >
-      <span className="text-2xl leading-none">{emoji}</span>
+      <span className={`${compact ? 'text-xl' : 'text-2xl'} leading-none`}>{emoji}</span>
       <span className="text-[0.65rem] font-bold uppercase tracking-wide">{label}</span>
     </button>
   )
@@ -84,7 +91,11 @@ export function QuickActions({ view, settings, breaksTaken, onTrigger }: Props) 
 
       {/* Pas de `safe-bottom` ici : la barre d'onglets se trouve juste en
           dessous et gère déjà la zone réservée du téléphone. */}
-      <div className="flex shrink-0 gap-2 border-t border-ink-600 bg-ink-800 px-2 py-2">
+      <div
+        className={`flex shrink-0 border-t border-ink-600 bg-ink-800 ${
+          compact ? 'gap-1 px-1.5 py-1' : 'gap-2 px-2 py-2'
+        }`}
+      >
         {cell(
           'travel',
           segmentDef('travel').emoji,

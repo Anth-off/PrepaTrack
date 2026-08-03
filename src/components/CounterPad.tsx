@@ -5,6 +5,7 @@ interface Props {
   /** Total courant, affiché dans la confirmation. */
   counted: number
   sound: boolean
+  compact?: boolean
 }
 
 /**
@@ -18,7 +19,7 @@ interface Props {
  * clic court — trois canaux, parce qu'aucun n'est fiable seul : l'écran peut
  * être dans la poche, le son couvert par l'entrepôt.
  */
-export function CounterPad({ onAdd, counted, sound }: Props) {
+export function CounterPad({ onAdd, counted, sound, compact = false }: Props) {
   const [flash, setFlash] = useState<{ delta: number; key: number } | undefined>()
   const audio = useRef<AudioContext | undefined>(undefined)
   const timer = useRef<number | undefined>(undefined)
@@ -90,21 +91,21 @@ export function CounterPad({ onAdd, counted, sound }: Props) {
         <button
           type="button"
           onClick={() => press(-1)}
-          className="pressable min-h-touch rounded-2xl bg-ink-700 text-3xl font-bold text-slate-400"
+          className={`pressable rounded-2xl bg-ink-700 font-bold text-slate-400 ${compact ? 'min-h-[3.25rem] text-2xl' : 'min-h-touch text-3xl'}`}
         >
           −1
         </button>
         <button
           type="button"
           onClick={() => press(1)}
-          className="pressable min-h-touch rounded-2xl bg-ink-600 text-3xl font-bold"
+          className={`pressable rounded-2xl bg-ink-600 font-bold ${compact ? 'min-h-[3.25rem] text-2xl' : 'min-h-touch text-3xl'}`}
         >
           +1
         </button>
         <button
           type="button"
           onClick={() => press(10)}
-          className="pressable min-h-touch rounded-2xl bg-ink-600 text-3xl font-bold"
+          className={`pressable rounded-2xl bg-ink-600 font-bold ${compact ? 'min-h-[3.25rem] text-2xl' : 'min-h-touch text-3xl'}`}
         >
           +10
         </button>

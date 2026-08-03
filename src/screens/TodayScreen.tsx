@@ -210,7 +210,15 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
       ) : (
         <>
           {active && def && chrono && (
-            <div className={showCounter ? 'card py-3' : 'card'}>
+            <div
+              className={
+                showCounter && !desktop
+                  ? 'card px-3 py-1.5'
+                  : showCounter
+                    ? 'card py-3'
+                    : 'card'
+              }
+            >
               <Chrono
                 since={chrono.since}
                 elapsed={chrono.elapsed}
@@ -235,14 +243,16 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
             </div>
           )}
 
-          {live && showCounter && <PaceGauge live={live} reference={reference} />}
+          {live && showCounter && (
+            <PaceGauge live={live} reference={reference} compact={!desktop} />
+          )}
         </>
       )}
     </>
   )
 
   const controls = (
-    <div className="flex flex-col gap-3">
+    <div className={`flex flex-col ${desktop ? 'gap-3' : 'gap-2'}`}>
       {undoNotice && (
         <div
           role="status"
@@ -254,7 +264,7 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
           <button
             type="button"
             onClick={() => void handleUndo()}
-            className="pressable shrink-0 rounded-lg bg-accent px-3 py-1.5 text-sm font-bold text-black"
+            className="pressable min-h-[2.75rem] shrink-0 rounded-lg bg-accent px-3 py-1.5 text-sm font-bold text-black"
           >
             Annuler
           </button>
@@ -267,6 +277,7 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
         <CounterPad
           counted={live?.counted ?? 0}
           sound={settings.soundAlerts}
+          compact={!desktop}
           onAdd={(delta) =>
             void runUndoable(
               `${delta > 0 ? '+' : ''}${delta} colis`,
@@ -284,7 +295,9 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
               createStockShortage({ quantity: 1 }),
             )
           }
-          className="pressable min-h-touch rounded-xl border border-warn/50 bg-warn/10 px-4 py-2 font-bold text-warn"
+          className={`pressable rounded-xl border border-warn/50 bg-warn/10 px-4 font-bold text-warn ${
+            desktop ? 'min-h-touch py-2' : 'min-h-[2.75rem] py-1.5'
+          }`}
         >
           📦 +1 hors stock
           {shortageTotal(shortages, view.order.id) > 0 && (
@@ -299,6 +312,7 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
         label={primaryActionLabel(view)}
         tone={view.phase === 'interrupted' ? 'ok' : 'accent'}
         onClick={handlePrimary}
+        compact={!desktop}
       />
 
       {view.phase !== 'no_day' && view.phase !== 'cleanup' && (
@@ -328,6 +342,7 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
             () => startInterruption(type),
           )
         }
+        compact={!desktop}
       />
     ) : null
 
@@ -404,10 +419,9 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
   }
 
   return (
-    // Aucune hauteur imposée ici : l'écran s'étire naturellement et les actions
-    // se posent en bas grâce à `mt-auto`. Borner la hauteur enfermerait la mise
-    // en page dans la fenêtre réduite qu'iOS accorde en mode « app web ».
-    <div className="flex flex-1 flex-col">
+    // Journée occupe exactement la place laissée par la coque et la navigation.
+    // Son contenu opérationnel se compacte au lieu de créer une zone défilante.
+    <div data-testid="today-screen" className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       {/* Pendant le prélèvement, les totaux de la journée cèdent la place : ce
           qu'on regarde à cet instant c'est l'avance/retard, et sur un téléphone
           à encoche chaque bloc gagné évite un défilement. */}
@@ -416,8 +430,8 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
           en dessous de son contenu, et la barre d'actions qui suit déborderait
           alors de la fenêtre. C'est `mt-auto` sur les contrôles qui les pousse
           en bas quand il reste de la place, sans jamais forcer de hauteur. */}
-      <div className="flex flex-col gap-3 px-4 pb-1">{currentState}</div>
-      <div className="mt-auto px-4 pb-2 pt-1.5">{controls}</div>
+      <div className="flex min-h-0 flex-col gap-2 px-4 pb-0.5">{currentState}</div>
+      <div className="mt-auto shrink-0 px-4 pb-1 pt-1">{controls}</div>
       {quickBar}
       {sheets}
       {view.phase === 'cleanup' && (

@@ -16,16 +16,26 @@ interface Props {
   onClick: () => void
   tone?: Tone
   disabled?: boolean
+  compact?: boolean
 }
 
 /** Action principale. Pleine largeur et haute : atteignable au pouce, gants compris. */
-export function BigButton({ label, sub, onClick, tone = 'accent', disabled }: Props) {
+export function BigButton({
+  label,
+  sub,
+  onClick,
+  tone = 'accent',
+  disabled,
+  compact = false,
+}: Props) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`pressable min-h-touch w-full rounded-2xl px-4 py-4 text-2xl font-bold leading-tight shadow-lg disabled:opacity-40 ${TONES[tone]}`}
+      className={`pressable w-full rounded-2xl px-4 font-bold leading-tight shadow-lg disabled:opacity-40 ${
+        compact ? 'min-h-[3.25rem] py-2 text-xl' : 'min-h-touch py-4 text-2xl'
+      } ${TONES[tone]}`}
     >
       <span className="block">{label}</span>
       {sub && <span className="mt-1 block text-sm font-medium opacity-70">{sub}</span>}

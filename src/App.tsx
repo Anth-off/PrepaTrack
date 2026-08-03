@@ -51,6 +51,7 @@ export default function App() {
   // ou un préparateur affiché un instant avec l'onglet Équipe, ne doit pas
   // rester bloqué sur un écran qui ne le concerne plus.
   const activeTab: Tab = tabs.some((t) => t.key === tab) ? tab : 'today'
+  const isTodayScreen = activeTab === 'today' && !reportId
 
   // Le bilan reste dans le cadre de l'application plutôt que de s'ouvrir en
   // plein écran : sur PC, perdre la navigation pour consulter une journée
@@ -60,7 +61,13 @@ export default function App() {
   ) : (
     <>
       {alerts.length > 0 && (
-        <div className="sticky top-0 z-40 px-4 pb-2 pt-2">
+        <div
+          className={
+            isTodayScreen
+              ? 'pointer-events-none absolute left-0 right-0 top-0 z-40 px-4 pt-2'
+              : 'sticky top-0 z-40 px-4 pb-2 pt-2'
+          }
+        >
           {alerts.map((alert) => (
             <div
               key={alert.id}
@@ -151,11 +158,17 @@ export default function App() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {/* Seule zone défilante de l'application.
-            `min-h-0` est indispensable : sans lui, un enfant de flex refuse de
-            se réduire sous la taille de son contenu, la zone déborderait et on
-            retomberait sur un défilement de page. */}
-        <main className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
+        {/* Zone de contenu bornée. Journée ne défile jamais ; les écrans de
+            consultation conservent leur défilement interne. `min-h-0` permet
+            dans les deux cas au contenu de respecter la hauteur de la coque. */}
+        <main
+          data-screen={isTodayScreen ? 'today' : reportId ? 'report' : activeTab}
+          className={`relative flex min-h-0 flex-1 flex-col ${
+            isTodayScreen
+              ? 'overflow-hidden'
+              : 'overflow-y-auto overscroll-contain'
+          }`}
+        >
           {content}
         </main>
 
