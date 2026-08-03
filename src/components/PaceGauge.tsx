@@ -1,16 +1,18 @@
 import type { LiveStatus } from '../core/metrics'
+import type { ContextualTarget } from '../core/contextualTarget'
 import { hhmm } from '../core/time'
+import { TargetReference } from './TargetReference'
 
 interface Props {
   live: LiveStatus
-  targetRate: number
+  reference: ContextualTarget
 }
 
 /**
  * Avance/retard en direct, exprimé en colis plutôt qu'en minutes : c'est
  * l'unité dans laquelle la cadence est jugée à l'entrepôt.
  */
-export function PaceGauge({ live, targetRate }: Props) {
+export function PaceGauge({ live, reference }: Props) {
   const delta = Math.round(live.delta)
   const ahead = delta >= 0
   const tone = live.provisional
@@ -35,7 +37,7 @@ export function PaceGauge({ live, targetRate }: Props) {
         <span className="text-sm font-semibold uppercase tracking-wide text-slate-400">
           Avance / retard
         </span>
-        <span className="tabular text-sm text-slate-500">objectif {targetRate}/h</span>
+        <span className="tabular text-sm text-slate-500">objectif {Math.round(reference.rate)}/h</span>
       </div>
 
       <div className="flex items-baseline justify-between gap-2">
@@ -71,6 +73,8 @@ export function PaceGauge({ live, targetRate }: Props) {
               : '—'}
         </span>
       </div>
+
+      <TargetReference reference={reference} className="mt-3" />
     </div>
   )
 }

@@ -2,10 +2,15 @@ import { useState } from 'react'
 import { BigButton } from '../components/BigButton'
 import { NumPad } from '../components/NumPad'
 import { Sheet } from '../components/Sheet'
+import { TargetReference } from '../components/TargetReference'
+import { contextualTarget } from '../core/contextualTarget'
+import type { DayData } from '../core/analysis'
 import type { OrderType } from '../core/types'
 
 interface Props {
   open: boolean
+  historyDays: DayData[]
+  manualRate: number
   onCancel: () => void
   onConfirm: (input: { colisPlanned: number; linesCount: number; orderType: OrderType }) => void
 }
@@ -21,7 +26,7 @@ const TYPES: { value: OrderType; label: string }[] = [
  * remplir, on saisit, le focus passe tout seul au suivant. Trois taps de moins
  * qu'avec deux champs séparés, et le clavier iOS n'apparaît jamais.
  */
-export function NewOrderSheet({ open, onCancel, onConfirm }: Props) {
+export function NewOrderSheet({ open, historyDays, manualRate, onCancel, onConfirm }: Props) {
   const [colis, setColis] = useState('')
   const [lines, setLines] = useState('')
   const [field, setField] = useState<'colis' | 'lines'>('colis')
@@ -30,6 +35,11 @@ export function NewOrderSheet({ open, onCancel, onConfirm }: Props) {
   const colisNum = Number(colis || 0)
   const linesNum = Number(lines || 0)
   const ready = colisNum > 0
+  const reference = contextualTarget(
+    historyDays,
+    { orderType, colis: colisNum, linesCount: linesNum },
+    manualRate,
+  )
 
   function reset() {
     setColis('')
@@ -90,6 +100,8 @@ export function NewOrderSheet({ open, onCancel, onConfirm }: Props) {
             </button>
           ))}
         </div>
+
+        <TargetReference reference={reference} />
 
         <BigButton
           label="Lancer la commande"

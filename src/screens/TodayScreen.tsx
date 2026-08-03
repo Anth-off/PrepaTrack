@@ -6,12 +6,14 @@ import { PaceGauge } from '../components/PaceGauge'
 import { QuickActions } from '../components/QuickActions'
 import { RateCards } from '../components/RateCards'
 import { TimeBreakdown } from '../components/TimeBreakdown'
+import { contextualTarget } from '../core/contextualTarget'
 import { breaksTaken, primaryActionLabel } from '../core/machine'
-import { isRateMeaningful, phaseElapsed } from '../core/metrics'
+import { computeLive, isRateMeaningful, phaseElapsed } from '../core/metrics'
 import { segmentDef } from '../core/segments'
 import { formatShort, hhmm } from '../core/time'
 import type { OrderType, SegmentType, Supports } from '../core/types'
 import type { Session } from '../hooks/useSession'
+import { useRecentDays } from '../hooks/useRecentDays'
 import {
   addColis,
   advanceOrder,
@@ -53,7 +55,8 @@ interface Props {
  * sert à afficher le bilan du jour en continu.
  */
 export function TodayScreen({ session, onShowReport, desktop }: Props) {
-  const { view, snap, day, live, settings, now } = session
+  const { view, snap, day, live: sessionLive, settings, now } = session
+  const { days: historyDays } = useRecentDays(365)
   const [newOrder, setNewOrder] = useState(false)
   const [orderEnd, setOrderEnd] = useState(false)
   const [confirmEnd, setConfirmEnd] = useState(false)
@@ -95,6 +98,26 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
 
   const active = view.active
   const def = active ? segmentDef(active.type) : undefined
+  const reference = useMemo(
+    () =>
+      contextualTarget(
+        historyDays,
+        {
+          orderType: view.order?.orderType ?? 'normale',
+          colis: view.order?.colisPlanned ?? 0,
+          linesCount: view.order?.linesCount ?? 0,
+        },
+        settings.targetRate,
+      ),
+    [historyDays, settings.targetRate, view.order],
+  )
+  const live = useMemo(
+    () =>
+      view.order?.status === 'open'
+        ? computeLive(view.order, snap.segments, session.events, reference.rate, now)
+        : sessionLive,
+    [now, reference.rate, session.events, sessionLive, snap.segments, view.order],
+  )
 
   // Une interruption s'affiche seule — c'est bien sa durée propre qui compte.
   // Une phase de commande, elle, cumule tous ses segments : reprendre après un
@@ -206,7 +229,7 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
             </div>
           )}
 
-          {live && showCounter && <PaceGauge live={live} targetRate={settings.targetRate} />}
+          {live && showCounter && <PaceGauge live={live} reference={reference} />}
         </>
       )}
     </>
@@ -287,6 +310,8 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
     <>
       <NewOrderSheet
         open={newOrder}
+        historyDays={historyDays}
+        manualRate={settings.targetRate}
         onCancel={() => setNewOrder(false)}
         onConfirm={handleNewOrder}
       />
@@ -294,6 +319,8 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
         open={orderEnd}
         order={view.order}
         counted={live?.counted ?? 0}
+        historyDays={historyDays}
+        manualRate={settings.targetRate}
         onConfirm={handleOrderEnd}
         onResumePicking={
           undoNotice

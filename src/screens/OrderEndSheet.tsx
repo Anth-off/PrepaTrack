@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react'
 import { BigButton } from '../components/BigButton'
 import { NumPad } from '../components/NumPad'
 import { Sheet } from '../components/Sheet'
+import { TargetReference } from '../components/TargetReference'
+import { contextualTarget } from '../core/contextualTarget'
+import type { DayData } from '../core/analysis'
 import { Stepper } from '../components/Stepper'
 import type { Order, OrderType, Supports, SupportKind } from '../core/types'
 import { EMPTY_SUPPORTS } from '../core/types'
@@ -11,6 +14,8 @@ interface Props {
   order?: Order
   /** Total relevé par le compteur pendant la prépa, proposé par défaut. */
   counted: number
+  historyDays: DayData[]
+  manualRate: number
   onConfirm: (data: { colisActual: number; supports: Supports; orderType: OrderType }) => void
   /** Revient au prélèvement en annulant la transition vers le filmage. */
   onResumePicking?: () => void
@@ -37,7 +42,15 @@ const TYPES: { value: OrderType; label: string }[] = [
  * yeux. « Reprendre la prépa » annule la transition vers le filmage tant que
  * rien n'a encore été validé dans cette feuille.
  */
-export function OrderEndSheet({ open, order, counted, onConfirm, onResumePicking }: Props) {
+export function OrderEndSheet({
+  open,
+  order,
+  counted,
+  historyDays,
+  manualRate,
+  onConfirm,
+  onResumePicking,
+}: Props) {
   const [supports, setSupports] = useState<Supports>({ ...EMPTY_SUPPORTS })
   const [colis, setColis] = useState('')
   const [editColis, setEditColis] = useState(false)
@@ -56,6 +69,18 @@ export function OrderEndSheet({ open, order, counted, onConfirm, onResumePicking
 
   const colisNum = Number(colis || 0)
   const totalSupports = Object.values(supports).reduce((a, b) => a + b, 0)
+  const reference = order
+    ? contextualTarget(
+        historyDays,
+        {
+          orderType,
+          colis: colisNum,
+          linesCount: order.linesCount,
+          supports: totalSupports > 0 ? supports : undefined,
+        },
+        manualRate,
+      )
+    : undefined
 
   return (
     <Sheet open={open} title="Fin de commande">
@@ -113,6 +138,8 @@ export function OrderEndSheet({ open, order, counted, onConfirm, onResumePicking
             ))}
           </div>
         </div>
+
+        {reference && <TargetReference reference={reference} />}
 
         <BigButton
           label="Valider"
