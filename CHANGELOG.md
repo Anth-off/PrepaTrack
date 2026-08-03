@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.6](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.1.5...v0.1.6) (2026-08-03)
+
+
+### Corrections
+
+* **mobile:** retirer la marge haute du contenu ([#23](https://github.com/N0thyTVOff/PrepaTrack/issues/23)) ([c49b72a](https://github.com/N0thyTVOff/PrepaTrack/commit/c49b72ab046e2e0a4dafb6e31a9a9e8c58859e45))
+
 ## [0.1.5](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.1.4...v0.1.5) (2026-08-03)
 
 
