@@ -73,8 +73,8 @@ const topLoss: Rule = (days, targetRate) => {
     title: `${worst.emoji} ${worst.label} : premier poste de temps perdu`,
     detail:
       days.length === 1
-        ? `${formatShort(worst.time)} sur la journée, en ${worst.count} fois — soit ${Math.round(colisPerDay)} colis à ${targetRate}/h.`
-        : `${formatShort(perDay)} par vacation en moyenne (${worst.perDay.toFixed(1)} fois par jour), soit ${Math.round(colisPerDay)} colis quotidiens.`,
+        ? `${formatShort(worst.time)} sur la journée, en ${worst.count} fois — soit ${Math.round(colisPerDay)} colis manquants estimés à ${targetRate}/h.`
+        : `${formatShort(perDay)} par vacation en moyenne (${worst.perDay.toFixed(1)} fois par jour), soit ${Math.round(colisPerDay)} colis manquants estimés quotidiens.`,
     action:
       worst.type === 'travel'
         ? 'Regarde si des trajets peuvent être groupés, ou si ta palette peut te suivre au plus près du picking.'
@@ -157,7 +157,7 @@ const setupCost: Rule = (days, targetRate) => {
     id: 'setup',
     severity: share > 0.18 ? 'high' : 'medium',
     title: `Recherche palette et étiquette : ${Math.round(share * 100)} % du temps de commande`,
-    detail: `${formatShort(perOrder)} en moyenne par commande, sur ${orders.length} commandes — environ ${Math.round((setup / HOUR) * targetRate)} colis sur la période.`,
+    detail: `${formatShort(perOrder)} en moyenne par commande, sur ${orders.length} commandes — environ ${Math.round((setup / HOUR) * targetRate)} colis manquants estimés sur la période.`,
     action:
       "Vois si un stock de palettes peut être préparé d'avance en début de poste, ou si les étiquettes peuvent être tirées par lot.",
     confidence: confidenceFor(orders.length),

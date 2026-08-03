@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { incidentsByOwner, losses, performanceByOwner, type DayData } from '../core/analysis'
 import { computeDayMetrics, isRateMeaningful } from '../core/metrics'
+import { ESTIMATED_MISSING_HELP, ESTIMATED_MISSING_LABEL } from '../core/metricLabels'
 import { formatDayLabel, formatShort } from '../core/time'
 import { LossTable } from '../components/LossTable'
 import { TeamRanking, type RankedMember } from '../components/TeamRanking'
@@ -551,6 +552,10 @@ function PreparerDialog({
             Du temps qui ne dépend pas de lui. Un motif qui revient signale plutôt un
             problème de poste ou de matériel qu'un problème de rythme.
           </p>
+          <p className="mb-2 text-xs leading-relaxed text-slate-500">
+            <b className="text-slate-400">{ESTIMATED_MISSING_LABEL} :</b>{' '}
+            {ESTIMATED_MISSING_HELP}
+          </p>
           <ul className="flex flex-col gap-1.5">
             {incidents.map((line) => (
               <li key={line.type} className="flex items-baseline gap-2 text-sm">
@@ -561,7 +566,7 @@ function PreparerDialog({
                 </span>
                 <span className="tabular font-semibold">{formatShort(line.time)}</span>
                 <span className="tabular w-16 text-right text-slate-500">
-                  {Math.round(line.colisEquivalent)} col.
+                  ≈ {Math.round(line.colisEquivalent)}
                 </span>
               </li>
             ))}

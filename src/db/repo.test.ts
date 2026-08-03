@@ -330,7 +330,7 @@ describe('cadences', () => {
     // Pauses réellement prises, dépassements compris : 11 + 32 + 11.
     expect(day.breaks).toBe(54 * MINUTE)
     expect(day.rates.day).toBeCloseTo(300 / (day.worked / 3_600_000), 4)
-    // Le temps perdu se convertit en colis manqués à la cadence cible.
+    // Le temps perdu se convertit en colis manquants estimés à la cadence cible.
     expect(day.lostColis).toBeCloseTo((day.wasteTime / 3_600_000) * 110, 6)
   })
 })

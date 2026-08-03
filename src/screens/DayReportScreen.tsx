@@ -5,6 +5,7 @@ import { recommend } from '../core/recommendations'
 import { TimeBreakdown } from '../components/TimeBreakdown'
 import { Timeline } from '../components/Timeline'
 import { isRateMeaningful, type OrderMetrics } from '../core/metrics'
+import { ESTIMATED_MISSING_HELP, ESTIMATED_MISSING_LABEL } from '../core/metricLabels'
 import { formatDayLabel, formatShort, hhmm } from '../core/time'
 import type { StockShortage, SupportKind } from '../core/types'
 import {
@@ -91,11 +92,16 @@ export function DayReportScreen({ workdayId, onBack }: Props) {
           <Kpi label="Colis" value={String(day.colis)} />
           <Kpi label="Commandes" value={String(day.ordersCount)} />
           <Kpi
-            label="Colis perdus"
+            label={ESTIMATED_MISSING_LABEL}
             value={String(Math.round(day.lostColis))}
             tone={day.lostColis > 30 ? 'bad' : undefined}
           />
         </div>
+
+        <p className="-mt-2 text-xs leading-relaxed text-slate-500">
+          <b className="text-slate-400">{ESTIMATED_MISSING_LABEL} :</b>{' '}
+          {ESTIMATED_MISSING_HELP}
+        </p>
 
         <RateCards day={day} targetRate={targetRate} />
 

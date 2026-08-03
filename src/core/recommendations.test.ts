@@ -13,7 +13,7 @@ const find = (days: Parameters<typeof recommend>[0]['days'], id: string) =>
   recommend({ days, targetRate: 110 }).find((r) => r.id === id)
 
 describe('temps perdu', () => {
-  it('désigne le poste le plus coûteux et le chiffre en colis', () => {
+  it('désigne le poste le plus coûteux en colis manquants estimés', () => {
     const day = makeDay('2026-07-27', [
       {
         colis: 200,
@@ -31,7 +31,7 @@ describe('temps perdu', () => {
     expect(reco).toBeDefined()
     expect(reco!.title).toContain('Trajet')
     // 45 min à 110 colis/h = 82,5 colis, arrondis à 83.
-    expect(reco!.detail).toContain('83 colis')
+    expect(reco!.detail).toContain('83 colis manquants estimés')
   })
 
   it('ne dit rien pour quelques minutes perdues', () => {
@@ -84,6 +84,7 @@ describe('recherche de palette', () => {
     const reco = find([day], 'setup')
     expect(reco).toBeDefined()
     expect(reco!.title).toContain('%')
+    expect(reco!.detail).toContain('colis manquants estimés')
   })
 
   it('ne se déclenche pas sur une seule commande', () => {

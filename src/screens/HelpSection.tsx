@@ -1,4 +1,9 @@
 import { useState } from 'react'
+import {
+  ESTIMATED_MISSING_HELP,
+  ESTIMATED_MISSING_LABEL,
+  STOCK_SHORTAGE_LABEL,
+} from '../core/metricLabels'
 import type { Role } from '../sync/profile'
 
 interface Props {
@@ -85,6 +90,16 @@ export function HelpSection({ role }: Props) {
             <p className="mt-1 text-slate-400">
               Un mauvais appui peut être annulé pendant 10 secondes. Le total reste
               modifiable dans le bilan et sera transmis au gestionnaire au retour du réseau.
+            </p>
+          </Block>
+
+          <Block title="Comprendre les colis manquants">
+            <p>
+              <b>{ESTIMATED_MISSING_LABEL}</b> : {ESTIMATED_MISSING_HELP}
+            </p>
+            <p className="mt-1 text-slate-400">
+              <b>{STOCK_SHORTAGE_LABEL}</b> désigne au contraire une quantité réellement
+              indisponible. Ces deux chiffres restent toujours séparés.
             </p>
           </Block>
 

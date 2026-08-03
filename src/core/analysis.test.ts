@@ -92,7 +92,7 @@ describe('temps perdu', () => {
     const lines = losses([day], 110)
     expect(lines[0].type).toBe('incident_material')
     expect(lines[0].time).toBe(30 * MINUTE)
-    // 30 min à 110 colis/h = 55 colis manqués.
+    // 30 min à 110 colis/h = 55 colis manquants estimés.
     expect(lines[0].colisEquivalent).toBeCloseTo(55, 5)
     expect(lines[1].type).toBe('travel')
   })

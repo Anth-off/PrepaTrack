@@ -69,6 +69,16 @@ longue mise en veille.
 Les détails du modèle, des invariants et de la synchronisation sont documentés dans
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+### Deux métriques distinctes
+
+- **Colis manquants estimés** : estimation du nombre de colis qui auraient pu être
+  préparés pendant le temps perdu, calculée avec la cadence cible. Ce chiffre ne
+  représente pas des colis physiques en rupture de stock.
+- **Colis manquants pour rupture** : quantité réellement indisponible signalée pendant
+  une commande.
+
+Ces valeurs répondent à deux questions différentes et ne sont jamais additionnées.
+
 ## Qualité et sécurité
 
 ```bash
