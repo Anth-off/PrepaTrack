@@ -10,19 +10,14 @@
     <meta name="theme-color" content="#000000" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <!--
-      `black` et non `black-translucent`.
+      `black-translucent` donne à la page le viewport plein écran.
 
-      Avec `black-translucent`, iOS place la page sous la barre de statut, mais
-      lui accorde une fenêtre amputée de la hauteur de cette barre — 873 points
-      pour un écran de 932 sur un iPhone 15 Plus — tout en la maintenant collée
-      en haut. Les points manquants apparaissent alors en bas, hors d'atteinte
-      de la mise en page : aucune règle CSS ne peut les occuper.
-
-      Avec `black`, iOS réserve lui-même la barre de statut et la fenêtre
-      descend jusqu'au bas de l'écran. La barre prend la couleur du thème, ce
-      qui convient à une interface sombre.
+      Avec `black`, iOS réduit le viewport de la hauteur de la barre de statut
+      tout en le laissant ancré en haut sur certains iPhone : la place retirée
+      réapparaît alors comme une bande vide en bas. Le contenu reste hors de
+      l'encoche grâce aux `safe-area-inset-*` appliqués par l'application.
     -->
-    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="PrepaTrack" />
     <link rel="apple-touch-icon" href="/icon-192.png" />
     <title>PrepaTrack</title>

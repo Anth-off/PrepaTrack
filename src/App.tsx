@@ -97,9 +97,8 @@ export default function App() {
   )
 
   return (
-    // Marge haute : même en `status-bar-style: black`, iOS laisse la page
-    // démarrer sous l'heure et la Dynamic Island en mode « app web ». Sans elle,
-    // le premier bloc est amputé.
+    // En `black-translucent`, l'application occupe tout l'écran. Cette marge
+    // garde le contenu sous l'heure et la Dynamic Island.
     //
     // Elle est comprise dans la hauteur minimale (`border-box`) : elle ne rend
     // donc pas la page plus haute que la fenêtre, et ne réintroduit pas de

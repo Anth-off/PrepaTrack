@@ -4,13 +4,8 @@
 
 @layer base {
   /**
-   * Hauteur de référence : la fenêtre, pas l'écran.
-   *
-   * En mode « app web », iOS n'accorde que 873 points sur les 932 de l'écran.
-   * Or `100dvh` renvoie 932 : une page dimensionnée ainsi dépasse de 59 points
-   * l'espace visible, ce qui la fait défiler et décale la barre du bas jusqu'à
-   * ce qu'on fasse glisser l'écran. Un pourcentage hérité de la racine suit la
-   * fenêtre réelle, quelle qu'elle soit.
+   * Chaîne de hauteurs calée sur le viewport plein écran fourni par
+   * `black-translucent`, sans les variations des unités `vh` dans Safari.
    */
   /* La chaîne doit être complète : un maillon manquant et le pourcentage se
      résout en « auto », l'application ne faisant alors que la hauteur de son
@@ -22,29 +17,14 @@
   }
 
   html {
-    /* Teinte de la **barre d'onglets**, pas celle de l'application.
-       `html` est ce qui peint la bande que la fenêtre iOS n'atteint pas (59
-       points sur un 15 Plus en app installée) : en ink-900, plus sombre que la
-       barre, elle se lit comme un vide sous l'application. En ink-800 elle en
-       devient le prolongement. `body`, borné à la fenêtre, garde le fond de
-       l'application juste au-dessus. */
-    background: theme('colors.ink.800');
+    /* Fond de l'application dans toute la zone plein écran. */
+    background: theme('colors.ink.900');
     /* Empêche le zoom au double-tap : en pleine prépa, un zoom accidentel
        rend l'app inutilisable le temps de le défaire. */
     touch-action: manipulation;
     -webkit-text-size-adjust: 100%;
   }
 
-  /**
-   * Le fond de la page reprend la couleur de la barre d'onglets, pas celle de
-   * l'application.
-   *
-   * Sur iPhone, la fenêtre accordée à une app installée peut être plus courte
-   * que l'écran — 873 points pour 932 sur un 15 Plus. Cette bande basse est
-   * hors de portée de la mise en page : rien en CSS ne peut l'occuper. En lui
-   * donnant la teinte de la barre, elle en devient le prolongement visuel au
-   * lieu d'un vide sous l'application.
-   */
   body {
     @apply bg-ink-900 text-slate-100 antialiased;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -75,18 +55,7 @@
    * trait de retour à l'accueil, sans le bandeau mort.
    */
   /**
-   * Application ancrée directement sur l'écran visible.
-   *
-   * `position: fixed` avec `inset: 0` se cale sur le viewport lui-même, sans
-   * dépendre d'une hauteur héritée ni d'une unité recalculée. Les trois
-   * approches précédentes échouaient toutes pour la même raison : elles
-   * s'appuyaient sur une valeur qu'iOS n'a pas encore établie au premier rendu
-   * — `100dvh`, puis `window.innerHeight` figé, puis une cascade de
-   * pourcentages. Ici il n'y a plus rien à évaluer : les quatre bords sont
-   * posés sur ceux de l'écran.
-   */
-  /**
-   * Hauteur **exacte** de la fenêtre. La page ne défile jamais.
+   * Hauteur exacte du viewport plein écran. La page ne défile jamais.
    *
    * `min-height` laissait la page grandir avec son contenu, et la barre du bas
    * ne tenait que par `sticky`. Or sur iOS, un `sticky bottom-0` ne se recale
@@ -97,9 +66,8 @@
    * plus de défilement de page, donc plus rien à recaler : la barre est
    * posée en bas de la coque, un point c'est tout.
    *
-   * `100%` et non `100dvh` : `100dvh` mesure l'écran (932 points sur un 15 Plus)
-   * alors que la fenêtre accordée en app installée n'en fait que 873. Le
-   * pourcentage hérite de la racine, donc de la fenêtre réelle.
+   * `100%` hérite du viewport plein écran fourni par `black-translucent`, sans
+   * dépendre des variations des unités `vh` dans Safari.
    */
   .app-shell {
     height: 100%;
