@@ -70,18 +70,21 @@ export function useCartMotion(session: Session): CartMotionControl {
   }, [threshold])
 
   useEffect(() => {
-    if (enabled) return
+    // `useSession` expose brièvement les valeurs par défaut pendant la lecture
+    // d'IndexedDB. Ne surtout pas interpréter ce faux `enabled: false` comme une
+    // désactivation demandée à chaque ouverture de l'application.
+    if (session.loading || enabled) return
     detector.current = threshold === undefined ? undefined : new CartMotionDetector(threshold)
     transitionQueue.current = transitionQueue.current.then(async () => {
       await setAutomaticTravel(false)
     })
-  }, [enabled, threshold])
+  }, [enabled, session.loading, threshold])
 
   // Réapplique l'état physique lorsque la phase métier change. Exemple : le
   // chariot commence à rouler pendant la préparation de commande, puis la
   // phase « prélèvement » démarre alors qu'il roule déjà.
   useEffect(() => {
-    if (!enabled || threshold === undefined) return
+    if (session.loading || !enabled || threshold === undefined) return
     if (status !== 'moving' && status !== 'stationary') return
     transitionQueue.current = transitionQueue.current
       .then(async () => {
@@ -91,10 +94,10 @@ export function useCartMotion(session: Session): CartMotionControl {
         setError("Impossible d'enregistrer automatiquement le trajet.")
         setStatus('error')
       })
-  }, [enabled, session.view.phase, status, threshold])
+  }, [enabled, session.loading, session.view.phase, status, threshold])
 
   useEffect(() => {
-    if (!supported) return
+    if (!supported || session.loading) return
     const calibrating =
       status === 'calibrating_stationary' || status === 'calibrating_moving'
     if (!enabled && !calibrating) return
@@ -127,7 +130,7 @@ export function useCartMotion(session: Session): CartMotionControl {
 
     window.addEventListener('devicemotion', onMotion)
     return () => window.removeEventListener('devicemotion', onMotion)
-  }, [enabled, status, supported, threshold])
+  }, [enabled, session.loading, status, supported, threshold])
 
   const requestPermission = useCallback(async () => {
     if (!supported) return false

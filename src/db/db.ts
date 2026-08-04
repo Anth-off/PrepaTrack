@@ -57,12 +57,45 @@ export async function getSettings(): Promise<Settings> {
   const existing = await db.settings.get('settings')
   // Fusion avec les valeurs par défaut : une option ajoutée dans une version
   // ultérieure ne doit pas revenir `undefined` sur une base existante.
-  return existing ? { ...DEFAULT_SETTINGS, ...existing } : DEFAULT_SETTINGS
+  return existing
+    ? {
+        ...DEFAULT_SETTINGS,
+        ...existing,
+        stuckThresholds: {
+          ...DEFAULT_SETTINGS.stuckThresholds,
+          ...existing.stuckThresholds,
+        },
+        cartMotion: {
+          ...DEFAULT_SETTINGS.cartMotion,
+          ...existing.cartMotion,
+        },
+      }
+    : DEFAULT_SETTINGS
 }
 
-export async function saveSettings(patch: Partial<Settings>): Promise<Settings> {
+export type SettingsPatch = Omit<Partial<Settings>, 'stuckThresholds' | 'cartMotion'> & {
+  stuckThresholds?: Partial<Settings['stuckThresholds']>
+  cartMotion?: Partial<Settings['cartMotion']>
+}
+
+export async function saveSettings(patch: SettingsPatch): Promise<Settings> {
   const current = await getSettings()
-  const next = { ...current, ...patch, id: 'settings' as const, updatedAt: Date.now() }
+  const next = {
+    ...current,
+    ...patch,
+    // Les réglages imbriqués sont fusionnés ici aussi. Une mise à jour de la
+    // calibration ne doit jamais effacer le choix durable d'activation.
+    stuckThresholds: {
+      ...current.stuckThresholds,
+      ...patch.stuckThresholds,
+    },
+    cartMotion: {
+      ...current.cartMotion,
+      ...patch.cartMotion,
+    },
+    id: 'settings' as const,
+    updatedAt: Date.now(),
+  }
   await db.settings.put(next)
   return next
 }

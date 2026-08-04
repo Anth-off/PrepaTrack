@@ -23,8 +23,10 @@ export function CartMotionSection({
       if (kind === 'stationary') {
         await saveSettings({
           cartMotion: {
-            enabled: false,
+            enabled: config.enabled,
             stationaryEnergy: energy,
+            movingEnergy: undefined,
+            threshold: undefined,
           },
         })
         setMessage('Chariot immobile enregistré. Fais maintenant la mesure en roulant.')
@@ -41,7 +43,7 @@ export function CartMotionSection({
       }
       await saveSettings({
         cartMotion: {
-          enabled: false,
+          enabled: config.enabled,
           stationaryEnergy: stationary,
           movingEnergy: energy,
           threshold,
@@ -71,8 +73,16 @@ export function CartMotionSection({
       return
     }
     setBusy('permission')
+    // Le choix d'activation est un réglage durable. On l'enregistre avant la
+    // demande iOS afin qu'un rafraîchissement ou la fermeture de la feuille de
+    // permission ne remette pas silencieusement l'option à zéro.
+    await saveSettings({ cartMotion: { ...config, enabled: true } })
     const granted = await motion.requestPermission()
-    if (granted) await saveSettings({ cartMotion: { ...config, enabled: true } })
+    if (!granted) {
+      setMessage(
+        "La détection reste activée. Autorise les capteurs iOS pour la reprendre.",
+      )
+    }
     setBusy(undefined)
   }
 
