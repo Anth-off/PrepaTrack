@@ -49,7 +49,7 @@ describe('palettes par magasin', () => {
       linesCount: 10,
       orderType: 'normale',
       storeCount: 1,
-      initialPallets: [2, 1],
+      initialPalletCount: 2,
     }, at(10))
 
     const snap = await loadSnapshot()
@@ -66,11 +66,11 @@ describe('palettes par magasin', () => {
       linesCount: 20,
       orderType: 'normale',
       storeCount: 2,
-      initialPallets: [2, 3],
+      initialPalletCount: 5,
     }, at(10))
 
     const snap = await loadSnapshot()
-    expect(snap.pallets?.map((pallet) => pallet.storeNumber)).toEqual([1, 1, 2, 2, 2])
+    expect(snap.pallets?.map((pallet) => pallet.storeNumber)).toEqual([1, 2, 1, 2, 1])
   })
 
   it('permet d’ajouter une palette lors de la clôture', async () => {
@@ -89,13 +89,35 @@ describe('palettes par magasin', () => {
       supports: { ...EMPTY_SUPPORTS, europe: 1, ipp: 1 },
       orderType: 'normale',
       palletSupports: [{ id: first.id, support: 'europe' }],
-      additionalPallets: [{ storeNumber: 1, support: 'ipp' }],
+      additionalPallets: [{ support: 'ipp' }],
     })
 
     const snap = await loadSnapshot()
     expect(snap.pallets).toHaveLength(2)
     expect(snap.pallets?.map((pallet) => pallet.support)).toEqual(['europe', 'ipp'])
     expect(snap.orders[0].supports).toMatchObject({ europe: 1, ipp: 1 })
+  })
+
+  it('répartit automatiquement les palettes ajoutées entre deux magasins', async () => {
+    await startDay(at(0))
+    await endBriefing(at(5))
+    const order = await startOrder({
+      colisPlanned: 40,
+      linesCount: 8,
+      orderType: 'normale',
+      storeCount: 2,
+      initialPalletCount: 2,
+    }, at(10))
+
+    await saveOrderResult(order!.id, {
+      colisActual: 40,
+      supports: { ...EMPTY_SUPPORTS, europe: 4 },
+      orderType: 'normale',
+      additionalPallets: [{ support: 'europe' }, { support: 'europe' }],
+    })
+
+    const snap = await loadSnapshot()
+    expect(snap.pallets?.map((pallet) => pallet.storeNumber)).toEqual([1, 2, 1, 2])
   })
 
   it('attribue colis et filmages à la palette active avec deux magasins', async () => {

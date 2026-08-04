@@ -21,7 +21,7 @@ interface Props {
     supports: Supports
     orderType: OrderType
     palletSupports: Array<{ id: string; support?: SupportKind }>
-    additionalPallets: Array<{ storeNumber: 1 | 2; support?: SupportKind }>
+    additionalPallets: Array<{ support?: SupportKind }>
   }) => void
   /** Revient au prélèvement en annulant la transition vers le filmage. */
   onResumePicking?: () => void
@@ -61,7 +61,6 @@ export function OrderEndSheet({
   const [palletSupports, setPalletSupports] = useState<Record<string, SupportKind | ''>>({})
   const [additionalPallets, setAdditionalPallets] = useState<Array<{
     key: string
-    storeNumber: 1 | 2
     support: SupportKind | ''
   }>>([])
   const [colis, setColis] = useState('')
@@ -161,25 +160,6 @@ export function OrderEndSheet({
                     Retirer
                   </button>
                 </div>
-                {order.storeCount === 2 && (
-                  <div className="mb-2 grid grid-cols-2 gap-2">
-                    {([1, 2] as const).map((storeNumber) => (
-                      <button
-                        key={storeNumber}
-                        type="button"
-                        onClick={() => setAdditionalPallets((current) => current.map((item) =>
-                          item.key === pallet.key ? { ...item, storeNumber } : item))}
-                        className={`pressable rounded-lg py-2 text-sm font-bold ${
-                          pallet.storeNumber === storeNumber
-                            ? 'bg-info text-black'
-                            : 'bg-ink-800 text-slate-400'
-                        }`}
-                      >
-                        Magasin {storeNumber}
-                      </button>
-                    ))}
-                  </div>
-                )}
                 <select
                   value={pallet.support}
                   onChange={(event) => setAdditionalPallets((current) => current.map((item) =>
@@ -199,7 +179,6 @@ export function OrderEndSheet({
               type="button"
               onClick={() => setAdditionalPallets((current) => [...current, {
                 key: `${Date.now()}-${current.length}`,
-                storeNumber: pallets.find((pallet) => pallet.id === order.activePalletId)?.storeNumber ?? 1,
                 support: '',
               }])}
               className="pressable min-h-touch rounded-xl border border-accent/50 text-sm font-bold text-accent"
@@ -247,7 +226,6 @@ export function OrderEndSheet({
               support: palletSupports[p.id] || undefined,
             })),
             additionalPallets: additionalPallets.map((pallet) => ({
-              storeNumber: pallet.storeNumber,
               support: pallet.support || undefined,
             })),
           })}

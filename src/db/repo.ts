@@ -321,8 +321,8 @@ export interface NewOrderInput {
   linesCount: number
   orderType: OrderType
   storeCount?: 1 | 2
-  /** Nombre de palettes déjà présentes au départ, par magasin. */
-  initialPallets?: [number, number]
+  /** Nombre total choisi par l'interface simplifiée. */
+  initialPalletCount?: number
 }
 
 export async function startOrder(
@@ -333,13 +333,14 @@ export async function startOrder(
   if (!snap.workday) return undefined
 
   const storeCount = input.storeCount ?? 1
-  const initialCounts: [number, number] = [
-    Math.max(1, Math.trunc(input.initialPallets?.[0] ?? 1)),
-    storeCount === 2 ? Math.max(1, Math.trunc(input.initialPallets?.[1] ?? 1)) : 0,
-  ]
-  const palletSpecs = ([1, 2] as const).flatMap((storeNumber) =>
-    Array.from({ length: initialCounts[storeNumber - 1] }, () => ({ id: uid(), storeNumber })),
+  const initialPalletCount = Math.max(
+    storeCount,
+    Math.trunc(input.initialPalletCount ?? storeCount),
   )
+  const palletSpecs = Array.from({ length: initialPalletCount }, (_, index) => ({
+    id: uid(),
+    storeNumber: (storeCount === 1 ? 1 : (index % 2) + 1) as 1 | 2,
+  }))
   const order: Order = stamp({
     id: uid(),
     workdayId: snap.workday.id,
@@ -415,7 +416,7 @@ export async function saveOrderResult(
     supports: Supports
     orderType: OrderType
     palletSupports?: Array<{ id: string; support?: OrderPallet['support'] }>
-    additionalPallets?: Array<{ storeNumber: 1 | 2; support?: OrderPallet['support'] }>
+    additionalPallets?: Array<{ support?: OrderPallet['support'] }>
   },
 ): Promise<void> {
   const order = await db.orders.get(orderId)
@@ -433,12 +434,19 @@ export async function saveOrderResult(
   if (data.additionalPallets?.length) {
     const existing = await db.orderPallets.where('orderId').equals(orderId).toArray()
     let number = Math.max(0, ...existing.map((pallet) => pallet.number))
-    await db.orderPallets.bulkPut(data.additionalPallets.map((input) => stamp({
-      id: uid(), workdayId: order.workdayId, orderId, number: ++number,
-      storeNumber: input.storeNumber, support: input.support,
-      startedAt: order.startedAt, startCount: 0,
-      updatedAt: 0, syncState: 'pending',
-    })))
+    const storeTotals = [1, 2].map((storeNumber) =>
+      existing.filter((pallet) => pallet.storeNumber === storeNumber && !pallet.deletedAt).length,
+    )
+    await db.orderPallets.bulkPut(data.additionalPallets.map((input) => {
+      const storeNumber: 1 | 2 = order.storeCount === 2 && storeTotals[1] < storeTotals[0] ? 2 : 1
+      storeTotals[storeNumber - 1] += 1
+      return stamp({
+        id: uid(), workdayId: order.workdayId, orderId, number: ++number,
+        storeNumber, support: input.support,
+        startedAt: order.startedAt, startCount: 0,
+        updatedAt: 0, syncState: 'pending',
+      })
+    }))
   }
 }
 

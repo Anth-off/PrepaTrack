@@ -22,7 +22,6 @@ import {
   endInterruption,
   finishDay,
   saveOrderResult,
-  selectOrderPallet,
   shortageTotal,
   startCleanup,
   startDay,
@@ -186,7 +185,7 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
     linesCount: number
     orderType: OrderType
     storeCount: 1 | 2
-    initialPallets: [number, number]
+    initialPalletCount: number
   }) {
     setNewOrder(false)
     await runWithoutUndo(() => startOrder(input))
@@ -197,7 +196,7 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
     supports: Supports
     orderType: OrderType
     palletSupports: Array<{ id: string; support?: SupportKind }>
-    additionalPallets: Array<{ storeNumber: 1 | 2; support?: SupportKind }>
+    additionalPallets: Array<{ support?: SupportKind }>
   }) {
     if (view.order) await runWithoutUndo(() => saveOrderResult(view.order!.id, data))
     setOrderEnd(false)
@@ -211,7 +210,6 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
     () => view.order ? (snap.pallets ?? []).filter((p) => p.orderId === view.order!.id) : [],
     [snap.pallets, view.order],
   )
-  const openPallets = orderPallets.filter((p) => p.endedAt === undefined)
 
   const currentState = (
     <>
@@ -283,26 +281,6 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
       {/* Le compteur voyage avec les contrôles, hors de la zone défilante : sur
           un petit écran il se retrouverait sinon sous la ligne de flottaison,
           alors que c'est le geste le plus répété de la vacation. */}
-      {showCounter && (
-        view.order && openPallets.length > 1 && (
-          <div className="grid grid-cols-2 gap-2" aria-label="Palette active">
-            {openPallets.sort((a, b) => a.storeNumber - b.storeNumber).map((pallet) => (
-              <button
-                key={pallet.id}
-                type="button"
-                onClick={() => void runWithoutUndo(() => selectOrderPallet(view.order!.id, pallet.id))}
-                className={`pressable min-h-[2.75rem] rounded-xl px-2 text-sm font-bold ${
-                  view.order!.activePalletId === pallet.id
-                    ? 'bg-info text-black'
-                    : 'bg-ink-700 text-slate-300'
-                }`}
-              >
-                Magasin {pallet.storeNumber} · Palette {pallet.number}
-              </button>
-            ))}
-          </div>
-        )
-      )}
       {showCounter && (
         <CounterPad
           counted={live?.counted ?? 0}

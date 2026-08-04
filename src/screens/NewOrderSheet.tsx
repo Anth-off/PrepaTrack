@@ -18,7 +18,7 @@ interface Props {
     linesCount: number
     orderType: OrderType
     storeCount: 1 | 2
-    initialPallets: [number, number]
+    initialPalletCount: number
   }) => void
 }
 
@@ -39,7 +39,7 @@ export function NewOrderSheet({ open, historyDays, manualRate, onCancel, onConfi
   const [field, setField] = useState<'colis' | 'lines'>('colis')
   const [orderType, setOrderType] = useState<OrderType>('normale')
   const [storeCount, setStoreCount] = useState<1 | 2>(1)
-  const [initialPallets, setInitialPallets] = useState<[number, number]>([1, 1])
+  const [initialPalletCount, setInitialPalletCount] = useState(1)
 
   const colisNum = Number(colis || 0)
   const linesNum = Number(lines || 0)
@@ -56,7 +56,7 @@ export function NewOrderSheet({ open, historyDays, manualRate, onCancel, onConfi
     setField('colis')
     setOrderType('normale')
     setStoreCount(1)
-    setInitialPallets([1, 1])
+    setInitialPalletCount(1)
   }
 
   function handleChange(next: string) {
@@ -121,7 +121,10 @@ export function NewOrderSheet({ open, historyDays, manualRate, onCancel, onConfi
               <button
                 key={count}
                 type="button"
-                onClick={() => setStoreCount(count)}
+                onClick={() => {
+                  setStoreCount(count)
+                  setInitialPalletCount((current) => Math.max(count, current))
+                }}
                 className={`pressable min-h-[3.5rem] rounded-xl font-bold ${
                   storeCount === count ? 'bg-accent text-black' : 'bg-ink-700 text-slate-300'
                 }`}
@@ -137,20 +140,16 @@ export function NewOrderSheet({ open, historyDays, manualRate, onCancel, onConfi
             Palettes présentes au départ
           </div>
           <Stepper
-            label={storeCount === 2 ? 'Magasin 1' : 'Palettes'}
-            value={initialPallets[0]}
-            min={1}
+            label="Palettes"
+            value={initialPalletCount}
+            min={storeCount}
             max={10}
-            onChange={(value) => setInitialPallets((current) => [value, current[1]])}
+            onChange={setInitialPalletCount}
           />
           {storeCount === 2 && (
-            <Stepper
-              label="Magasin 2"
-              value={initialPallets[1]}
-              min={1}
-              max={10}
-              onChange={(value) => setInitialPallets((current) => [current[0], value])}
-            />
+            <p className="text-xs text-slate-500">
+              Les palettes sont réparties automatiquement entre les deux magasins.
+            </p>
           )}
           <p className="text-xs text-slate-500">
             Tu pourras encore ajouter une palette lors de la clôture.
@@ -169,7 +168,7 @@ export function NewOrderSheet({ open, historyDays, manualRate, onCancel, onConfi
               linesCount: linesNum,
               orderType,
               storeCount,
-              initialPallets,
+              initialPalletCount,
             })
             reset()
           }}
