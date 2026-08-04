@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.0](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.2.2...v0.3.0) (2026-08-04)
+
+
+### Fonctionnalités
+
+* **palettes:** suivre chaque palette et son magasin pendant la préparation ([a4c3b7e](https://github.com/N0thyTVOff/PrepaTrack/commit/a4c3b7e8db791f7f1b87033a837cc124625e7ed5))
+* **stats:** détailler les colis, filmages et durées par palette ([a4c3b7e](https://github.com/N0thyTVOff/PrepaTrack/commit/a4c3b7e8db791f7f1b87033a837cc124625e7ed5))
+* **sync:** synchroniser et sauvegarder le suivi individuel des palettes ([a4c3b7e](https://github.com/N0thyTVOff/PrepaTrack/commit/a4c3b7e8db791f7f1b87033a837cc124625e7ed5))
+
 ## [0.2.2](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.2.1...v0.2.2) (2026-08-04)
 
 
