@@ -4,6 +4,7 @@ import { getSettings, saveSettings, wipeAll } from '../db/db'
 import type { Settings } from '../core/types'
 import type { SyncInfo } from '../hooks/useSync'
 import type { CartMotionControl } from '../hooks/useCartMotion'
+import type { AppUpdateControl } from '../hooks/useAppUpdate'
 import { INCIDENT_TYPES, segmentDef } from '../core/segments'
 import { BackupSection } from './BackupSection'
 import { CartMotionSection } from './CartMotionSection'
@@ -15,9 +16,11 @@ import { SyncSection } from './SyncSection'
 export function SettingsScreen({
   sync,
   motion,
+  update,
 }: {
   sync: SyncInfo
   motion: CartMotionControl
+  update: AppUpdateControl
 }) {
   const settings = useLiveQuery(() => getSettings(), [])
   const [confirmWipe, setConfirmWipe] = useState(false)
@@ -162,7 +165,7 @@ export function SettingsScreen({
         )}
       </section>
 
-      <DiagnosticSection />
+      <DiagnosticSection update={update} />
 
       <p className="text-center text-xs text-slate-600">
         PrepaTrack ·{' '}

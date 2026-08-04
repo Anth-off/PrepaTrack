@@ -3,3 +3,6 @@
 
 /** Horodatage injecté au build, affiché dans le diagnostic d'affichage. */
 declare const __BUILD_TIME__: string
+
+/** Version applicative injectée depuis package.json. */
+declare const __APP_VERSION__: string

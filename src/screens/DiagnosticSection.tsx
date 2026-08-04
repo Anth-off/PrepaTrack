@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import type { AppUpdateControl, AppVersionInfo } from '../hooks/useAppUpdate'
 
 declare const __BUILD_TIME__: string
 
@@ -21,7 +22,7 @@ interface Info {
  * n'existent que sur l'appareil. Ces quelques valeurs, lisibles et recopiables,
  * évitent de procéder par essais successifs à l'aveugle.
  */
-export function DiagnosticSection() {
+export function DiagnosticSection({ update }: { update: AppUpdateControl }) {
   const [info, setInfo] = useState<Info | undefined>()
   const [copied, setCopied] = useState(false)
   const [debug, setDebug] = useState(false)
@@ -96,6 +97,15 @@ export function DiagnosticSection() {
 
   const lines = [
     `Build : ${info.build}`,
+    `Version installée : ${formatVersion(update.installed)}`,
+    `Version disponible : ${
+      update.ready
+        ? update.available
+          ? formatVersion(update.available)
+          : 'téléchargée · numéro indisponible'
+        : 'aucune en attente'
+    }`,
+    `Mise à jour : ${formatUpdateStatus(update)}`,
     `Affichage : ${info.affichage}`,
     `Écran : ${info.ecran}`,
     `Fenêtre : ${info.fenetre}`,
@@ -111,9 +121,9 @@ export function DiagnosticSection() {
         Diagnostic d'affichage
       </h3>
       <p className="mb-3 mt-1 text-sm text-slate-500">
-        À transmettre en cas de problème de mise en page. La ligne « Build » indique la
-        version réellement exécutée : si elle est ancienne, ferme complètement l'app et
-        rouvre-la pour récupérer la dernière.
+        À transmettre en cas de problème de mise en page ou de mise à jour. Une nouvelle
+        version reste en attente jusqu'à ta confirmation et ne s'installe jamais pendant
+        une vacation.
       </p>
 
       <dl className="tabular flex flex-col gap-1 text-sm">
@@ -164,4 +174,20 @@ export function DiagnosticSection() {
       )}
     </section>
   )
+}
+
+function formatVersion(value: AppVersionInfo): string {
+  const date = new Date(value.buildTime)
+  const build = Number.isNaN(date.getTime()) ? value.buildTime : date.toLocaleString('fr-FR')
+  return `v${value.version} · ${build}`
+}
+
+function formatUpdateStatus(update: AppUpdateControl): string {
+  if (update.installing) return 'installation confirmée'
+  if (update.ready) return 'en attente de confirmation'
+  if (update.lastError) return 'vérification impossible · version actuelle utilisable'
+  if (update.registered) {
+    return update.online ? 'à jour' : 'hors ligne · version actuelle utilisable'
+  }
+  return 'service worker indisponible · application utilisable'
 }

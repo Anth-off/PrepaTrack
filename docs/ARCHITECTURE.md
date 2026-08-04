@@ -107,3 +107,15 @@ politiques, rôles et déclencheurs attendus.
 Une modification de schéma doit rester compatible avec les anciennes versions déjà
 installées : une PWA peut continuer à fonctionner hors ligne plusieurs jours avant de
 récupérer la release suivante.
+
+## Cycle de mise à jour de la PWA
+
+Le service worker précache une nouvelle version en arrière-plan, mais reste en attente.
+`skipWaiting` et `clientsClaim` sont désactivés : aucun contrôleur ne peut donc être
+remplacé automatiquement pendant qu'une vacation est affichée. L'application n'envoie
+le message d'activation qu'après une confirmation explicite et seulement lorsqu'aucune
+vacation n'est ouverte. La prise de contrôle provoque alors un unique rechargement.
+
+Les caches de la version active restent disponibles hors ligne jusqu'à cette activation.
+Le fichier réseau `version.json`, volontairement absent du précache, sert uniquement au
+diagnostic ; son absence ou son téléchargement en échec ne bloque jamais l'application.

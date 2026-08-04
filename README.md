@@ -32,7 +32,9 @@ reprend automatiquement lorsque la connexion revient.
 - détection locale et optionnelle des déplacements du chariot ;
 - sauvegarde et restauration complètes ;
 - synchronisation facultative iPhone ↔ PC et vue d'équipe pour les gestionnaires ;
-- installation PWA et utilisation hors ligne sans serveur applicatif dédié.
+- installation PWA et utilisation hors ligne sans serveur applicatif dédié ;
+- mises à jour téléchargées en arrière-plan puis installées uniquement après
+  confirmation, hors vacation.
 
 ## Démarrage rapide
 

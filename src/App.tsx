@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { useAlerts } from './hooks/useAlerts'
 import { useCartMotion } from './hooks/useCartMotion'
+import { AppUpdateNotice } from './components/AppUpdateNotice'
 import { SyncStatusBadge } from './components/SyncStatusBadge'
+import { useAppUpdate } from './hooks/useAppUpdate'
 import { DESKTOP_QUERY, useMediaQuery } from './hooks/useMediaQuery'
 import { useSession } from './hooks/useSession'
 import { useResumePrompt } from './hooks/useResumePrompt'
@@ -33,6 +35,9 @@ const TABS: TabDef[] = [
 
 export default function App() {
   const session = useSession()
+  // Tant que la base n'est pas chargée, on choisit le cas sûr : une vacation
+  // pourrait être ouverte et aucune mise à jour ne doit alors être activable.
+  const appUpdate = useAppUpdate(session.loading || Boolean(session.snap.workday))
   const resume = useResumePrompt(session)
   const cartMotion = useCartMotion(session)
   const sync = useSync()
@@ -133,23 +138,25 @@ export default function App() {
 
       {activeTab === 'settings' && (
         <div className="mx-auto w-full max-w-2xl">
-          <SettingsScreen sync={sync} motion={cartMotion} />
+          <SettingsScreen sync={sync} motion={cartMotion} update={appUpdate} />
         </div>
       )}
     </>
   )
 
   return (
-    // La marge haute reste sur la coque fixe : le contenu ne peut ainsi jamais
-    // passer sous l'heure ou la Dynamic Island pendant un défilement.
-    <div
-      className="app-shell flex bg-ink-900"
-      style={{
-        paddingTop: 'env(safe-area-inset-top)',
-        paddingLeft: 'env(safe-area-inset-left)',
-        paddingRight: 'env(safe-area-inset-right)',
-      }}
-    >
+    <>
+      <AppUpdateNotice update={appUpdate} />
+      {/* La marge haute reste sur la coque fixe : le contenu ne peut ainsi jamais
+          passer sous l'heure ou la Dynamic Island pendant un défilement. */}
+      <div
+        className="app-shell flex bg-ink-900"
+        style={{
+          paddingTop: 'env(safe-area-inset-top)',
+          paddingLeft: 'env(safe-area-inset-left)',
+          paddingRight: 'env(safe-area-inset-right)',
+        }}
+      >
       {/* Barre latérale : la navigation d'une application de bureau se tient à
           gauche, pas au pouce en bas de l'écran. */}
       <aside className="sticky top-0 hidden h-full max-h-screen w-56 shrink-0 flex-col overflow-y-auto border-r border-ink-600 bg-ink-800 px-3 py-4 md:flex">
@@ -240,7 +247,8 @@ export default function App() {
           ))}
         </nav>
       </div>
-    </div>
+      </div>
+    </>
   )
 }
 
