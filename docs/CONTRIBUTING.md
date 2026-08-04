@@ -42,6 +42,9 @@ branche de travail
   tag + GitHub Release
       │
       ▼
+  migration additive Supabase
+      │
+      ▼
   vérifications rejouées sur le tag
       │
       ▼
@@ -208,8 +211,9 @@ changement fusionné dans `main`.
 
 Fusionner la Release PR. C'est tout, et c'est le seul moyen.
 
-Il s'ensuit automatiquement : le tag, la GitHub Release, les vérifications rejouées
-sur le tag, puis le déploiement.
+Il s'ensuit automatiquement : le tag, la GitHub Release, l'application et la
+vérification du schéma Supabase, les vérifications rejouées sur le tag, puis le
+déploiement. Si la migration échoue, la nouvelle version n'est pas déployée.
 
 Les vérifications sont **rejouées** parce que le commit de release n'est pas celui qui
 a été testé en PR : le squash produit un arbre différent, et Release Please y ajoute
@@ -260,15 +264,19 @@ fonctionnerait encore avec le nouveau schéma. Si la réponse est non, le change
 
 ## Base de données
 
-Les migrations **ne sont pas automatisées**, délibérément :
+Les migrations additives sont appliquées automatiquement pendant une release,
+avant le déploiement de l'application :
 
 - `npm run db:check` — contrôle hors ligne, tourne en CI ;
-- `npm run db:setup` — applique le schéma, **manuellement**, depuis un poste
-  disposant des identifiants.
+- `npm run db:setup` — applique puis vérifie le schéma en production depuis le
+  workflow de release ; la même commande reste utilisable manuellement pour une
+  réparation contrôlée.
 
 Le fichier `supabase/schema.sql` est écrit pour être rejoué sans risque : il ne crée
 que ce qui manque et ne touche jamais aux données existantes. Aucune opération
-destructive n'est automatisée, et aucun identifiant de base n'est confié à la CI.
+destructive n'est automatisée. L'adresse PostgreSQL est conservée dans le secret
+GitHub `SUPABASE_DB_URL` et n'est accessible qu'au job de migration de l'environnement
+`production`.
 
 **Avant une modification de schéma en production** : exporter une sauvegarde depuis
 l'application (Réglages → Sauvegarde) et vérifier la rétention des sauvegardes
@@ -315,11 +323,12 @@ Dans **Settings → Secrets and variables → Actions → New repository secret*
 | `VERCEL_TOKEN` | Vercel → Account Settings → Tokens | déploiement |
 | `VERCEL_ORG_ID` | `.vercel/project.json`, champ `orgId` | déploiement |
 | `VERCEL_PROJECT_ID` | `.vercel/project.json`, champ `projectId` | déploiement |
+| `SUPABASE_DB_URL` | Supabase → Database → Connection string → URI | migration additive avant déploiement |
 
 `GITHUB_TOKEN` est fourni par GitHub, il n'y a rien à créer.
 
-Aucun identifiant de base de données n'est nécessaire : la CI ne se connecte jamais à
-Supabase.
+La CI des pull requests ne se connecte jamais à Supabase. Seul le workflow de release,
+après création du tag, reçoit `SUPABASE_DB_URL` dans l'environnement `production`.
 
 Le fichier `.vercel/` est ignoré par git — d'où la reprise de ces deux identifiants en
 secrets.
