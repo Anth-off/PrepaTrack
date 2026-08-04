@@ -24,6 +24,7 @@ reprend automatiquement lorsque la connexion revient.
 
 - suivi linéaire de la journée, des commandes, pauses, trajets et aléas ;
 - chronos fiables après veille, verrouillage ou fermeture de l'application ;
+- résumé de reprise avec continuation, clôture ou correction guidée du chrono ;
 - comptage des colis, supports et lignes de commande ;
 - correction a posteriori sans créer de trou ni de chevauchement dans la timeline ;
 - statistiques de cadence, temps perdu et recommandations déterministes ;

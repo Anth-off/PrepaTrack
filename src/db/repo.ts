@@ -726,6 +726,7 @@ export function unexplainedColis(
 export async function editSegmentBounds(
   segmentId: string,
   bounds: { startedAt?: number; endedAt?: number },
+  now: number = Date.now(),
 ): Promise<void> {
   const segment = await db.segments.get(segmentId)
   if (!segment) return
@@ -739,7 +740,9 @@ export async function editSegmentBounds(
 
   if (bounds.startedAt !== undefined) {
     const min = prev ? prev.startedAt + 1000 : Number.NEGATIVE_INFINITY
-    const max = segment.endedAt ?? Number.POSITIVE_INFINITY
+    // Un chrono ouvert ne possède pas encore de borne de fin : l'instant
+    // présent joue ce rôle pour interdire un début dans le futur.
+    const max = segment.endedAt ?? now
     const value = Math.min(Math.max(bounds.startedAt, min), max)
     segment.startedAt = value
     if (prev) {

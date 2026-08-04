@@ -6,13 +6,15 @@ import { PaceGauge } from '../components/PaceGauge'
 import { QuickActions } from '../components/QuickActions'
 import { RateCards } from '../components/RateCards'
 import { TimeBreakdown } from '../components/TimeBreakdown'
+import { ResumeSheet } from '../components/ResumeSheet'
 import { contextualTarget } from '../core/contextualTarget'
 import { breaksTaken, primaryActionLabel } from '../core/machine'
 import { computeLive, isRateMeaningful, phaseElapsed } from '../core/metrics'
 import { segmentDef } from '../core/segments'
 import { formatShort, hhmm } from '../core/time'
-import type { OrderType, SegmentType, Supports, SupportKind } from '../core/types'
+import type { OrderType, Segment, SegmentType, Supports, SupportKind } from '../core/types'
 import type { Session } from '../hooks/useSession'
+import type { ResumePromptControl } from '../hooks/useResumePrompt'
 import { useRecentDays } from '../hooks/useRecentDays'
 import {
   addColis,
@@ -40,9 +42,11 @@ import {
 } from '../db/undo'
 import { NewOrderSheet } from './NewOrderSheet'
 import { OrderEndSheet } from './OrderEndSheet'
+import { CorrectSheet } from './CorrectSheet'
 
 interface Props {
   session: Session
+  resume: ResumePromptControl
   onShowReport: () => void
   /** Présentation bureau : deux colonnes, le suivi du jour à côté de l'action. */
   desktop?: boolean
@@ -57,7 +61,7 @@ interface Props {
  * boutons de deux mètres de large n'aideraient personne — et la place gagnée
  * sert à afficher le bilan du jour en continu.
  */
-export function TodayScreen({ session, onShowReport, desktop }: Props) {
+export function TodayScreen({ session, resume, onShowReport, desktop }: Props) {
   const { view, snap, day, live: sessionLive, shortages, settings, now } = session
   const { days: historyDays } = useRecentDays(365)
   const [newOrder, setNewOrder] = useState(false)
@@ -65,6 +69,7 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
   const [confirmEnd, setConfirmEnd] = useState(false)
   const [confirmIncomplete, setConfirmIncomplete] = useState(false)
   const [undoNotice, setUndoNotice] = useState<UndoNotice>()
+  const [correctingResume, setCorrectingResume] = useState<Segment | undefined>()
 
   useEffect(() => {
     let mounted = true
@@ -356,6 +361,10 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
 
   const sheets = (
     <>
+      <CorrectSheet
+        segment={correctingResume}
+        onClose={() => setCorrectingResume(undefined)}
+      />
       <NewOrderSheet
         open={newOrder}
         historyDays={historyDays}
@@ -409,6 +418,27 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
           }}
         />
       )}
+      {/* Placé en dernier pour rester visible même si une feuille de saisie
+          était ouverte au moment où iOS a suspendu l'application. */}
+      <ResumeSheet
+        summary={resume.summary}
+        now={now}
+        onContinue={resume.continueWithoutChanges}
+        onFinish={() => {
+          const segmentId = resume.summary?.segmentId
+          resume.continueWithoutChanges()
+          if (segmentId && view.active?.id === segmentId) void handlePrimary()
+        }}
+        onCorrect={() => {
+          const segment = snap.segments.find((row) => row.id === resume.summary?.segmentId)
+          resume.continueWithoutChanges()
+          setCorrectingResume(segment)
+        }}
+        onDetails={() => {
+          resume.continueWithoutChanges()
+          onShowReport()
+        }}
+      />
     </>
   )
 

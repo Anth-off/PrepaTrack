@@ -517,6 +517,17 @@ describe('corrections a posteriori', () => {
     expect(fixed.startedAt).toBeLessThanOrEqual(fixed.endedAt!)
   })
 
+  it("refuse de placer le début d'un chrono ouvert dans le futur", async () => {
+    await startDay(at(0))
+    const active = (await loadSnapshot()).segments.find((s) => s.endedAt === undefined)!
+
+    await editSegmentBounds(active.id, { startedAt: at(60) }, at(30))
+
+    const fixed = (await loadSnapshot()).segments.find((s) => s.id === active.id)!
+    expect(fixed.startedAt).toBe(at(30))
+    expect(fixed.endedAt).toBeUndefined()
+  })
+
   it('absorbe la durée d’un segment supprimé dans le précédent', async () => {
     await startDay(at(0))
     await endBriefing(at(10))

@@ -85,6 +85,7 @@ export function CorrectSheet({ segment, onClose }: Props) {
           <input
             type="datetime-local"
             value={start}
+            max={toLocalInput(segment.endedAt ?? now)}
             onChange={(e) => setStart(e.target.value)}
             className="rounded-xl border border-ink-600 bg-ink-800 px-3 py-3 text-lg"
           />
@@ -96,6 +97,7 @@ export function CorrectSheet({ segment, onClose }: Props) {
             <input
               type="datetime-local"
               value={end}
+              min={start}
               onChange={(e) => setEnd(e.target.value)}
               className="rounded-xl border border-ink-600 bg-ink-800 px-3 py-3 text-lg"
             />

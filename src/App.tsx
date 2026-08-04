@@ -4,6 +4,7 @@ import { useCartMotion } from './hooks/useCartMotion'
 import { SyncStatusBadge } from './components/SyncStatusBadge'
 import { DESKTOP_QUERY, useMediaQuery } from './hooks/useMediaQuery'
 import { useSession } from './hooks/useSession'
+import { useResumePrompt } from './hooks/useResumePrompt'
 import { useSync } from './hooks/useSync'
 import { formatShort, hhmm } from './core/time'
 import { DashboardScreen } from './screens/DashboardScreen'
@@ -32,6 +33,7 @@ const TABS: TabDef[] = [
 
 export default function App() {
   const session = useSession()
+  const resume = useResumePrompt(session)
   const cartMotion = useCartMotion(session)
   const sync = useSync()
   const isDesktop = useMediaQuery(DESKTOP_QUERY)
@@ -108,6 +110,7 @@ export default function App() {
       {activeTab === 'today' && (
         <TodayScreen
           session={session}
+          resume={resume}
           desktop={isDesktop}
           onShowReport={() => {
             setReportSegmentId(undefined)
