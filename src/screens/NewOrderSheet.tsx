@@ -3,6 +3,7 @@ import { BigButton } from '../components/BigButton'
 import { NumPad } from '../components/NumPad'
 import { Sheet } from '../components/Sheet'
 import { TargetReference } from '../components/TargetReference'
+import { Stepper } from '../components/Stepper'
 import { contextualTarget } from '../core/contextualTarget'
 import type { DayData } from '../core/analysis'
 import type { OrderType } from '../core/types'
@@ -12,7 +13,13 @@ interface Props {
   historyDays: DayData[]
   manualRate: number
   onCancel: () => void
-  onConfirm: (input: { colisPlanned: number; linesCount: number; orderType: OrderType; storeCount: 1 | 2 }) => void
+  onConfirm: (input: {
+    colisPlanned: number
+    linesCount: number
+    orderType: OrderType
+    storeCount: 1 | 2
+    initialPallets: [number, number]
+  }) => void
 }
 
 const TYPES: { value: OrderType; label: string }[] = [
@@ -32,6 +39,7 @@ export function NewOrderSheet({ open, historyDays, manualRate, onCancel, onConfi
   const [field, setField] = useState<'colis' | 'lines'>('colis')
   const [orderType, setOrderType] = useState<OrderType>('normale')
   const [storeCount, setStoreCount] = useState<1 | 2>(1)
+  const [initialPallets, setInitialPallets] = useState<[number, number]>([1, 1])
 
   const colisNum = Number(colis || 0)
   const linesNum = Number(lines || 0)
@@ -48,6 +56,7 @@ export function NewOrderSheet({ open, historyDays, manualRate, onCancel, onConfi
     setField('colis')
     setOrderType('normale')
     setStoreCount(1)
+    setInitialPallets([1, 1])
   }
 
   function handleChange(next: string) {
@@ -121,11 +130,31 @@ export function NewOrderSheet({ open, historyDays, manualRate, onCancel, onConfi
               </button>
             ))}
           </div>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <div className="text-sm font-semibold uppercase tracking-wide text-slate-400">
+            Palettes présentes au départ
+          </div>
+          <Stepper
+            label={storeCount === 2 ? 'Magasin 1' : 'Palettes'}
+            value={initialPallets[0]}
+            min={1}
+            max={10}
+            onChange={(value) => setInitialPallets((current) => [value, current[1]])}
+          />
           {storeCount === 2 && (
-            <p className="mt-2 text-xs text-slate-500">
-              Deux palettes seront ouvertes immédiatement, une par magasin.
-            </p>
+            <Stepper
+              label="Magasin 2"
+              value={initialPallets[1]}
+              min={1}
+              max={10}
+              onChange={(value) => setInitialPallets((current) => [current[0], value])}
+            />
           )}
+          <p className="text-xs text-slate-500">
+            Tu pourras encore ajouter une palette lors de la clôture.
+          </p>
         </div>
 
         <TargetReference reference={reference} />
@@ -135,7 +164,13 @@ export function NewOrderSheet({ open, historyDays, manualRate, onCancel, onConfi
           sub={ready ? `${colisNum} colis · ${linesNum || '?'} lignes` : 'Saisis le nombre de colis'}
           disabled={!ready}
           onClick={() => {
-            onConfirm({ colisPlanned: colisNum, linesCount: linesNum, orderType, storeCount })
+            onConfirm({
+              colisPlanned: colisNum,
+              linesCount: linesNum,
+              orderType,
+              storeCount,
+              initialPallets,
+            })
             reset()
           }}
         />

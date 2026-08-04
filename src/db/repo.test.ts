@@ -41,6 +41,63 @@ async function phase() {
 }
 
 describe('palettes par magasin', () => {
+  it('ouvre plusieurs palettes dès le départ pour un seul magasin', async () => {
+    await startDay(at(0))
+    await endBriefing(at(5))
+    await startOrder({
+      colisPlanned: 40,
+      linesCount: 10,
+      orderType: 'normale',
+      storeCount: 1,
+      initialPallets: [2, 1],
+    }, at(10))
+
+    const snap = await loadSnapshot()
+    expect(snap.pallets).toHaveLength(2)
+    expect(snap.pallets?.map((pallet) => pallet.storeNumber)).toEqual([1, 1])
+    expect(snap.orders[0].activePalletId).toBe(snap.pallets?.[0].id)
+  })
+
+  it('répartit les palettes initiales entre deux magasins', async () => {
+    await startDay(at(0))
+    await endBriefing(at(5))
+    await startOrder({
+      colisPlanned: 80,
+      linesCount: 20,
+      orderType: 'normale',
+      storeCount: 2,
+      initialPallets: [2, 3],
+    }, at(10))
+
+    const snap = await loadSnapshot()
+    expect(snap.pallets?.map((pallet) => pallet.storeNumber)).toEqual([1, 1, 2, 2, 2])
+  })
+
+  it('permet d’ajouter une palette lors de la clôture', async () => {
+    await startDay(at(0))
+    await endBriefing(at(5))
+    const order = await startOrder({
+      colisPlanned: 30,
+      linesCount: 6,
+      orderType: 'normale',
+      storeCount: 1,
+    }, at(10))
+    const first = (await loadSnapshot()).pallets![0]
+
+    await saveOrderResult(order!.id, {
+      colisActual: 30,
+      supports: { ...EMPTY_SUPPORTS, europe: 1, ipp: 1 },
+      orderType: 'normale',
+      palletSupports: [{ id: first.id, support: 'europe' }],
+      additionalPallets: [{ storeNumber: 1, support: 'ipp' }],
+    })
+
+    const snap = await loadSnapshot()
+    expect(snap.pallets).toHaveLength(2)
+    expect(snap.pallets?.map((pallet) => pallet.support)).toEqual(['europe', 'ipp'])
+    expect(snap.orders[0].supports).toMatchObject({ europe: 1, ipp: 1 })
+  })
+
   it('attribue colis et filmages à la palette active avec deux magasins', async () => {
     await startDay(at(0))
     await endBriefing(at(5))

@@ -186,6 +186,7 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
     linesCount: number
     orderType: OrderType
     storeCount: 1 | 2
+    initialPallets: [number, number]
   }) {
     setNewOrder(false)
     await runWithoutUndo(() => startOrder(input))
@@ -196,6 +197,7 @@ export function TodayScreen({ session, onShowReport, desktop }: Props) {
     supports: Supports
     orderType: OrderType
     palletSupports: Array<{ id: string; support?: SupportKind }>
+    additionalPallets: Array<{ storeNumber: 1 | 2; support?: SupportKind }>
   }) {
     if (view.order) await runWithoutUndo(() => saveOrderResult(view.order!.id, data))
     setOrderEnd(false)
