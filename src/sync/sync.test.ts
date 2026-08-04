@@ -1,16 +1,20 @@
 import 'fake-indexeddb/auto'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { db, getMeta, setMeta, wipeAll } from '../db/db'
 import {
   applyRemoteRows,
+  classifySyncError,
   countPending,
+  formatSyncDiagnostic,
   getLastSyncAt,
   getLastSyncAttemptAt,
   runSync,
   sanitizeSyncError,
+  syncTables,
 } from './sync'
 import { SYNC_TABLES } from './tables'
-import type { Segment, Workday } from '../core/types'
+import type { Segment, StockShortage, Workday } from '../core/types'
 
 /**
  * Tests de la mécanique de fusion sans réseau : les mappers et les règles de
@@ -39,6 +43,39 @@ function segment(over: Partial<Segment> = {}): Segment {
 
 const segmentTable = SYNC_TABLES.find((t) => t.remote === 'segments')!
 const workdayTable = SYNC_TABLES.find((t) => t.remote === 'workdays')!
+const shortageTable = SYNC_TABLES.find((t) => t.remote === 'stock_shortages')!
+
+function fakeClient(unavailable?: string) {
+  const upserts: string[] = []
+  const client = {
+    from(table: string) {
+      const query = {
+        select: () => query,
+        gt: () => query,
+        order: () => query,
+        range: async () =>
+          unavailable === table
+            ? {
+                data: null,
+                error: {
+                  code: 'PGRST205',
+                  message: `Could not find the table public.${table} in the schema cache`,
+                },
+              }
+            : { data: [], error: null },
+        upsert: async () => {
+          upserts.push(table)
+          return unavailable === table
+            ? { error: { code: 'PGRST205', message: 'Schema cache unavailable' } }
+            : { error: null }
+        },
+      }
+      return query
+    },
+  } as unknown as SupabaseClient
+
+  return { client, upserts }
+}
 
 describe('conversion locale ↔ distante', () => {
   it('préserve un segment en cours à travers un aller-retour', () => {
@@ -197,5 +234,70 @@ describe('erreurs affichables', () => {
 
   it('explique une panne réseau sans détail technique', () => {
     expect(sanitizeSyncError(new TypeError('Failed to fetch'))).toContain('inaccessible')
+  })
+
+  it('distingue un schéma absent, une règle RLS et une donnée invalide', () => {
+    expect(classifySyncError({ code: 'PGRST205', message: 'table missing' })).toBe('schema')
+    expect(classifySyncError({ code: '42501', message: 'row-level security policy' })).toBe(
+      'permission',
+    )
+    expect(classifySyncError({ code: '23503', message: 'violates foreign key' })).toBe(
+      'invalid-data',
+    )
+  })
+
+  it('produit un diagnostic sans recopier le message distant', () => {
+    const diagnostic = formatSyncDiagnostic([
+      { table: 'stock_shortages', operation: 'pull', kind: 'schema' },
+    ])
+    expect(diagnostic).toBe('stock_shortages · lecture · schéma incompatible')
+    expect(diagnostic).not.toContain('token')
+    expect(diagnostic).not.toContain('https://')
+  })
+})
+
+describe('tolérance aux migrations manquantes', () => {
+  it('synchronise les anciennes tables et garde la nouvelle table en attente', async () => {
+    const workday: Workday = {
+      id: 'w-partial',
+      date: '2026-08-04',
+      status: 'open',
+      startedAt: T,
+      updatedAt: T,
+      syncState: 'pending',
+    }
+    const shortage: StockShortage = {
+      id: 'shortage-partial',
+      workdayId: workday.id,
+      orderId: 'o-partial',
+      at: T,
+      quantity: 1,
+      resolved: false,
+      updatedAt: T,
+      syncState: 'pending',
+    }
+    await db.workdays.put(workday)
+    await db.stockShortages.put(shortage)
+    await setMeta('sync:cursor:stock_shortages', T - 1)
+
+    const broken = fakeClient('stock_shortages')
+    const partial = await syncTables(broken.client, [workdayTable, shortageTable])
+
+    expect(partial).toMatchObject({ pulled: 0, pushed: 1 })
+    expect(partial.failures).toEqual([
+      { table: 'stock_shortages', operation: 'pull', kind: 'schema' },
+    ])
+    expect(await db.workdays.get(workday.id)).toMatchObject({ syncState: 'synced' })
+    expect(await db.stockShortages.get(shortage.id)).toMatchObject({ syncState: 'pending' })
+    expect(await getMeta('sync:cursor:stock_shortages', 0)).toBe(T - 1)
+
+    const repaired = fakeClient()
+    const retry = await syncTables(repaired.client, [workdayTable, shortageTable])
+    expect(retry).toMatchObject({ pulled: 0, pushed: 1, failures: [] })
+    expect(await db.stockShortages.get(shortage.id)).toMatchObject({ syncState: 'synced' })
+    expect(repaired.upserts).toEqual(['stock_shortages'])
+
+    await syncTables(repaired.client, [workdayTable, shortageTable])
+    expect(repaired.upserts).toEqual(['stock_shortages'])
   })
 })

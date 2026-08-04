@@ -170,7 +170,11 @@ try {
   // Contrôle explicite : « aucune erreur » ne prouve pas que les tables sont là.
   const { rows } = await client.query(`
     select tablename,
-           (select count(*) from pg_policies p where p.tablename = t.tablename) as policies
+           rowsecurity,
+           (select count(*)
+              from pg_policies p
+             where p.schemaname = t.schemaname
+               and p.tablename = t.tablename) as policies
       from pg_tables t
      where schemaname = 'public'
        and tablename in ('workdays', 'orders', 'segments', 'colis_events', 'stock_shortages', 'preparers')
@@ -184,11 +188,72 @@ try {
     )
   }
 
+  const withoutRls = rows.filter((r) => !r.rowsecurity)
+  if (withoutRls.length > 0) {
+    fail(
+      `Sécurité RLS inactive : ${withoutRls.map((r) => r.tablename).join(', ')}.`,
+      'Le déploiement est interrompu avant que le nouveau code accède à ces tables.',
+    )
+  }
+
   const unprotected = rows.filter((r) => Number(r.policies) === 0)
   if (unprotected.length > 0) {
     fail(
       `Tables sans règle de sécurité : ${unprotected.map((r) => r.tablename).join(', ')}.`,
       "Les données seraient lisibles par n'importe qui. Relance la commande.",
+    )
+  }
+  const requiredShortageColumns = [
+    'id', 'user_id', 'workday_id', 'order_id', 'at', 'quantity',
+    'resolved', 'updated_at', 'deleted_at',
+  ]
+  const { rows: shortageColumns } = await client.query(`
+    select column_name
+      from information_schema.columns
+     where table_schema = 'public'
+       and table_name = 'stock_shortages'
+  `)
+  const availableShortageColumns = new Set(shortageColumns.map((row) => row.column_name))
+  const missingShortageColumns = requiredShortageColumns.filter(
+    (column) => !availableShortageColumns.has(column),
+  )
+  if (missingShortageColumns.length > 0) {
+    fail(
+      `Colonnes manquantes dans stock_shortages : ${missingShortageColumns.join(', ')}.`,
+      'Complète la migration additive avant de déployer cette version.',
+    )
+  }
+
+  const { rowCount: shortageIndexes } = await client.query(`
+    select 1
+      from pg_indexes
+     where schemaname = 'public'
+       and tablename = 'stock_shortages'
+       and indexname = 'stock_shortages_sync_idx'
+  `)
+  if (shortageIndexes !== 1) {
+    fail(
+      "L'index stock_shortages_sync_idx est absent.",
+      'Relance la migration avant de déployer cette version.',
+    )
+  }
+
+  const { rows: shortageForeignKeys } = await client.query(`
+    select pg_get_constraintdef(c.oid) as definition
+      from pg_constraint c
+      join pg_class t on t.oid = c.conrelid
+      join pg_namespace n on n.oid = t.relnamespace
+     where n.nspname = 'public'
+       and t.relname = 'stock_shortages'
+       and c.contype = 'f'
+  `)
+  const ownsShortages = shortageForeignKeys.some((row) =>
+    /foreign key \(user_id\) references auth\.users\(id\) on delete restrict/i.test(row.definition),
+  )
+  if (!ownsShortages) {
+    fail(
+      'La clé étrangère sécurisée de stock_shortages vers auth.users est absente.',
+      'Applique supabase/multi-user.sql avant de déployer cette version.',
     )
   }
 

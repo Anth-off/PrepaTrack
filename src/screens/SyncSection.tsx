@@ -154,6 +154,20 @@ function SignInForm({ sync }: Props) {
 }
 
 function Connected({ sync }: Props) {
+  const [diagnosticCopied, setDiagnosticCopied] = useState(false)
+
+  async function copyDiagnostic() {
+    const diagnostic = sync.outcome?.diagnostic
+    if (!diagnostic) return
+    try {
+      await navigator.clipboard.writeText(diagnostic)
+      setDiagnosticCopied(true)
+      window.setTimeout(() => setDiagnosticCopied(false), 2_000)
+    } catch {
+      setDiagnosticCopied(false)
+    }
+  }
+
   return (
     <Card>
       <div className="mt-2 flex items-baseline justify-between gap-3">
@@ -164,6 +178,24 @@ function Connected({ sync }: Props) {
       </div>
 
       <p className="mt-1 text-sm text-slate-500">{sync.status.detail}</p>
+
+      {sync.outcome?.state === 'error' && sync.outcome.diagnostic && (
+        <div className="mt-3 rounded-xl border border-warn/40 bg-warn/10 p-3 text-xs">
+          <div className="font-semibold uppercase tracking-wide text-warn">
+            Diagnostic mainteneur
+          </div>
+          <pre className="mt-1 whitespace-pre-wrap break-words font-sans text-slate-400">
+            {sync.outcome.diagnostic}
+          </pre>
+          <button
+            type="button"
+            onClick={() => void copyDiagnostic()}
+            className="pressable mt-2 min-h-[2.75rem] rounded-lg bg-ink-700 px-3 font-semibold text-slate-300"
+          >
+            {diagnosticCopied ? 'Diagnostic copié' : 'Copier le diagnostic'}
+          </button>
+        </div>
+      )}
 
       <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-xl bg-ink-700 p-3 text-sm">
         <dt className="text-slate-500">Profil</dt>

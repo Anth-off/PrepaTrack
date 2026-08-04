@@ -34,6 +34,30 @@ export interface SyncOutcome {
   pushed: number
   at: number
   error?: string
+  /** Diagnostic volontairement borné à des valeurs non sensibles. */
+  diagnostic?: string
+  failures?: SyncFailure[]
+}
+
+export type SyncErrorKind =
+  | 'network'
+  | 'auth'
+  | 'permission'
+  | 'schema'
+  | 'invalid-data'
+  | 'unknown'
+export type SyncOperation = 'pull' | 'push'
+
+export interface SyncFailure {
+  table: string
+  operation: SyncOperation
+  kind: SyncErrorKind
+}
+
+interface SyncProgress {
+  pulled: number
+  pushed: number
+  failures: SyncFailure[]
 }
 
 let currentRun: Promise<SyncOutcome> | undefined
@@ -92,11 +116,19 @@ async function performSync(): Promise<SyncOutcome> {
     const { data: sessionData } = await client.auth.getSession()
     if (!sessionData.session) return { state: 'signed_out', pulled: 0, pushed: 0, at }
 
-    for (const table of SYNC_TABLES) {
-      pulled += await pullTable(client, table)
-    }
-    for (const table of SYNC_TABLES) {
-      pushed += await pushTable(client, table)
+    const progress = await syncTables(client)
+    pulled = progress.pulled
+    pushed = progress.pushed
+    if (progress.failures.length > 0) {
+      return {
+        state: 'error',
+        pulled,
+        pushed,
+        at: Date.now(),
+        error: failureMessage(progress.failures),
+        diagnostic: formatSyncDiagnostic(progress.failures),
+        failures: progress.failures,
+      }
     }
     const finishedAt = Date.now()
     await setMeta('sync:lastAt', finishedAt)
@@ -110,6 +142,45 @@ async function performSync(): Promise<SyncOutcome> {
       error: sanitizeSyncError(error),
     }
   }
+}
+
+/**
+ * Synchronise chaque table indépendamment.
+ *
+ * La lecture précède toujours l'écriture d'une même table pour préserver le
+ * dernier-écrit-gagnant. Une migration additive oubliée ne bloque toutefois
+ * plus les tables compatibles : seules les lignes de la table en défaut restent
+ * en attente. Les erreurs globales (réseau ou session) arrêtent la tentative
+ * afin d'éviter cinq requêtes vouées au même échec.
+ */
+export async function syncTables(
+  client: SupabaseClient,
+  tables: AnySyncTable[] = SYNC_TABLES,
+): Promise<SyncProgress> {
+  let pulled = 0
+  let pushed = 0
+  const failures: SyncFailure[] = []
+
+  for (const table of tables) {
+    try {
+      pulled += await pullTable(client, table)
+    } catch (error) {
+      const failure = syncFailure(table.remote, 'pull', error)
+      failures.push(failure)
+      if (failure.kind === 'network' || failure.kind === 'auth') break
+      continue
+    }
+
+    try {
+      pushed += await pushTable(client, table)
+    } catch (error) {
+      const failure = syncFailure(table.remote, 'push', error)
+      failures.push(failure)
+      if (failure.kind === 'network' || failure.kind === 'auth') break
+    }
+  }
+
+  return { pulled, pushed, failures }
 }
 
 // --- Descente -------------------------------------------------------------
@@ -203,26 +274,111 @@ async function pushTable(client: SupabaseClient, table: AnySyncTable): Promise<n
 }
 
 export function sanitizeSyncError(error: unknown): string {
-  const raw =
-    error instanceof Error
-      ? error.message
-      : typeof error === 'object' && error && 'message' in error
-        ? String((error as { message: unknown }).message)
-        : ''
-  const message = raw.toLowerCase()
-  if (message.includes('jwt') || message.includes('token') || message.includes('auth')) {
-    return 'La session a expiré. Reconnecte-toi puis réessaie.'
+  return errorMessage(classifySyncError(error))
+}
+
+export function classifySyncError(error: unknown): SyncErrorKind {
+  const record = typeof error === 'object' && error ? (error as Record<string, unknown>) : {}
+  const code = String(record.code ?? '').toLowerCase()
+  const status = Number(record.status ?? 0)
+  const raw = error instanceof Error ? error.message : String(record.message ?? '')
+  const message = `${raw} ${String(record.details ?? '')} ${String(record.hint ?? '')}`.toLowerCase()
+
+  if (
+    code === 'pgrst205' ||
+    code === 'pgrst204' ||
+    code === '42p01' ||
+    code === '42703' ||
+    message.includes('schema cache') ||
+    (message.includes('relation') && message.includes('does not exist')) ||
+    message.includes('could not find the table') ||
+    message.includes('could not find the column')
+  ) {
+    return 'schema'
   }
   if (
-    message.includes('network') || message.includes('fetch') ||
-    message.includes('timeout') || message.includes('connexion')
+    status === 401 ||
+    code === 'pgrst301' ||
+    message.includes('jwt') ||
+    message.includes('token') ||
+    message.includes('auth')
   ) {
-    return 'Le service est momentanément inaccessible. Tes données restent sur cet appareil.'
+    return 'auth'
   }
-  if (message.includes('permission') || message.includes('policy') || message.includes('denied')) {
-    return 'Le compte ne permet pas cette synchronisation. Vérifie la connexion du profil.'
+  if (
+    status === 403 ||
+    code === '42501' ||
+    message.includes('permission') ||
+    message.includes('policy') ||
+    message.includes('denied') ||
+    message.includes('row-level security')
+  ) {
+    return 'permission'
   }
-  return 'La synchronisation a échoué. Tes données locales sont conservées.'
+  if (
+    message.includes('network') || message.includes('fetch') || message.includes('timeout') ||
+    message.includes('connexion')
+  ) {
+    return 'network'
+  }
+  if (/^(22|23)/.test(code) || message.includes('invalid input') || message.includes('violates')) {
+    return 'invalid-data'
+  }
+  return 'unknown'
+}
+
+export function formatSyncDiagnostic(failures: SyncFailure[]): string {
+  return failures
+    .map(
+      (failure) =>
+        `${failure.table} · ${failure.operation === 'pull' ? 'lecture' : 'écriture'} · ${kindLabel(failure.kind)}`,
+    )
+    .join('\n')
+}
+
+function syncFailure(table: string, operation: SyncOperation, error: unknown): SyncFailure {
+  return { table, operation, kind: classifySyncError(error) }
+}
+
+function failureMessage(failures: SyncFailure[]): string {
+  if (failures.some((failure) => failure.kind === 'schema')) {
+    return 'La base doit être mise à jour par le gestionnaire. Les données compatibles ont été synchronisées.'
+  }
+  return errorMessage(failures[0]?.kind ?? 'unknown')
+}
+
+function errorMessage(kind: SyncErrorKind): string {
+  switch (kind) {
+    case 'auth':
+      return 'La session a expiré. Reconnecte-toi puis réessaie.'
+    case 'network':
+      return 'Le service est momentanément inaccessible. Tes données restent sur cet appareil.'
+    case 'permission':
+      return 'Le compte ne permet pas cette synchronisation. Vérifie la connexion du profil.'
+    case 'invalid-data':
+      return 'Une donnée locale est incompatible. Elle reste en attente pour être corrigée.'
+    case 'schema':
+      return 'La base doit être mise à jour par le gestionnaire. Tes données locales sont conservées.'
+    default:
+      return 'La synchronisation a échoué. Tes données locales sont conservées.'
+  }
+}
+
+function kindLabel(kind: SyncErrorKind): string {
+  switch (kind) {
+    case 'network':
+      return 'réseau indisponible'
+    case 'auth':
+      return 'session invalide'
+    case 'permission':
+      return 'permission refusée'
+    case 'schema':
+      return 'schéma incompatible'
+    case 'invalid-data':
+      return 'donnée invalide'
+    default:
+      return 'erreur inconnue'
+  }
 }
 
 /** Message court et compréhensible pour l'écran de synchro. */

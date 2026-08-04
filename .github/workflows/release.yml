@@ -45,6 +45,30 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+  # Le schéma additif doit précéder le code qui l'utilise. Le script est
+  # idempotent : il complète la base sans effacer ni recréer les données.
+  migrate:
+    name: Mise à jour de la base
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Appliquer et vérifier le schéma Supabase
+        run: npm run db:setup
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
   # Les vérifications sont rejouées sur le commit de release lui-même. Ce commit
   # n'est pas celui qui a été testé en pull request : la fusion en squash produit
   # un arbre différent, et Release Please y ajoute encore version et changelog.
@@ -75,7 +99,7 @@ jobs:
     name: Déploiement production
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [release-please, verify]
+    needs: [release-please, migrate, verify]
     # Double garde : une version doit avoir été créée, et les vérifications
     # doivent être passées. Sur une pull request ce workflow ne s'exécute même
     # pas — il n'écoute que les pushes dans main.
