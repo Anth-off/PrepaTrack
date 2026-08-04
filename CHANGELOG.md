@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.2.1...v0.2.2) (2026-08-04)
+
+
+### Corrections
+
+* **sync:** rétablir la synchronisation iPhone ↔ PC sans effacer les données locales et isoler les futures incompatibilités de schéma ([3a64890](https://github.com/N0thyTVOff/PrepaTrack/commit/3a648901f2a6cf2bdf238a068903d3d6e0a9856a))
+
 ## [0.2.1](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.2.0...v0.2.1) (2026-08-03)
 
 
