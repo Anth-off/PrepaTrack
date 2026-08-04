@@ -14,7 +14,7 @@ import {
   syncTables,
 } from './sync'
 import { SYNC_TABLES } from './tables'
-import type { Segment, StockShortage, Workday } from '../core/types'
+import type { OrderPallet, Segment, StockShortage, Workday } from '../core/types'
 
 /**
  * Tests de la mécanique de fusion sans réseau : les mappers et les règles de
@@ -41,9 +41,25 @@ function segment(over: Partial<Segment> = {}): Segment {
   }
 }
 
+describe('synchronisation des palettes', () => {
+  it('préserve le magasin, les bornes et le support', () => {
+    const pallet: OrderPallet = {
+      id: 'p1', workdayId: 'w1', orderId: 'o1', number: 2, storeNumber: 2,
+      support: 'europe', startedAt: T, endedAt: T + 60_000,
+      startCount: 0, endCount: 18, updatedAt: T, syncState: 'pending',
+    }
+    const back = palletTable.fromRow(palletTable.toRow(pallet)) as OrderPallet
+    expect(back).toMatchObject({
+      id: 'p1', orderId: 'o1', number: 2, storeNumber: 2,
+      support: 'europe', startCount: 0, endCount: 18,
+    })
+  })
+})
+
 const segmentTable = SYNC_TABLES.find((t) => t.remote === 'segments')!
 const workdayTable = SYNC_TABLES.find((t) => t.remote === 'workdays')!
 const shortageTable = SYNC_TABLES.find((t) => t.remote === 'stock_shortages')!
+const palletTable = SYNC_TABLES.find((t) => t.remote === 'order_pallets')!
 
 function fakeClient(unavailable?: string) {
   const upserts: string[] = []

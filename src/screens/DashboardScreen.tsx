@@ -88,6 +88,10 @@ export function DashboardScreen({ onOpen }: Props) {
     { colis: 0, orders: 0, worked: 0, waste: 0, overtime: 0 },
   )
   const averageRate = totals.worked > 0 ? totals.colis / (totals.worked / 3_600_000) : 0
+  const palletMetrics = days.flatMap((day) => day.metrics.orders.flatMap((order) => order.pallets))
+  const palletOrders = days.flatMap((day) => day.metrics.orders).filter((order) => order.pallets.length > 0)
+  const palletColis = palletMetrics.reduce((sum, pallet) => sum + pallet.colis, 0)
+  const palletWrapping = palletMetrics.reduce((sum, pallet) => sum + pallet.wrapping, 0)
 
   return (
     <div className="flex flex-col gap-4 px-4 pb-4 md:px-6 md:py-6">
@@ -158,6 +162,17 @@ export function DashboardScreen({ onOpen }: Props) {
         <Kpi label="Temps perdu" value={formatShort(totals.waste)} />
         <Kpi label="Heures supp" value={formatShort(totals.overtime)} />
       </div>
+
+      {palletMetrics.length > 0 && (
+        <div className="grid grid-cols-3 gap-2">
+          <Kpi label="Colis / palette" value={String(Math.round(palletColis / palletMetrics.length))} />
+          <Kpi
+            label="Palettes / commande"
+            value={(palletMetrics.length / Math.max(1, palletOrders.length)).toFixed(1)}
+          />
+          <Kpi label="Filmage / palette" value={formatShort(palletWrapping / palletMetrics.length)} />
+        </div>
+      )}
 
       {days.length === 0 ? (
         <p className="card text-sm text-slate-500">

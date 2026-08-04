@@ -1,5 +1,5 @@
 import { BREAK_TYPES, isInterruption, segmentDef } from './segments'
-import type { Order, Segment, SegmentType, SuspendedRef, Workday } from './types'
+import type { Order, OrderPallet, Segment, SegmentType, SuspendedRef, Workday } from './types'
 
 /**
  * Logique pure de la machine à états. Aucune dépendance à la base : elle prend
@@ -13,6 +13,8 @@ export interface Snapshot {
   /** Segments de la journée, ordre chronologique. */
   segments: Segment[]
   orders: Order[]
+  /** Absent sur les anciens instantanés/tests : une commande historique reste lisible. */
+  pallets?: OrderPallet[]
 }
 
 export type Phase =

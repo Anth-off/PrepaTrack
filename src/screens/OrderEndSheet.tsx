@@ -5,18 +5,23 @@ import { Sheet } from '../components/Sheet'
 import { TargetReference } from '../components/TargetReference'
 import { contextualTarget } from '../core/contextualTarget'
 import type { DayData } from '../core/analysis'
-import { Stepper } from '../components/Stepper'
-import type { Order, OrderType, Supports, SupportKind } from '../core/types'
+import type { Order, OrderPallet, OrderType, Supports, SupportKind } from '../core/types'
 import { EMPTY_SUPPORTS } from '../core/types'
 
 interface Props {
   open: boolean
   order?: Order
+  pallets: OrderPallet[]
   /** Total relevé par le compteur pendant la prépa, proposé par défaut. */
   counted: number
   historyDays: DayData[]
   manualRate: number
-  onConfirm: (data: { colisActual: number; supports: Supports; orderType: OrderType }) => void
+  onConfirm: (data: {
+    colisActual: number
+    supports: Supports
+    orderType: OrderType
+    palletSupports: Array<{ id: string; support?: SupportKind }>
+  }) => void
   /** Revient au prélèvement en annulant la transition vers le filmage. */
   onResumePicking?: () => void
 }
@@ -45,13 +50,14 @@ const TYPES: { value: OrderType; label: string }[] = [
 export function OrderEndSheet({
   open,
   order,
+  pallets,
   counted,
   historyDays,
   manualRate,
   onConfirm,
   onResumePicking,
 }: Props) {
-  const [supports, setSupports] = useState<Supports>({ ...EMPTY_SUPPORTS })
+  const [palletSupports, setPalletSupports] = useState<Record<string, SupportKind | ''>>({})
   const [colis, setColis] = useState('')
   const [editColis, setEditColis] = useState(false)
   const [orderType, setOrderType] = useState<OrderType>('normale')
@@ -61,13 +67,17 @@ export function OrderEndSheet({
     // Le compteur fait foi s'il a servi, sinon on retombe sur l'annoncé.
     setColis(String(counted > 0 ? counted : order.colisPlanned))
     setOrderType(order.orderType)
-    setSupports({ ...EMPTY_SUPPORTS })
+    setPalletSupports(Object.fromEntries(pallets.map((p) => [p.id, p.support ?? ''])))
     setEditColis(false)
-  }, [open, order, counted])
+  }, [open, order, counted, pallets])
 
   if (!order) return null
 
   const colisNum = Number(colis || 0)
+  const supports = Object.values(palletSupports).reduce<Supports>((acc, kind) => {
+    if (kind) acc[kind] += 1
+    return acc
+  }, { ...EMPTY_SUPPORTS })
   const totalSupports = Object.values(supports).reduce((a, b) => a + b, 0)
   const reference = order
     ? contextualTarget(
@@ -108,13 +118,25 @@ export function OrderEndSheet({
             Supports utilisés
           </div>
           <div className="flex flex-col gap-2">
-            {SUPPORT_LABELS.map(({ key, label }) => (
-              <Stepper
-                key={key}
-                label={label}
-                value={supports[key]}
-                onChange={(v) => setSupports((s) => ({ ...s, [key]: v }))}
-              />
+            {pallets.map((pallet) => (
+              <label key={pallet.id} className="rounded-xl bg-ink-700 p-3">
+                <span className="mb-2 block text-sm font-bold">
+                  Magasin {pallet.storeNumber} · Palette {pallet.number}
+                </span>
+                <select
+                  value={palletSupports[pallet.id] ?? ''}
+                  onChange={(event) => setPalletSupports((current) => ({
+                    ...current,
+                    [pallet.id]: event.target.value as SupportKind | '',
+                  }))}
+                  className="min-h-touch w-full rounded-lg bg-ink-800 px-3 text-slate-200"
+                >
+                  <option value="">Choisir le type de palette</option>
+                  {SUPPORT_LABELS.map(({ key, label }) => (
+                    <option key={key} value={key}>{label}</option>
+                  ))}
+                </select>
+              </label>
             ))}
           </div>
         </div>
@@ -148,7 +170,15 @@ export function OrderEndSheet({
               ? `${colisNum} colis · ${totalSupports} support${totalSupports > 1 ? 's' : ''}`
               : 'Aucun support saisi'
           }
-          onClick={() => onConfirm({ colisActual: colisNum, supports, orderType })}
+          onClick={() => onConfirm({
+            colisActual: colisNum,
+            supports,
+            orderType,
+            palletSupports: pallets.map((p) => ({
+              id: p.id,
+              support: palletSupports[p.id] || undefined,
+            })),
+          })}
         />
         {onResumePicking && (
           <button

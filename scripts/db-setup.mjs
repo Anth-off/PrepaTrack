@@ -177,13 +177,13 @@ try {
                and p.tablename = t.tablename) as policies
       from pg_tables t
      where schemaname = 'public'
-       and tablename in ('workdays', 'orders', 'segments', 'colis_events', 'stock_shortages', 'preparers')
+       and tablename in ('workdays', 'orders', 'order_pallets', 'segments', 'colis_events', 'stock_shortages', 'preparers')
      order by tablename
   `)
 
-  if (rows.length !== 6) {
+  if (rows.length !== 7) {
     fail(
-      `Seulement ${rows.length} table(s) sur 6 ont été créées.`,
+      `Seulement ${rows.length} table(s) sur 7 ont été créées.`,
       'Relance la commande, ou applique les fichiers de supabase/ à la main depuis le SQL Editor.',
     )
   }

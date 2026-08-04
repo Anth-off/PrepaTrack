@@ -7,18 +7,20 @@ import { Timeline } from '../components/Timeline'
 import { isRateMeaningful, type OrderMetrics } from '../core/metrics'
 import { ESTIMATED_MISSING_HELP, ESTIMATED_MISSING_LABEL } from '../core/metricLabels'
 import { formatDayLabel, formatShort, hhmm } from '../core/time'
-import type { StockShortage, SupportKind } from '../core/types'
+import type { OrderPallet, StockShortage, SupportKind } from '../core/types'
 import {
   deleteStockShortage,
   deleteWorkday,
   setStockShortageResolved,
   updateStockShortage,
+  updateOrderPallet,
 } from '../db/repo'
 import { useDay } from '../hooks/useDay'
 import { useNow } from '../hooks/useNow'
 import { CorrectSheet } from './CorrectSheet'
 import { OrderEditSheet } from './OrderEditSheet'
 import { StockShortageSheet } from './StockShortageSheet'
+import { PalletEditSheet } from './PalletEditSheet'
 import type { Order, Segment } from '../core/types'
 
 interface Props {
@@ -43,6 +45,7 @@ export function DayReportScreen({ workdayId, onBack }: Props) {
   const [editingOrder, setEditingOrder] = useState<Order | undefined>()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [editingShortage, setEditingShortage] = useState<StockShortage | undefined>()
+  const [editingPallet, setEditingPallet] = useState<OrderPallet | undefined>()
 
   // Les mêmes règles que le tableau de bord, appliquées à cette seule journée :
   // celles qui demandent un historique se taisent d'elles-mêmes.
@@ -144,6 +147,7 @@ export function DayReportScreen({ workdayId, onBack }: Props) {
                   m={m}
                   targetRate={targetRate}
                   onEdit={() => setEditingOrder(m.order)}
+                  onEditPallet={setEditingPallet}
                 />
               ))}
             </div>
@@ -232,6 +236,11 @@ export function DayReportScreen({ workdayId, onBack }: Props) {
 
       <CorrectSheet segment={editing} onClose={() => setEditing(undefined)} />
       <OrderEditSheet order={editingOrder} onClose={() => setEditingOrder(undefined)} />
+      <PalletEditSheet
+        pallet={editingPallet}
+        onClose={() => setEditingPallet(undefined)}
+        onSave={(patch) => updateOrderPallet(editingPallet!.id, patch)}
+      />
       <StockShortageSheet
         shortage={editingShortage}
         onClose={() => setEditingShortage(undefined)}
@@ -254,11 +263,13 @@ function OrderCard({
   m,
   targetRate,
   onEdit,
+  onEditPallet,
 }: {
   index: number
   m: OrderMetrics
   targetRate: number
   onEdit: () => void
+  onEditPallet: (pallet: OrderPallet) => void
 }) {
   const shown = m.rateOrder > 0 && isRateMeaningful(m.totalWorked)
   const ratio = targetRate > 0 ? m.rateOrder / targetRate : 0
@@ -324,6 +335,24 @@ function OrderCard({
             <span key={key} className="rounded-md bg-ink-700 px-2 py-0.5 text-xs font-semibold">
               {n}× {SUPPORT_SHORT[key]}
             </span>
+          ))}
+        </div>
+      )}
+
+      {m.pallets.length > 0 && (
+        <div className="mt-2 flex flex-col gap-1 border-t border-ink-600 pt-2">
+          {m.pallets.map((palette) => (
+            <button key={palette.pallet.id} type="button"
+              onClick={() => onEditPallet(palette.pallet)}
+              className="pressable flex items-center justify-between rounded-lg bg-ink-700 px-2 py-1.5 text-left text-xs">
+              <span className="font-semibold">
+                Magasin {palette.pallet.storeNumber} · Palette {palette.pallet.number}
+                {palette.pallet.support ? ` · ${SUPPORT_SHORT[palette.pallet.support]}` : ''}
+              </span>
+              <span className="tabular text-slate-400">
+                {palette.colis} colis · prépa {formatShort(palette.picking)} · filmage {formatShort(palette.wrapping)}
+              </span>
+            </button>
           ))}
         </div>
       )}

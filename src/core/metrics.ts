@@ -2,7 +2,37 @@ import type { Snapshot } from './machine'
 import { categoryOf, segmentDef } from './segments'
 import type { SegmentCategory } from './segments'
 import { HOUR, toHours } from './time'
-import type { ColisEvent, Order, Segment, SegmentType } from './types'
+import type { ColisEvent, Order, OrderPallet, Segment, SegmentType } from './types'
+
+export interface PalletMetrics {
+  pallet: OrderPallet
+  colis: number
+  picking: number
+  wrapping: number
+  wrappingCount: number
+}
+
+export function computePalletMetrics(
+  pallet: OrderPallet,
+  segments: Segment[],
+  events: ColisEvent[],
+  now: number = Date.now(),
+): PalletMetrics {
+  const ownSegments = segments.filter((s) => s.palletId === pallet.id && !s.deletedAt)
+  const duration = (type: SegmentType) => ownSegments
+    .filter((s) => s.type === type)
+    .reduce((sum, s) => sum + segmentDuration(s, now), 0)
+  const eventTotal = events
+    .filter((e) => e.palletId === pallet.id && !e.deletedAt)
+    .reduce((sum, e) => sum + e.delta, 0)
+  return {
+    pallet,
+    colis: Math.max(0, pallet.endCount ?? eventTotal),
+    picking: duration('picking'),
+    wrapping: duration('wrapping'),
+    wrappingCount: ownSegments.filter((s) => s.type === 'wrapping').length,
+  }
+}
 
 /**
  * Calcul des cadences.
@@ -118,6 +148,7 @@ export interface OrderMetrics {
   rateOrder: number
   colisPerLine: number
   palletChanges: number
+  pallets: PalletMetrics[]
 }
 
 export function computeOrderMetrics(
@@ -174,6 +205,7 @@ export function computeOrderMetrics(
     rateOrder: rate(colis, totalWorked),
     colisPerLine: order.linesCount > 0 ? colis / order.linesCount : 0,
     palletChanges,
+    pallets: [],
   }
 }
 
@@ -255,7 +287,13 @@ export function computeDayMetrics(
 
   const orders = snap.orders
     .filter((o) => !o.deletedAt)
-    .map((o) => computeOrderMetrics(o, segments, events, now))
+    .map((o) => {
+      const metrics = computeOrderMetrics(o, segments, events, now)
+      metrics.pallets = (snap.pallets ?? [])
+        .filter((p) => p.orderId === o.id && !p.deletedAt)
+        .map((p) => computePalletMetrics(p, segments, events, now))
+      return metrics
+    })
 
   const colis = orders.reduce((sum, m) => sum + m.colis, 0)
   const pickingTime = byType.picking ?? 0

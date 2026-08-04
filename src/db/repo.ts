@@ -15,6 +15,7 @@ import { currentOwnerId, ownedByCurrent } from '../sync/profile'
 import type {
   ColisEvent,
   Order,
+  OrderPallet,
   OrderType,
   Segment,
   SegmentType,
@@ -64,14 +65,91 @@ export async function loadSnapshot(): Promise<Snapshot> {
 }
 
 export async function loadSnapshotFor(workday: Workday): Promise<Snapshot> {
-  const [segments, orders] = await Promise.all([
+  const [segments, orders, pallets] = await Promise.all([
     db.segments.where('workdayId').equals(workday.id).toArray(),
     db.orders.where('workdayId').equals(workday.id).toArray(),
+    db.orderPallets.where('workdayId').equals(workday.id).toArray(),
   ])
   return {
     workday,
     segments: segments.filter((s) => !s.deletedAt).sort((a, b) => a.startedAt - b.startedAt),
     orders: orders.filter((o) => !o.deletedAt).sort((a, b) => a.startedAt - b.startedAt),
+    pallets: pallets
+      .filter((p) => !p.deletedAt)
+      .sort((a, b) => a.orderId.localeCompare(b.orderId) || a.number - b.number),
+  }
+}
+
+async function orderCount(orderId: string, palletId?: string): Promise<number> {
+  const events = await db.colisEvents.where('orderId').equals(orderId).toArray()
+  return Math.max(0, events
+    .filter((e) => !e.deletedAt && (palletId === undefined || e.palletId === palletId))
+    .reduce((sum, e) => sum + e.delta, 0))
+}
+
+async function closePallet(palletId: string, at: number): Promise<void> {
+  const current = await db.orderPallets.get(palletId)
+  if (!current || current.deletedAt || current.endedAt !== undefined) return
+  current.endedAt = Math.max(at, current.startedAt)
+  current.endCount = await orderCount(current.orderId, current.id)
+  await db.orderPallets.put(stamp(current))
+}
+
+async function closeOpenPallets(orderId: string, at: number): Promise<void> {
+  const pallets = await db.orderPallets.where('orderId').equals(orderId).toArray()
+  for (const pallet of pallets.filter((p) => !p.deletedAt && p.endedAt === undefined)) {
+    await closePallet(pallet.id, at)
+  }
+}
+
+async function reconcilePalletCounts(order: Order): Promise<void> {
+  if (order.colisActual === undefined) return
+  const pallets = (await db.orderPallets.where('orderId').equals(order.id).toArray())
+    .filter((p) => !p.deletedAt)
+    .sort((a, b) => a.number - b.number)
+  let difference = Math.max(0, order.colisActual) - pallets.reduce(
+    (sum, pallet) => sum + Math.max(0, (pallet.endCount ?? 0) - pallet.startCount),
+    0,
+  )
+  for (const pallet of [...pallets].reverse()) {
+    if (difference === 0) break
+    const current = Math.max(0, (pallet.endCount ?? 0) - pallet.startCount)
+    const change = difference > 0 ? difference : -Math.min(current, -difference)
+    pallet.endCount = pallet.startCount + current + change
+    difference -= change
+    await db.orderPallets.put(stamp(pallet))
+  }
+}
+
+export async function currentOrderPallet(orderId: string): Promise<OrderPallet | undefined> {
+  const order = await db.orders.get(orderId)
+  if (order?.activePalletId) {
+    const active = await db.orderPallets.get(order.activePalletId)
+    if (active && !active.deletedAt && active.endedAt === undefined) return active
+  }
+  const pallets = await db.orderPallets.where('orderId').equals(orderId).toArray()
+  return pallets.filter((p) => !p.deletedAt && p.endedAt === undefined).sort((a, b) => a.number - b.number)[0]
+}
+
+export async function selectOrderPallet(
+  orderId: string,
+  palletId: string,
+  at: number = Date.now(),
+): Promise<void> {
+  const [order, pallet] = await Promise.all([db.orders.get(orderId), db.orderPallets.get(palletId)])
+  if (!order || !pallet || pallet.orderId !== orderId || pallet.endedAt !== undefined) return
+  order.activePalletId = pallet.id
+  await db.orders.put(stamp(order))
+  const snap = await loadSnapshot()
+  const active = activeSegment(snap)
+  if (snap.workday && active?.orderId === orderId && active.palletId !== pallet.id) {
+    await closeActive(at)
+    await db.segments.put(newSegment(snap.workday.id, active.type, at, {
+      orderId,
+      palletId: pallet.id,
+      stack: active.stack,
+      note: active.note,
+    }))
   }
 }
 
@@ -91,7 +169,7 @@ function newSegment(
   workdayId: string,
   type: SegmentType,
   at: number,
-  opts: { orderId?: string; stack?: SuspendedRef[]; note?: string } = {},
+  opts: { orderId?: string; palletId?: string; stack?: SuspendedRef[]; note?: string } = {},
 ): Segment {
   return stamp({
     id: uid(),
@@ -99,6 +177,7 @@ function newSegment(
     type,
     startedAt: at,
     orderId: opts.orderId,
+    palletId: opts.palletId,
     stack: opts.stack && opts.stack.length > 0 ? opts.stack : undefined,
     note: opts.note,
     updatedAt: 0,
@@ -153,6 +232,8 @@ export async function startCleanup(at: number = Date.now()): Promise<void> {
     open.status = 'done'
     open.endedAt = at
     await db.orders.put(stamp(open))
+    await closeOpenPallets(open.id, at)
+    await reconcilePalletCounts(open)
   }
   await closeActive(at)
   await db.segments.put(newSegment(snap.workday.id, 'cleanup', at))
@@ -216,6 +297,8 @@ export async function closeWorkdayAt(workdayId: string, at: number): Promise<voi
     order.status = 'done'
     order.endedAt = end
     await db.orders.put(stamp(order))
+    await closeOpenPallets(order.id, end)
+    await reconcilePalletCounts(order)
   }
 
   workday.status = 'closed'
@@ -237,6 +320,7 @@ export interface NewOrderInput {
   colisPlanned: number
   linesCount: number
   orderType: OrderType
+  storeCount?: 1 | 2
 }
 
 export async function startOrder(
@@ -246,6 +330,8 @@ export async function startOrder(
   const snap = await loadSnapshot()
   if (!snap.workday) return undefined
 
+  const storeCount = input.storeCount ?? 1
+  const palletIds = Array.from({ length: storeCount }, () => uid())
   const order: Order = stamp({
     id: uid(),
     workdayId: snap.workday.id,
@@ -254,14 +340,24 @@ export async function startOrder(
     colisPlanned: input.colisPlanned,
     linesCount: input.linesCount,
     supports: { ...EMPTY_SUPPORTS },
+    storeCount,
+    activePalletId: palletIds[0],
     startedAt: at,
     updatedAt: 0,
     syncState: 'pending',
   })
   await db.orders.put(order)
+  await db.orderPallets.bulkPut(palletIds.map((id, index) => stamp({
+    id, workdayId: order.workdayId, orderId: order.id, number: index + 1,
+    storeNumber: (index + 1) as 1 | 2, startedAt: at, startCount: 0,
+    updatedAt: 0, syncState: 'pending',
+  })))
 
   await closeActive(at)
-  await db.segments.put(newSegment(snap.workday.id, 'order_setup', at, { orderId: order.id }))
+  await db.segments.put(newSegment(snap.workday.id, 'order_setup', at, {
+    orderId: order.id,
+    palletId: order.activePalletId,
+  }))
   return order
 }
 
@@ -285,6 +381,8 @@ export async function advanceOrder(at: number = Date.now()): Promise<void> {
         order.status = 'done'
         order.endedAt = at
         await db.orders.put(stamp(order))
+        await closeOpenPallets(order.id, at)
+        await reconcilePalletCounts(order)
       }
     }
     await db.segments.put(newSegment(snap.workday.id, 'idle', at))
@@ -294,13 +392,22 @@ export async function advanceOrder(at: number = Date.now()): Promise<void> {
   const next = nextOrderPhase(current)
   if (!next) return
   await closeActive(at)
-  await db.segments.put(newSegment(snap.workday.id, next, at, { orderId }))
+  const order = orderId ? await db.orders.get(orderId) : undefined
+  await db.segments.put(newSegment(snap.workday.id, next, at, {
+    orderId,
+    palletId: order?.activePalletId,
+  }))
 }
 
 /** Enregistre les supports et le total réel. Ne touche pas aux chronos. */
 export async function saveOrderResult(
   orderId: string,
-  data: { colisActual: number; supports: Supports; orderType: OrderType },
+  data: {
+    colisActual: number
+    supports: Supports
+    orderType: OrderType
+    palletSupports?: Array<{ id: string; support?: OrderPallet['support'] }>
+  },
 ): Promise<void> {
   const order = await db.orders.get(orderId)
   if (!order) return
@@ -308,12 +415,52 @@ export async function saveOrderResult(
   order.supports = data.supports
   order.orderType = data.orderType
   await db.orders.put(stamp(order))
+  for (const choice of data.palletSupports ?? []) {
+    const pallet = await db.orderPallets.get(choice.id)
+    if (!pallet || pallet.orderId !== orderId) continue
+    pallet.support = choice.support
+    await db.orderPallets.put(stamp(pallet))
+  }
 }
 
 export async function updateOrder(orderId: string, patch: Partial<Order>): Promise<void> {
   const order = await db.orders.get(orderId)
   if (!order) return
   await db.orders.put(stamp({ ...order, ...patch, id: order.id }))
+}
+
+/** Corrige les informations d'une palette sans modifier la timeline globale. */
+export async function updateOrderPallet(
+  palletId: string,
+  patch: Partial<Pick<OrderPallet, 'support' | 'startedAt' | 'endedAt' | 'startCount' | 'endCount'>>,
+): Promise<void> {
+  const pallet = await db.orderPallets.get(palletId)
+  if (!pallet) return
+  const startedAt = Math.max(0, patch.startedAt ?? pallet.startedAt)
+  const endedAt = patch.endedAt ?? pallet.endedAt
+  const startCount = Math.max(0, Math.trunc(patch.startCount ?? pallet.startCount))
+  const endCount = Math.max(startCount, Math.trunc(patch.endCount ?? pallet.endCount ?? startCount))
+  await db.orderPallets.put(stamp({
+    ...pallet,
+    ...patch,
+    startedAt,
+    endedAt: endedAt === undefined ? undefined : Math.max(startedAt, endedAt),
+    startCount,
+    endCount,
+    id: pallet.id,
+  }))
+  if ('support' in patch) {
+    const order = await db.orders.get(pallet.orderId)
+    if (order) {
+      const supports = { ...EMPTY_SUPPORTS }
+      const pallets = await db.orderPallets.where('orderId').equals(pallet.orderId).toArray()
+      for (const item of pallets) {
+        if (!item.deletedAt && item.support) supports[item.support] += 1
+      }
+      order.supports = supports
+      await db.orders.put(stamp(order))
+    }
+  }
 }
 
 // --- Interruptions ---------------------------------------------------------
@@ -336,12 +483,30 @@ export async function startInterruption(
     return
   }
 
+  if (type === 'pallet_change' && view.order) {
+    const previous = await currentOrderPallet(view.order.id)
+    if (previous) {
+      await closePallet(previous.id, at)
+      const all = await db.orderPallets.where('orderId').equals(view.order.id).toArray()
+      const next: OrderPallet = stamp({
+        id: uid(), workdayId: view.order.workdayId, orderId: view.order.id,
+        number: Math.max(0, ...all.map((p) => p.number)) + 1,
+        storeNumber: previous.storeNumber, startedAt: at, startCount: 0,
+        updatedAt: 0, syncState: 'pending',
+      })
+      await db.orderPallets.put(next)
+      view.order.activePalletId = next.id
+      await db.orders.put(stamp(view.order))
+    }
+  }
+
   const stack = pushStack(view.active)
   await closeActive(at)
   await db.segments.put(
     newSegment(snap.workday.id, type, at, {
       // L'interruption reste rattachée à la commande qu'elle interrompt.
       orderId: view.order?.status === 'open' ? view.order.id : undefined,
+      palletId: view.order?.activePalletId,
       stack,
     }),
   )
@@ -363,6 +528,9 @@ export async function endInterruption(at: number = Date.now()): Promise<void> {
   await db.segments.put(
     newSegment(snap.workday.id, popped.resume.type, at, {
       orderId: popped.resume.orderId,
+      palletId: popped.resume.orderId
+        ? (await db.orders.get(popped.resume.orderId))?.activePalletId
+        : undefined,
       stack: popped.rest,
     }),
   )
@@ -400,6 +568,7 @@ export async function setAutomaticTravel(
   await db.segments.put(
     newSegment(snap.workday.id, 'travel', at, {
       orderId: view.order.id,
+      palletId: view.order.activePalletId,
       stack,
       note: AUTOMATIC_TRAVEL_NOTE,
     }),
@@ -414,12 +583,16 @@ export async function addColis(delta: number, at: number = Date.now()): Promise<
   const view = deriveView(snap)
   if (!snap.workday || !view.order) return
 
+  const current = await orderCount(view.order.id, view.order.activePalletId)
+  const safeDelta = Math.max(-current, Math.trunc(delta))
+  if (safeDelta === 0) return
   const event: ColisEvent = stamp({
     id: uid(),
     workdayId: snap.workday.id,
     orderId: view.order.id,
+    palletId: view.order.activePalletId,
     at,
-    delta,
+    delta: safeDelta,
     updatedAt: 0,
     syncState: 'pending',
   })
@@ -622,11 +795,12 @@ export async function claimOrphans(ownerId: string): Promise<number> {
 
   await db.transaction(
     'rw',
-    [db.workdays, db.orders, db.segments, db.colisEvents, db.stockShortages],
+    [db.workdays, db.orders, db.orderPallets, db.segments, db.colisEvents, db.stockShortages],
     async () => {
       for (const table of [
         db.workdays,
         db.orders,
+        db.orderPallets,
         db.segments,
         db.colisEvents,
         db.stockShortages,
@@ -667,7 +841,7 @@ export async function deleteWorkday(workdayId: string): Promise<void> {
 
   await db.transaction(
     'rw',
-    [db.workdays, db.orders, db.segments, db.colisEvents, db.stockShortages],
+    [db.workdays, db.orders, db.orderPallets, db.segments, db.colisEvents, db.stockShortages],
     async () => {
       const workday = await db.workdays.get(workdayId)
       if (!workday) return
@@ -678,6 +852,7 @@ export async function deleteWorkday(workdayId: string): Promise<void> {
       await db.workdays.put(workday)
 
       await db.orders.where('workdayId').equals(workdayId).modify(mark)
+      await db.orderPallets.where('workdayId').equals(workdayId).modify(mark)
       await db.segments.where('workdayId').equals(workdayId).modify(mark)
       await db.colisEvents.where('workdayId').equals(workdayId).modify(mark)
       await db.stockShortages.where('workdayId').equals(workdayId).modify(mark)

@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie'
-import type { ColisEvent, Order, Segment, Settings, StockShortage, Workday } from '../core/types'
+import type { ColisEvent, Order, OrderPallet, Segment, Settings, StockShortage, Workday } from '../core/types'
 import { DEFAULT_SETTINGS } from '../core/types'
 
 /**
@@ -16,6 +16,7 @@ export interface MetaRow {
 export class PrepaDB extends Dexie {
   workdays!: Table<Workday, string>
   orders!: Table<Order, string>
+  orderPallets!: Table<OrderPallet, string>
   segments!: Table<Segment, string>
   colisEvents!: Table<ColisEvent, string>
   stockShortages!: Table<StockShortage, string>
@@ -36,6 +37,9 @@ export class PrepaDB extends Dexie {
     })
     this.version(3).stores({
       stockShortages: 'id, workdayId, orderId, at, syncState',
+    })
+    this.version(4).stores({
+      orderPallets: 'id, workdayId, orderId, [orderId+number], startedAt, syncState',
     })
   }
 }
@@ -83,11 +87,12 @@ export async function wipeAll(): Promise<void> {
   const at = Date.now()
   await db.transaction(
     'rw',
-    [db.workdays, db.orders, db.segments, db.colisEvents, db.stockShortages],
+    [db.workdays, db.orders, db.orderPallets, db.segments, db.colisEvents, db.stockShortages],
     async () => {
       for (const table of [
         db.workdays,
         db.orders,
+        db.orderPallets,
         db.segments,
         db.colisEvents,
         db.stockShortages,

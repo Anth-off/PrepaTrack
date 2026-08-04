@@ -12,7 +12,7 @@ interface Props {
   historyDays: DayData[]
   manualRate: number
   onCancel: () => void
-  onConfirm: (input: { colisPlanned: number; linesCount: number; orderType: OrderType }) => void
+  onConfirm: (input: { colisPlanned: number; linesCount: number; orderType: OrderType; storeCount: 1 | 2 }) => void
 }
 
 const TYPES: { value: OrderType; label: string }[] = [
@@ -31,6 +31,7 @@ export function NewOrderSheet({ open, historyDays, manualRate, onCancel, onConfi
   const [lines, setLines] = useState('')
   const [field, setField] = useState<'colis' | 'lines'>('colis')
   const [orderType, setOrderType] = useState<OrderType>('normale')
+  const [storeCount, setStoreCount] = useState<1 | 2>(1)
 
   const colisNum = Number(colis || 0)
   const linesNum = Number(lines || 0)
@@ -46,6 +47,7 @@ export function NewOrderSheet({ open, historyDays, manualRate, onCancel, onConfi
     setLines('')
     setField('colis')
     setOrderType('normale')
+    setStoreCount(1)
   }
 
   function handleChange(next: string) {
@@ -101,6 +103,31 @@ export function NewOrderSheet({ open, historyDays, manualRate, onCancel, onConfi
           ))}
         </div>
 
+        <div>
+          <div className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">
+            Magasins dans la commande
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {([1, 2] as const).map((count) => (
+              <button
+                key={count}
+                type="button"
+                onClick={() => setStoreCount(count)}
+                className={`pressable min-h-[3.5rem] rounded-xl font-bold ${
+                  storeCount === count ? 'bg-accent text-black' : 'bg-ink-700 text-slate-300'
+                }`}
+              >
+                {count} magasin{count > 1 ? 's' : ''}
+              </button>
+            ))}
+          </div>
+          {storeCount === 2 && (
+            <p className="mt-2 text-xs text-slate-500">
+              Deux palettes seront ouvertes immédiatement, une par magasin.
+            </p>
+          )}
+        </div>
+
         <TargetReference reference={reference} />
 
         <BigButton
@@ -108,7 +135,7 @@ export function NewOrderSheet({ open, historyDays, manualRate, onCancel, onConfi
           sub={ready ? `${colisNum} colis · ${linesNum || '?'} lignes` : 'Saisis le nombre de colis'}
           disabled={!ready}
           onClick={() => {
-            onConfirm({ colisPlanned: colisNum, linesCount: linesNum, orderType })
+            onConfirm({ colisPlanned: colisNum, linesCount: linesNum, orderType, storeCount })
             reset()
           }}
         />

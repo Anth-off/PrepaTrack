@@ -43,6 +43,28 @@ create table if not exists public.orders (
   updated_at bigint not null,
   deleted_at bigint
 );
+alter table public.orders add column if not exists store_count integer not null default 1;
+alter table public.orders add column if not exists active_pallet_id text;
+alter table public.orders drop constraint if exists orders_store_count_check;
+alter table public.orders add constraint orders_store_count_check check (store_count in (1, 2));
+
+-- ----------------------------------------------------------- order_pallets --
+create table if not exists public.order_pallets (
+  id text primary key,
+  user_id uuid not null default auth.uid() references auth.users on delete cascade,
+  workday_id text not null,
+  order_id text not null,
+  number integer not null check (number > 0),
+  store_number integer not null default 1 check (store_number in (1, 2)),
+  support text,
+  started_at bigint not null,
+  ended_at bigint,
+  start_count integer not null default 0 check (start_count >= 0),
+  end_count integer check (end_count is null or end_count >= start_count),
+  updated_at bigint not null,
+  deleted_at bigint
+);
+alter table public.order_pallets add column if not exists store_number integer not null default 1;
 
 -- ---------------------------------------------------------------- segments --
 create table if not exists public.segments (
@@ -50,6 +72,7 @@ create table if not exists public.segments (
   user_id uuid not null default auth.uid() references auth.users on delete cascade,
   workday_id text not null,
   order_id text,
+  pallet_id text,
   type text not null,
   started_at bigint not null,
   ended_at bigint,
@@ -59,6 +82,7 @@ create table if not exists public.segments (
   updated_at bigint not null,
   deleted_at bigint
 );
+alter table public.segments add column if not exists pallet_id text;
 
 -- ------------------------------------------------------------ colis_events --
 create table if not exists public.colis_events (
@@ -66,11 +90,13 @@ create table if not exists public.colis_events (
   user_id uuid not null default auth.uid() references auth.users on delete cascade,
   workday_id text not null,
   order_id text not null,
+  pallet_id text,
   at bigint not null,
   delta integer not null,
   updated_at bigint not null,
   deleted_at bigint
 );
+alter table public.colis_events add column if not exists pallet_id text;
 
 -- ---------------------------------------------------------- stock_shortages --
 create table if not exists public.stock_shortages (
@@ -89,6 +115,8 @@ create table if not exists public.stock_shortages (
 -- dernier passage, jamais l'historique complet.
 create index if not exists workdays_sync_idx on public.workdays (user_id, updated_at);
 create index if not exists orders_sync_idx on public.orders (user_id, updated_at);
+create index if not exists order_pallets_sync_idx on public.order_pallets (user_id, updated_at);
+create unique index if not exists order_pallets_number_idx on public.order_pallets (order_id, number) where deleted_at is null;
 create index if not exists segments_sync_idx on public.segments (user_id, updated_at);
 create index if not exists colis_events_sync_idx on public.colis_events (user_id, updated_at);
 create index if not exists stock_shortages_sync_idx on public.stock_shortages (user_id, updated_at);
@@ -98,6 +126,7 @@ create index if not exists stock_shortages_sync_idx on public.stock_shortages (u
 -- clé publique de l'application fuitait, personne ne pourrait voir ces données.
 alter table public.workdays enable row level security;
 alter table public.orders enable row level security;
+alter table public.order_pallets enable row level security;
 alter table public.segments enable row level security;
 alter table public.colis_events enable row level security;
 alter table public.stock_shortages enable row level security;
@@ -108,6 +137,10 @@ create policy "workdays owner" on public.workdays
 
 drop policy if exists "orders owner" on public.orders;
 create policy "orders owner" on public.orders
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+drop policy if exists "order_pallets owner" on public.order_pallets;
+create policy "order_pallets owner" on public.order_pallets
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 drop policy if exists "segments owner" on public.segments;

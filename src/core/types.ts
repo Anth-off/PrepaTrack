@@ -113,8 +113,29 @@ export interface Order extends Syncable {
   /** Nombre de colis réellement préparés, confirmé en fin de commande. */
   colisActual?: number
   supports: Supports
+  /** Une ou deux destinations préparées en parallèle. */
+  storeCount?: 1 | 2
+  /** Palette qui reçoit les prochains colis et filmages. */
+  activePalletId?: string
   startedAt: number
   endedAt?: number
+}
+
+/** Une palette physique suivie au sein d'une commande. */
+export interface OrderPallet extends Syncable {
+  id: string
+  workdayId: string
+  orderId: string
+  /** Numéro affiché, à partir de 1 et stable après synchronisation. */
+  number: number
+  storeNumber: 1 | 2
+  /** Support choisi à la fin de la commande ou lors d'une correction. */
+  support?: SupportKind
+  /** Bornes temporelles et bornes du compteur, sans dupliquer la timeline. */
+  startedAt: number
+  endedAt?: number
+  startCount: number
+  endCount?: number
 }
 
 /** Référence à un segment suspendu, à rouvrir à l'identique. */
@@ -128,6 +149,8 @@ export interface Segment extends Syncable {
   workdayId: string
   /** Renseigné dès que le segment appartient au déroulement d'une commande. */
   orderId?: string
+  /** Palette active lors du chrono ; absent dans l'ancien historique. */
+  palletId?: string
   type: SegmentType
   startedAt: number
   /** Absent tant que le segment est en cours. */
@@ -151,6 +174,8 @@ export interface ColisEvent extends Syncable {
   id: string
   workdayId: string
   orderId: string
+  /** Palette active lors de l'appui ; absent dans l'ancien historique. */
+  palletId?: string
   at: number
   delta: number
 }

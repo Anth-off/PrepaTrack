@@ -3,6 +3,7 @@ import { db } from '../db/db'
 import type {
   ColisEvent,
   Order,
+  OrderPallet,
   Segment,
   StockShortage,
   SupportKind,
@@ -114,6 +115,8 @@ const orders: SyncTable<Order> = {
     lines_count: o.linesCount,
     colis_actual: o.colisActual ?? null,
     supports: o.supports,
+    store_count: o.storeCount ?? 1,
+    active_pallet_id: o.activePalletId ?? null,
     started_at: o.startedAt,
     ended_at: o.endedAt ?? null,
     updated_at: o.updatedAt,
@@ -131,12 +134,43 @@ const orders: SyncTable<Order> = {
     // Fusion avec le gabarit : un support ajouté dans une version ultérieure ne
     // doit pas revenir `undefined` sur une ligne enregistrée avant.
     supports: { ...EMPTY_SUPPORTS, ...((r.supports ?? {}) as Record<SupportKind, number>) },
+    storeCount: num(r.store_count) === 2 ? 2 : 1,
+    activePalletId: undef(r.active_pallet_id as string | null),
     startedAt: num(r.started_at),
     endedAt: optNum(r.ended_at),
     updatedAt: num(r.updated_at),
     deletedAt: optNum(r.deleted_at),
     ownerId: undef(r.user_id as string | null),
     syncState: 'synced',
+  }),
+}
+
+const orderPallets: SyncTable<OrderPallet> = {
+  remote: 'order_pallets',
+  table: () => db.orderPallets,
+  toRow: (p) => ({
+    id: p.id,
+    workday_id: p.workdayId,
+    order_id: p.orderId,
+    number: p.number,
+    store_number: p.storeNumber,
+    support: p.support ?? null,
+    started_at: p.startedAt,
+    ended_at: p.endedAt ?? null,
+    start_count: p.startCount,
+    end_count: p.endCount ?? null,
+    updated_at: p.updatedAt,
+    deleted_at: p.deletedAt ?? null,
+    ...owner(p),
+  }),
+  fromRow: (r) => ({
+    id: String(r.id), workdayId: String(r.workday_id), orderId: String(r.order_id),
+    number: num(r.number), storeNumber: num(r.store_number) === 2 ? 2 : 1,
+    support: undef(r.support as SupportKind | null),
+    startedAt: num(r.started_at), endedAt: optNum(r.ended_at),
+    startCount: num(r.start_count), endCount: optNum(r.end_count),
+    updatedAt: num(r.updated_at), deletedAt: optNum(r.deleted_at),
+    ownerId: undef(r.user_id as string | null), syncState: 'synced',
   }),
 }
 
@@ -147,6 +181,7 @@ const segments: SyncTable<Segment> = {
     id: s.id,
     workday_id: s.workdayId,
     order_id: s.orderId ?? null,
+    pallet_id: s.palletId ?? null,
     type: s.type,
     started_at: s.startedAt,
     ended_at: s.endedAt ?? null,
@@ -161,6 +196,7 @@ const segments: SyncTable<Segment> = {
     id: String(r.id),
     workdayId: String(r.workday_id),
     orderId: undef(r.order_id as string | null),
+    palletId: undef(r.pallet_id as string | null),
     type: r.type as Segment['type'],
     startedAt: num(r.started_at),
     // Reste `undefined` si la colonne est nulle : c'est ce qui distingue un
@@ -183,6 +219,7 @@ const colisEvents: SyncTable<ColisEvent> = {
     id: e.id,
     workday_id: e.workdayId,
     order_id: e.orderId,
+    pallet_id: e.palletId ?? null,
     at: e.at,
     delta: e.delta,
     updated_at: e.updatedAt,
@@ -193,6 +230,7 @@ const colisEvents: SyncTable<ColisEvent> = {
     id: String(r.id),
     workdayId: String(r.workday_id),
     orderId: String(r.order_id),
+    palletId: undef(r.pallet_id as string | null),
     at: num(r.at),
     delta: num(r.delta),
     updatedAt: num(r.updated_at),
@@ -234,6 +272,7 @@ const stockShortages: SyncTable<StockShortage> = {
 export const SYNC_TABLES: AnySyncTable[] = [
   define(workdays),
   define(orders),
+  define(orderPallets),
   define(segments),
   define(colisEvents),
   define(stockShortages),

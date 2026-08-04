@@ -14,6 +14,7 @@ import {
   loadSnapshot,
   loadSnapshotById,
   saveOrderResult,
+  selectOrderPallet,
   startCleanup,
   startDay,
   startInterruption,
@@ -38,6 +39,44 @@ beforeEach(async () => {
 async function phase() {
   return deriveView(await loadSnapshot()).phase
 }
+
+describe('palettes par magasin', () => {
+  it('attribue colis et filmages à la palette active avec deux magasins', async () => {
+    await startDay(at(0))
+    await endBriefing(at(5))
+    const order = await startOrder(
+      { colisPlanned: 22, linesCount: 8, orderType: 'normale', storeCount: 2 },
+      at(10),
+    )
+    let snap = await loadSnapshot()
+    expect(snap.pallets).toHaveLength(2)
+    expect(snap.pallets?.map((p) => p.storeNumber)).toEqual([1, 2])
+
+    await advanceOrder(at(15))
+    await addColis(5, at(20))
+    await selectOrderPallet(order!.id, snap.pallets![1].id, at(25))
+    await addColis(10, at(28))
+    await startInterruption('wrapping', at(30))
+    await endInterruption(at(35))
+
+    await selectOrderPallet(order!.id, snap.pallets![0].id, at(36))
+    await startInterruption('pallet_change', at(40))
+    await endInterruption(at(42))
+    await addColis(7, at(45))
+    await advanceOrder(at(50))
+    await advanceOrder(at(60))
+    await advanceOrder(at(70))
+
+    snap = await loadLastDay()
+    expect(snap.pallets).toHaveLength(3)
+    expect(snap.pallets?.map((p) => p.storeNumber)).toEqual([1, 2, 1])
+    const day = computeDayMetrics(snap, await colisEventsFor(snap.workday!.id), 110, at(70))
+    expect(day.orders[0].pallets.map((p) => p.colis)).toEqual([5, 10, 7])
+    expect(day.orders[0].pallets[1].wrapping).toBe(5 * MINUTE)
+    expect(day.orders[0].pallets[2].wrapping).toBe(10 * MINUTE)
+    expect(day.orders[0].pallets.reduce((sum, p) => sum + p.colis, 0)).toBe(22)
+  })
+})
 
 /** Recharge la vacation la plus récente, close ou non. */
 async function loadLastDay() {
