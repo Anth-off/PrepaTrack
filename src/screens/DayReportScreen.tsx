@@ -1,7 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useLiveQuery } from 'dexie-react-hooks'
+import { IntegrityPanel } from '../components/IntegrityPanel'
 import { RateCards } from '../components/RateCards'
 import { RecoList } from '../components/RecoList'
 import { recommend } from '../core/recommendations'
+import { inspectIntegrity, type IntegrityIssue } from '../core/integrity'
 import { TimeBreakdown } from '../components/TimeBreakdown'
 import { Timeline } from '../components/Timeline'
 import { isRateMeaningful, type OrderMetrics } from '../core/metrics'
@@ -15,6 +18,11 @@ import {
   updateStockShortage,
   updateOrderPallet,
 } from '../db/repo'
+import {
+  dismissIntegrityIssue,
+  getIntegrityDismissals,
+  visibleIntegrityIssues,
+} from '../db/integrity'
 import { useDay } from '../hooks/useDay'
 import { useNow } from '../hooks/useNow'
 import { CorrectSheet } from './CorrectSheet'
@@ -25,6 +33,7 @@ import type { Order, Segment } from '../core/types'
 
 interface Props {
   workdayId: string
+  initialSegmentId?: string
   onBack: () => void
 }
 
@@ -38,14 +47,20 @@ const SUPPORT_SHORT: Record<SupportKind, string> = {
 }
 
 /** Bilan complet d'une journée : chiffres, répartition, commandes, tracé. */
-export function DayReportScreen({ workdayId, onBack }: Props) {
+export function DayReportScreen({ workdayId, initialSegmentId, onBack }: Props) {
   const now = useNow(15_000)
-  const { snap, events, shortages, day, targetRate, loading } = useDay(workdayId)
+  const { snap, events, shortages, day, settings, targetRate, loading } = useDay(workdayId)
+  const storedDismissals = useLiveQuery(() => getIntegrityDismissals(), [])
   const [editing, setEditing] = useState<Segment | undefined>()
   const [editingOrder, setEditingOrder] = useState<Order | undefined>()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [editingShortage, setEditingShortage] = useState<StockShortage | undefined>()
   const [editingPallet, setEditingPallet] = useState<OrderPallet | undefined>()
+
+  useEffect(() => {
+    if (!initialSegmentId || !snap) return
+    setEditing(snap.segments.find((segment) => segment.id === initialSegmentId))
+  }, [initialSegmentId, snap])
 
   // Les mêmes règles que le tableau de bord, appliquées à cette seule journée :
   // celles qui demandent un historique se taisent d'elles-mêmes.
@@ -64,6 +79,31 @@ export function DayReportScreen({ workdayId, onBack }: Props) {
       targetRate,
     })
   }, [snap, events, day, targetRate])
+
+  const integrityIssues = useMemo(() => {
+    if (!snap?.workday) return []
+    return visibleIntegrityIssues(
+      inspectIntegrity({ snap, events, shortages, settings, now }),
+      storedDismissals ?? {},
+    )
+  }, [events, now, settings, shortages, snap, storedDismissals])
+
+  function openIntegrityIssue(issue: IntegrityIssue) {
+    if (!snap) return
+    if (issue.entity === 'order') {
+      setEditingOrder(snap.orders.find((order) => order.id === issue.entityId))
+      return
+    }
+    if (issue.entity === 'segment') {
+      setEditing(snap.segments.find((segment) => segment.id === issue.entityId))
+      return
+    }
+    if (issue.entity === 'shortage') {
+      setEditingShortage(shortages.find((shortage) => shortage.id === issue.entityId))
+      return
+    }
+    document.getElementById('day-timeline')?.scrollIntoView({ behavior: 'smooth' })
+  }
 
   if (loading) return <Placeholder text="Chargement…" onBack={onBack} />
   if (!snap || !day) return <Placeholder text="Aucune donnée pour ce jour." onBack={onBack} />
@@ -105,6 +145,12 @@ export function DayReportScreen({ workdayId, onBack }: Props) {
           <b className="text-slate-400">{ESTIMATED_MISSING_LABEL} :</b>{' '}
           {ESTIMATED_MISSING_HELP}
         </p>
+
+        <IntegrityPanel
+          issues={integrityIssues}
+          onOpen={openIntegrityIssue}
+          onDismiss={dismissIntegrityIssue}
+        />
 
         <RateCards day={day} targetRate={targetRate} />
 
@@ -185,7 +231,7 @@ export function DayReportScreen({ workdayId, onBack }: Props) {
           </section>
         )}
 
-        <section>
+        <section id="day-timeline">
           <div className="mb-2 flex items-baseline justify-between">
             <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
               Tracé de la journée

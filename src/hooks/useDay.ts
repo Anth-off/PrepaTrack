@@ -1,7 +1,8 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import type { Snapshot } from '../core/machine'
 import { computeDayMetrics, type DayMetrics } from '../core/metrics'
-import type { ColisEvent, StockShortage } from '../core/types'
+import type { ColisEvent, Settings, StockShortage } from '../core/types'
+import { DEFAULT_SETTINGS } from '../core/types'
 import { getSettings } from '../db/db'
 import { colisEventsFor, loadSnapshotById, stockShortagesFor } from '../db/repo'
 import { useNow } from './useNow'
@@ -11,6 +12,7 @@ export interface DayView {
   events: ColisEvent[]
   shortages: StockShortage[]
   day?: DayMetrics
+  settings: Settings
   targetRate: number
   loading: boolean
 }
@@ -29,19 +31,23 @@ export function useDay(workdayId?: string): DayView {
       stockShortagesFor(snap.workday.id),
       getSettings(),
     ])
-    return { snap, events, shortages, targetRate: settings.targetRate }
+    return { snap, events, shortages, settings }
   }, [workdayId])
 
   if (!data) {
-    return { events: [], shortages: [], targetRate: 110, loading: data === undefined }
+    return {
+      events: [], shortages: [], settings: DEFAULT_SETTINGS,
+      targetRate: 110, loading: data === undefined,
+    }
   }
 
   return {
     snap: data.snap,
     events: data.events,
     shortages: data.shortages,
-    day: computeDayMetrics(data.snap, data.events, data.targetRate, now),
-    targetRate: data.targetRate,
+    settings: data.settings,
+    day: computeDayMetrics(data.snap, data.events, data.settings.targetRate, now),
+    targetRate: data.settings.targetRate,
     loading: false,
   }
 }

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useLiveQuery } from 'dexie-react-hooks'
 import { BucketChart } from '../components/BucketChart'
 import { DayBars } from '../components/DayBars'
 import { DayList } from '../components/DayList'
@@ -9,10 +10,12 @@ import { RecoList } from '../components/RecoList'
 import { TimeBreakdown } from '../components/TimeBreakdown'
 import { byDensity, byHour, byOrderType, bySupport, byWeekday, losses } from '../core/analysis'
 import { recommend } from '../core/recommendations'
+import { inspectIntegrity } from '../core/integrity'
 import { formatDayLabel, formatShort } from '../core/time'
 import { useRecentDays } from '../hooks/useRecentDays'
 import { useNow } from '../hooks/useNow'
 import { closeWorkdayAt, plausibleEndFor } from '../db/repo'
+import { getIntegrityDismissals, visibleIntegrityIssues } from '../db/integrity'
 
 interface Props {
   onOpen: (workdayId: string) => void
@@ -32,7 +35,8 @@ const PERIODS = [
 export function DashboardScreen({ onOpen }: Props) {
   const [period, setPeriod] = useState<number>(30)
   const now = useNow(60_000)
-  const { days: allDays, targetRate, loading } = useRecentDays(365)
+  const { days: allDays, settings, targetRate, loading } = useRecentDays(365)
+  const storedDismissals = useLiveQuery(() => getIntegrityDismissals(), [])
 
   const inPeriod = useMemo(() => {
     if (period >= 365) return allDays
@@ -44,6 +48,25 @@ export function DashboardScreen({ onOpen }: Props) {
   // laisser dans les moyennes ferait passer une bonne semaine pour une mauvaise.
   const days = useMemo(() => inPeriod.filter((d) => !d.stale), [inPeriod])
   const stale = useMemo(() => inPeriod.filter((d) => d.stale), [inPeriod])
+  const integrityDays = useMemo(
+    () =>
+      inPeriod
+        .map((day) => ({
+          day,
+          issues: visibleIntegrityIssues(
+            inspectIntegrity({
+              snap: day.snap,
+              events: day.events,
+              shortages: day.shortages ?? [],
+              settings,
+              now,
+            }),
+            storedDismissals ?? {},
+          ).filter((issue) => issue.rule !== 'stale_workday'),
+        }))
+        .filter((entry) => entry.issues.length > 0),
+    [inPeriod, now, settings, storedDismissals],
+  )
 
   const analysis = useMemo(
     () => ({
@@ -145,6 +168,29 @@ export function DashboardScreen({ onOpen }: Props) {
             Tu pourras l'ajuster ensuite depuis le tracé de la journée.
           </p>
         </div>
+      )}
+
+      {integrityDays.length > 0 && (
+        <section className="rounded-2xl border border-warn/40 bg-warn/10 p-3">
+          <h2 className="text-sm font-bold text-slate-100">
+            Données à vérifier · {integrityDays.reduce((sum, entry) => sum + entry.issues.length, 0)}
+          </h2>
+          <p className="mt-1 text-xs text-slate-400">
+            Les contrôles sont locaux et ne modifient aucun chiffre. Ouvre une journée pour voir la correction proposée.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {integrityDays.map(({ day, issues }) => (
+              <button
+                key={day.id}
+                type="button"
+                onClick={() => onOpen(day.id)}
+                className="pressable rounded-lg bg-ink-700 px-3 py-1.5 text-xs font-semibold first-letter:uppercase"
+              >
+                {formatDayLabel(day.date)} · {issues.length} ›
+              </button>
+            ))}
+          </div>
+        </section>
       )}
 
       {/* Deux colonnes dès 768 px : avec l'affichage Windows à 125 ou 150 %, un

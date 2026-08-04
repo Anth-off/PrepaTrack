@@ -43,6 +43,7 @@ export default function App() {
       : 'today',
   )
   const [reportId, setReportId] = useState<string | undefined>()
+  const [reportSegmentId, setReportSegmentId] = useState<string | undefined>()
   const alerts = useAlerts(session.view.active, session.settings, session.now)
 
   const isManager = sync.profile?.role === 'manager'
@@ -57,7 +58,14 @@ export default function App() {
   // plein écran : sur PC, perdre la navigation pour consulter une journée
   // donnerait l'impression d'avoir changé de site.
   const content = reportId ? (
-    <DayReportScreen workdayId={reportId} onBack={() => setReportId(undefined)} />
+    <DayReportScreen
+      workdayId={reportId}
+      initialSegmentId={reportSegmentId}
+      onBack={() => {
+        setReportId(undefined)
+        setReportSegmentId(undefined)
+      }}
+    />
   ) : (
     <>
       {alerts.length > 0 && (
@@ -68,17 +76,32 @@ export default function App() {
               : 'sticky top-0 z-40 px-4 pb-2 pt-2'
           }
         >
-          {alerts.map((alert) => (
-            <div
-              key={alert.id}
-              className={`mb-2 rounded-xl px-4 py-3 ${
-                alert.kind === 'break_end' ? 'bg-warn text-black' : 'bg-bad text-white'
-              }`}
-            >
-              <div className="font-bold">{alert.title}</div>
-              <div className="text-sm opacity-90">{alert.detail}</div>
-            </div>
-          ))}
+          {alerts.map((alert) => {
+            const className = `mb-2 w-full rounded-xl px-4 py-3 text-left ${
+              alert.kind === 'break_end' ? 'bg-warn text-black' : 'bg-bad text-white'
+            }`
+            const body = (
+              <>
+                <div className="font-bold">{alert.title}</div>
+                <div className="text-sm opacity-90">{alert.detail}</div>
+              </>
+            )
+            return alert.kind === 'stuck' && session.snap.workday ? (
+              <button
+                key={alert.id}
+                type="button"
+                className={`pressable pointer-events-auto ${className}`}
+                onClick={() => {
+                  setReportSegmentId(session.view.active?.id)
+                  setReportId(session.snap.workday!.id)
+                }}
+              >
+                {body}
+              </button>
+            ) : (
+              <div key={alert.id} className={className}>{body}</div>
+            )
+          })}
         </div>
       )}
 
@@ -87,15 +110,22 @@ export default function App() {
           session={session}
           desktop={isDesktop}
           onShowReport={() => {
+            setReportSegmentId(undefined)
             if (session.snap.workday) setReportId(session.snap.workday.id)
           }}
         />
       )}
 
-      {activeTab === 'stats' && <DashboardScreen onOpen={setReportId} />}
+      {activeTab === 'stats' && <DashboardScreen onOpen={(id) => {
+        setReportSegmentId(undefined)
+        setReportId(id)
+      }} />}
 
       {activeTab === 'team' && sync.profile && (
-        <TeamScreen profile={sync.profile} onOpenDay={setReportId} />
+        <TeamScreen profile={sync.profile} onOpenDay={(id) => {
+          setReportSegmentId(undefined)
+          setReportId(id)
+        }} />
       )}
 
       {activeTab === 'settings' && (

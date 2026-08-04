@@ -27,6 +27,7 @@ reprend automatiquement lorsque la connexion revient.
 - comptage des colis, supports et lignes de commande ;
 - correction a posteriori sans créer de trou ni de chevauchement dans la timeline ;
 - statistiques de cadence, temps perdu et recommandations déterministes ;
+- contrôles locaux des incohérences avec correction guidée et faux positifs confirmables ;
 - détection locale et optionnelle des déplacements du chariot ;
 - sauvegarde et restauration complètes ;
 - synchronisation facultative iPhone ↔ PC et vue d'équipe pour les gestionnaires ;

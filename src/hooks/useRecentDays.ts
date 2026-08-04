@@ -1,11 +1,15 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import type { DayData } from '../core/analysis'
+import type { Snapshot } from '../core/machine'
 import { computeDayMetrics } from '../core/metrics'
+import type { Settings } from '../core/types'
+import { DEFAULT_SETTINGS } from '../core/types'
 import { getSettings } from '../db/db'
 import { colisEventsFor, listWorkdays, loadSnapshotFor, stockShortagesFor } from '../db/repo'
 
 /** Une vacation, avec tout ce qu'il faut pour l'analyser. */
 export interface RecentDay extends DayData {
+  snap: Snapshot
   open: boolean
   /**
    * Vacation restée ouverte bien au-delà d'un poste : le chrono a continué de
@@ -20,6 +24,7 @@ export const STALE_AFTER = 16 * 3600_000
 
 export interface RecentDays {
   days: RecentDay[]
+  settings: Settings
   targetRate: number
   loading: boolean
 }
@@ -44,6 +49,7 @@ export function useRecentDays(limit = 30): RecentDays {
         return {
           id: workday.id,
           date: workday.date,
+          snap,
           open,
           stale: open && metrics.presence > STALE_AFTER,
           segments: snap.segments,
@@ -53,12 +59,13 @@ export function useRecentDays(limit = 30): RecentDays {
         }
       }),
     )
-    return { days, targetRate: settings.targetRate }
+    return { days, settings }
   }, [limit])
 
   return {
     days: data?.days ?? [],
-    targetRate: data?.targetRate ?? 110,
+    settings: data?.settings ?? DEFAULT_SETTINGS,
+    targetRate: data?.settings.targetRate ?? 110,
     loading: data === undefined,
   }
 }
