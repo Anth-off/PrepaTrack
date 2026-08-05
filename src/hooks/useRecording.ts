@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  RECORDING_AUDIO_BITS_PER_SECOND,
   RECORDING_BITS_PER_SECOND,
   RECORDING_CHUNK_MS,
+  RECORDING_VIDEO_BITS_PER_SECOND,
   mediaErrorMessage,
   recordingStorageWarning,
   recordingSupported,
@@ -31,9 +33,9 @@ const CONSTRAINTS: MediaStreamConstraints = {
   audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
   video: {
     facingMode: { ideal: 'user' },
-    width: { ideal: 640, max: 640 },
-    height: { ideal: 360, max: 360 },
-    frameRate: { ideal: 15, max: 20 },
+    width: { ideal: 1280, max: 1280 },
+    height: { ideal: 720, max: 720 },
+    frameRate: { ideal: 24, max: 30 },
   },
 }
 
@@ -75,8 +77,8 @@ export function useRecording(
     const mimeType = selectRecordingMime((mime) => MediaRecorder.isTypeSupported(mime))
     const recorder = new MediaRecorder(stream, {
       ...(mimeType ? { mimeType } : {}),
-      videoBitsPerSecond: 320_000,
-      audioBitsPerSecond: 40_000,
+      videoBitsPerSecond: RECORDING_VIDEO_BITS_PER_SECOND,
+      audioBitsPerSecond: RECORDING_AUDIO_BITS_PER_SECOND,
     })
     const parts: Blob[] = []
     const chunkStartedAt = Date.now()
@@ -96,6 +98,10 @@ export function useRecording(
     recorder.onstop = async () => {
       const endedAt = Date.now()
       const blob = new Blob(parts, { type: recorder.mimeType || mimeType || 'video/webm' })
+      const rotate = continueRef.current && dayRef.current === dayId && stream.active
+      // Démarre le fichier suivant avant l'écriture du précédent dans
+      // IndexedDB. Sur iPhone, attendre cette écriture créait un raccord noir.
+      if (rotate) startChunkRef.current(stream, dayId)
       if (blob.size > 0) {
         try {
           await saveRecordingChunk({
@@ -111,13 +117,13 @@ export function useRecording(
           })
         } catch {
           continueRef.current = false
+          const current = recorderRef.current
+          if (current && current !== recorder && current.state !== 'inactive') current.stop()
           setStatus('error')
           setMessage('La vidéo n’a pas pu être enregistrée localement. Les chronos sont conservés.')
         }
       }
-      if (continueRef.current && dayRef.current === dayId && stream.active) {
-        startChunkRef.current(stream, dayId)
-      } else {
+      if (!rotate) {
         releaseStream()
         setStartedAt(undefined)
         setStatus(enabled ? (reasonRef.current === 'interrupted' ? 'interrupted' : 'idle') : 'disabled')

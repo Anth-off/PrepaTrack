@@ -43,7 +43,7 @@ export function RecordingSettingsSection({ settings, recording }: { settings: Se
             </select>
           </label>
           <p className="mt-2 text-xs text-slate-500">
-            Qualité économe : environ {estimatedRecordingMegabytes(7.5)} Mo pour 7 h 30. Les extraits sont locaux, exclus de Supabase et des sauvegardes JSON.
+            Qualité équilibrée 720p : environ {estimatedRecordingMegabytes(7.5)} Mo pour 7 h 30, en fichiers de 30 minutes maximum. Les extraits sont locaux, exclus de Supabase et des sauvegardes JSON.
           </p>
           <button
             type="button"

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   MIN_FREE_RECORDING_BYTES,
+  RECORDING_CHUNK_MS,
   estimatedRecordingMegabytes,
   mediaErrorMessage,
   recordingStorageWarning,
@@ -24,5 +25,7 @@ describe('politique d’enregistrement local', () => {
     expect(mediaErrorMessage(new DOMException('', 'NotAllowedError'))).toContain('refusé')
     expect(mediaErrorMessage(new DOMException('', 'NotFoundError'))).toContain('introuvable')
     expect(estimatedRecordingMegabytes(7.5)).toBeGreaterThan(1_000)
+    expect(RECORDING_CHUNK_MS).toBe(30 * 60_000)
+    expect(estimatedRecordingMegabytes(7.5)).toBeGreaterThan(5_000)
   })
 })
