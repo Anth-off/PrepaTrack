@@ -20,6 +20,10 @@ vacation, puis consultée sur PC. La journée reste entièrement fonctionnelle s
 réseau : les données sont enregistrées dans IndexedDB et la synchronisation Supabase
 reprend automatiquement lorsque la connexion revient.
 
+Une coque iOS native Capacitor est également maintenue dans `ios/`. Sa compilation
+et son envoi manuel vers TestFlight sont documentés dans
+[docs/IOS_TESTFLIGHT.md](docs/IOS_TESTFLIGHT.md).
+
 ## Fonctionnalités
 
 - suivi linéaire de la journée, des commandes, pauses, trajets et aléas ;
@@ -117,6 +121,7 @@ Pour signaler une vulnérabilité, utilise le rapport privé décrit dans
 | `src/components/` | composants visuels réutilisables |
 | `supabase/` | schéma SQL, rôles, déclencheurs et politiques RLS |
 | `.github/` | CI, releases, sécurité et formulaires d'issues |
+| `ios/` | projet Xcode Capacitor et réglages natifs iOS |
 
 ## Contributions et releases
 

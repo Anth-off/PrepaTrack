@@ -13,10 +13,13 @@
     "lint": "eslint src scripts vite.config.ts vitest.config.ts",
     "typecheck": "tsc -b",
     "build:vite": "vite build",
+    "ios:add": "npm run build && cap add ios",
+    "ios:sync": "npm run build && cap sync ios",
     "db:check": "node scripts/db-check.mjs",
     "db:setup": "node scripts/db-setup.mjs"
   },
   "dependencies": {
+    "@capacitor/core": "^8.5.0",
     "@supabase/supabase-js": "^2.111.0",
     "dexie": "^4.0.10",
     "dexie-react-hooks": "^1.1.7",
@@ -24,6 +27,8 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/ios": "^8.5.0",
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.1.2",
     "@types/pg": "^8.20.0",

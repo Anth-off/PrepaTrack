@@ -94,6 +94,31 @@ jobs:
           path: dist/
           retention-days: 7
 
+  ios:
+    name: iOS natif
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Installer les dépendances
+        run: npm ci
+      - name: Synchroniser Capacitor
+        run: npm run ios:sync
+      - name: Compiler pour le simulateur sans signature
+        run: |
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
   database:
     name: Schéma de base
     runs-on: ubuntu-latest
@@ -141,7 +166,7 @@ jobs:
     name: CI
     runs-on: ubuntu-latest
     timeout-minutes: 2
-    needs: [typecheck, lint, test, build, database, audit, dependency-review]
+    needs: [typecheck, lint, test, build, ios, database, audit, dependency-review]
     if: always()
     steps:
       - name: Vérifier que tout est passé
@@ -150,6 +175,7 @@ jobs:
           echo "lint      : ${{ needs.lint.result }}"
           echo "test      : ${{ needs.test.result }}"
           echo "build     : ${{ needs.build.result }}"
+          echo "iOS       : ${{ needs.ios.result }}"
           echo "database  : ${{ needs.database.result }}"
           echo "audit     : ${{ needs.audit.result }}"
           echo "dépendances : ${{ needs.dependency-review.result }}"
