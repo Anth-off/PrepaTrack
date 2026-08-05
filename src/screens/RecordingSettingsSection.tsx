@@ -2,6 +2,7 @@ import { estimatedRecordingMegabytes } from '../core/recording'
 import type { Settings } from '../core/types'
 import type { RecordingControl } from '../hooks/useRecording'
 import { saveSettings } from '../db/db'
+import { RecordingControl as RecordingControlBar } from '../components/RecordingControl'
 
 export function RecordingSettingsSection({ settings, recording }: { settings: Settings; recording: RecordingControl }) {
   const config = settings.recording
@@ -24,7 +25,7 @@ export function RecordingSettingsSection({ settings, recording }: { settings: Se
       </div>
 
       <div className="mt-3 rounded-xl border border-warn/40 bg-warn/10 p-3 text-xs leading-relaxed text-slate-300">
-        Un voyant rouge reste affiché pendant toute captation. iOS affiche aussi son indicateur système. Préviens les personnes filmées et respecte les règles de ton lieu de travail.
+        iOS affiche son indicateur caméra/micro dans la Dynamic Island pendant toute captation. Préviens les personnes filmées et respecte les règles de ton lieu de travail.
       </div>
 
       {config.enabled && (
@@ -52,6 +53,12 @@ export function RecordingSettingsSection({ settings, recording }: { settings: Se
             Tester la caméra et le microphone
           </button>
           {recording.message && <p role="status" className="mt-2 text-xs text-slate-400">{recording.message}</p>}
+          <div className="mt-3">
+            <RecordingControlBar recording={recording} />
+          </div>
+          {!recording.canStart && (
+            <p className="mt-2 text-xs text-slate-500">Commence d’abord une journée, puis reviens ici pour démarrer la captation.</p>
+          )}
         </>
       )}
     </section>

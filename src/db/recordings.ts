@@ -58,3 +58,24 @@ export function downloadRecording(row: RecordingChunk): void {
   anchor.click()
   window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
 }
+
+/**
+ * Ouvre la feuille de partage native sur iPhone. Safari interdit à une PWA
+ * d'écrire silencieusement dans Photos : l'utilisateur choisit ensuite
+ * « Enregistrer la vidéo ». Le téléchargement reste le repli bureau.
+ */
+export async function shareRecording(row: RecordingChunk): Promise<'shared' | 'downloaded' | 'cancelled'> {
+  const file = new File([row.blob], recordingFilename(row), { type: row.mimeType })
+  if (navigator.share && navigator.canShare?.({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: 'Vidéo PrepaTrack' })
+      return 'shared'
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return 'cancelled'
+      // Certains Safari annoncent le partage de fichiers puis le refusent :
+      // le téléchargement permet encore de récupérer la vidéo.
+    }
+  }
+  downloadRecording(row)
+  return 'downloaded'
+}

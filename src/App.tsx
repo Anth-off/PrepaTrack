@@ -123,7 +123,6 @@ export default function App() {
           session={session}
           resume={resume}
           desktop={isDesktop}
-          recording={recording}
           onShowReport={() => {
             setReportSegmentId(undefined)
             if (session.snap.workday) setReportId(session.snap.workday.id)

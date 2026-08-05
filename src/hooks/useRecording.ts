@@ -21,6 +21,7 @@ export interface RecordingControl {
   startedAt?: number
   message?: string
   supported: boolean
+  canStart: boolean
   start: () => Promise<void>
   stop: (reason?: RecordingEndReason) => Promise<void>
   testDevices: () => Promise<boolean>
@@ -223,7 +224,7 @@ export function useRecording(
     }
   }, [stop])
 
-  return { status, startedAt, message, supported, start, stop, testDevices }
+  return { status, startedAt, message, supported, canStart: Boolean(workdayId), start, stop, testDevices }
 }
 
 export const RECORDING_ESTIMATED_BITS_PER_SECOND = RECORDING_BITS_PER_SECOND

@@ -3,7 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { formatShort, hhmm } from '../core/time'
 import {
   deleteRecordingChunk,
-  downloadRecording,
+  shareRecording,
   listRecordingChunks,
   type RecordingChunk,
 } from '../db/recordings'
@@ -26,7 +26,9 @@ export function RecordingArchive({ workdayId }: { workdayId: string }) {
         <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Enregistrements locaux</h3>
         <span className="text-xs text-slate-500">{rows.length} extrait{rows.length > 1 ? 's' : ''} · {sizeLabel(total)}</span>
       </div>
-      <p className="mb-2 text-xs text-slate-500">Ces fichiers restent sur cet appareil et ne sont jamais synchronisés.</p>
+      <p className="mb-2 text-xs text-slate-500">
+        Ces fichiers restent dans PrepaTrack. Sur iPhone, touche « Photos / partager », puis « Enregistrer la vidéo » pour l’ajouter à ta galerie.
+      </p>
       {url && playing && (
         <div className="card mb-2">
           <video src={url} controls playsInline className="max-h-80 w-full rounded-xl bg-black" />
@@ -39,7 +41,7 @@ export function RecordingArchive({ workdayId }: { workdayId: string }) {
               <div className="text-sm font-bold">{hhmm(row.startedAt)} · {formatShort(row.duration)}</div>
               <div className="text-xs text-slate-500">{sizeLabel(row.size)}{row.status === 'interrupted' ? ' · interrompu' : ''}</div>
             </button>
-            <button type="button" onClick={() => downloadRecording(row)} className="pressable rounded-lg bg-ink-700 px-3 py-2 text-xs font-semibold">Exporter</button>
+            <button type="button" onClick={() => void shareRecording(row)} className="pressable rounded-lg bg-ink-700 px-3 py-2 text-xs font-semibold">Photos / partager</button>
             <button
               type="button"
               aria-label={`Supprimer l’extrait de ${hhmm(row.startedAt)}`}
