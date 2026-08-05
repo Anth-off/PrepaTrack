@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.5.1...v0.5.2) (2026-08-05)
+
+
+### Corrections
+
+* **mobile:** améliorer la vidéo en 720p et réduire les coupures entre les fichiers ([b165020](https://github.com/N0thyTVOff/PrepaTrack/commit/b1650208e6786d995f3e87eb7f4919788cf80df1))
+
 ## [0.5.1](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.5.0...v0.5.1) (2026-08-05)
 
 
