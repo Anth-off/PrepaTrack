@@ -15,6 +15,8 @@ import { formatShort, hhmm } from '../core/time'
 import type { OrderType, Segment, SegmentType, Supports, SupportKind } from '../core/types'
 import type { Session } from '../hooks/useSession'
 import type { ResumePromptControl } from '../hooks/useResumePrompt'
+import type { RecordingControl as RecordingControlType } from '../hooks/useRecording'
+import { RecordingControl } from '../components/RecordingControl'
 import { useRecentDays } from '../hooks/useRecentDays'
 import {
   addColis,
@@ -50,6 +52,7 @@ interface Props {
   onShowReport: () => void
   /** Présentation bureau : deux colonnes, le suivi du jour à côté de l'action. */
   desktop?: boolean
+  recording: RecordingControlType
 }
 
 /**
@@ -61,7 +64,7 @@ interface Props {
  * boutons de deux mètres de large n'aideraient personne — et la place gagnée
  * sert à afficher le bilan du jour en continu.
  */
-export function TodayScreen({ session, resume, onShowReport, desktop }: Props) {
+export function TodayScreen({ session, resume, onShowReport, desktop, recording }: Props) {
   const { view, snap, day, live: sessionLive, shortages, settings, now } = session
   const { days: historyDays } = useRecentDays(365)
   const [newOrder, setNewOrder] = useState(false)
@@ -266,6 +269,7 @@ export function TodayScreen({ session, resume, onShowReport, desktop }: Props) {
 
   const controls = (
     <div className={`flex flex-col ${desktop ? 'gap-3' : 'gap-2'}`}>
+      {view.phase !== 'no_day' && <RecordingControl recording={recording} />}
       {undoNotice && (
         <div
           role="status"

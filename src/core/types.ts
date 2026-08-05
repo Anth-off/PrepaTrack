@@ -221,6 +221,13 @@ export interface CartMotionSettings {
   threshold?: number
 }
 
+export interface RecordingSettings {
+  /** Module strictement optionnel : aucune permission n'est demandée tant qu'il est désactivé. */
+  enabled: boolean
+  /** Suppression automatique des médias locaux anciens. */
+  retentionDays: number
+}
+
 export interface Settings {
   id: 'settings'
   /** Objectif de cadence en colis par heure. */
@@ -245,6 +252,8 @@ export interface Settings {
   soundAlerts: boolean
   /** Détection hors ligne des déplacements du chariot à partir des capteurs. */
   cartMotion: CartMotionSettings
+  /** Captation locale de la vacation, jamais synchronisée. */
+  recording: RecordingSettings
   updatedAt: number
 }
 
@@ -263,5 +272,6 @@ export const DEFAULT_SETTINGS: Settings = {
   incidents: [...STANDARD_INCIDENTS],
   soundAlerts: true,
   cartMotion: { enabled: false },
+  recording: { enabled: false, retentionDays: 3 },
   updatedAt: 0,
 }

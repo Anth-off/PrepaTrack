@@ -63,6 +63,7 @@ describe('export', () => {
     expect(backup.workdays[0].id).toBe('w1')
     // Les réglages voyagent avec, pour ne pas avoir à les refaire à la main.
     expect(backup.settings.targetRate).toBe(110)
+    expect('recordingChunks' in backup).toBe(false)
   })
 
   it('reste relisible après un aller-retour par JSON', async () => {

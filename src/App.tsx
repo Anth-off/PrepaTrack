@@ -8,6 +8,7 @@ import { DESKTOP_QUERY, useMediaQuery } from './hooks/useMediaQuery'
 import { useSession } from './hooks/useSession'
 import { useResumePrompt } from './hooks/useResumePrompt'
 import { useSync } from './hooks/useSync'
+import { useRecording } from './hooks/useRecording'
 import { formatShort, hhmm } from './core/time'
 import { DashboardScreen } from './screens/DashboardScreen'
 import { DayReportScreen } from './screens/DayReportScreen'
@@ -40,6 +41,11 @@ export default function App() {
   const appUpdate = useAppUpdate(session.loading || Boolean(session.snap.workday))
   const resume = useResumePrompt(session)
   const cartMotion = useCartMotion(session)
+  const recording = useRecording(
+    session.snap.workday?.id,
+    session.settings.recording.enabled,
+    session.settings.recording.retentionDays,
+  )
   const sync = useSync()
   const isDesktop = useMediaQuery(DESKTOP_QUERY)
   // Sur grand écran on arrive sur les statistiques : le PC sert à consulter le
@@ -117,6 +123,7 @@ export default function App() {
           session={session}
           resume={resume}
           desktop={isDesktop}
+          recording={recording}
           onShowReport={() => {
             setReportSegmentId(undefined)
             if (session.snap.workday) setReportId(session.snap.workday.id)
@@ -138,7 +145,7 @@ export default function App() {
 
       {activeTab === 'settings' && (
         <div className="mx-auto w-full max-w-2xl">
-          <SettingsScreen sync={sync} motion={cartMotion} update={appUpdate} />
+          <SettingsScreen sync={sync} motion={cartMotion} recording={recording} update={appUpdate} />
         </div>
       )}
     </>

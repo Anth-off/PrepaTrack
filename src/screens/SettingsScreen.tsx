@@ -5,6 +5,8 @@ import type { Settings } from '../core/types'
 import type { SyncInfo } from '../hooks/useSync'
 import type { CartMotionControl } from '../hooks/useCartMotion'
 import type { AppUpdateControl } from '../hooks/useAppUpdate'
+import type { RecordingControl } from '../hooks/useRecording'
+import { RecordingSettingsSection } from './RecordingSettingsSection'
 import { INCIDENT_TYPES, segmentDef } from '../core/segments'
 import { BackupSection } from './BackupSection'
 import { CartMotionSection } from './CartMotionSection'
@@ -17,10 +19,12 @@ export function SettingsScreen({
   sync,
   motion,
   update,
+  recording,
 }: {
   sync: SyncInfo
   motion: CartMotionControl
   update: AppUpdateControl
+  recording: RecordingControl
 }) {
   const settings = useLiveQuery(() => getSettings(), [])
   const [confirmWipe, setConfirmWipe] = useState(false)
@@ -51,6 +55,8 @@ export function SettingsScreen({
       </section>
 
       <CartMotionSection settings={settings} motion={motion} />
+
+      <RecordingSettingsSection settings={settings} recording={recording} />
 
       <section className="card">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">

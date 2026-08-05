@@ -29,6 +29,8 @@ import { CorrectSheet } from './CorrectSheet'
 import { OrderEditSheet } from './OrderEditSheet'
 import { StockShortageSheet } from './StockShortageSheet'
 import { PalletEditSheet } from './PalletEditSheet'
+import { RecordingArchive } from '../components/RecordingArchive'
+import { deleteWorkdayRecordings } from '../db/recordings'
 import type { Order, Segment } from '../core/types'
 
 interface Props {
@@ -241,6 +243,8 @@ export function DayReportScreen({ workdayId, initialSegmentId, onBack }: Props) 
           <Timeline segments={snap.segments} now={now} onSelect={setEditing} />
         </section>
 
+        <RecordingArchive workdayId={workdayId} />
+
         <section className="border-t border-ink-600 pt-4">
           {confirmDelete ? (
             <div className="flex flex-col gap-2">
@@ -254,6 +258,7 @@ export function DayReportScreen({ workdayId, initialSegmentId, onBack }: Props) 
                 type="button"
                 onClick={async () => {
                   await deleteWorkday(workdayId)
+                  await deleteWorkdayRecordings(workdayId)
                   onBack()
                 }}
                 className="pressable min-h-touch rounded-xl bg-bad font-bold text-white"

@@ -1,5 +1,6 @@
 import Dexie, { type Table } from 'dexie'
 import type { ColisEvent, Order, OrderPallet, Segment, Settings, StockShortage, Workday } from '../core/types'
+import type { RecordingChunk } from './recordings'
 import { DEFAULT_SETTINGS } from '../core/types'
 
 /**
@@ -22,6 +23,8 @@ export class PrepaDB extends Dexie {
   stockShortages!: Table<StockShortage, string>
   settings!: Table<Settings, string>
   meta!: Table<MetaRow, string>
+  /** Médias locaux uniquement : cette table est absente de SYNC_TABLES et des sauvegardes. */
+  recordingChunks!: Table<RecordingChunk, string>
 
   constructor() {
     super('prepatrack')
@@ -40,6 +43,9 @@ export class PrepaDB extends Dexie {
     })
     this.version(4).stores({
       orderPallets: 'id, workdayId, orderId, [orderId+number], startedAt, syncState',
+    })
+    this.version(5).stores({
+      recordingChunks: 'id, workdayId, [workdayId+sequence], startedAt, createdAt',
     })
   }
 }
@@ -69,13 +75,18 @@ export async function getSettings(): Promise<Settings> {
           ...DEFAULT_SETTINGS.cartMotion,
           ...existing.cartMotion,
         },
+        recording: {
+          ...DEFAULT_SETTINGS.recording,
+          ...existing.recording,
+        },
       }
     : DEFAULT_SETTINGS
 }
 
-export type SettingsPatch = Omit<Partial<Settings>, 'stuckThresholds' | 'cartMotion'> & {
+export type SettingsPatch = Omit<Partial<Settings>, 'stuckThresholds' | 'cartMotion' | 'recording'> & {
   stuckThresholds?: Partial<Settings['stuckThresholds']>
   cartMotion?: Partial<Settings['cartMotion']>
+  recording?: Partial<Settings['recording']>
 }
 
 export async function saveSettings(patch: SettingsPatch): Promise<Settings> {
@@ -92,6 +103,10 @@ export async function saveSettings(patch: SettingsPatch): Promise<Settings> {
     cartMotion: {
       ...current.cartMotion,
       ...patch.cartMotion,
+    },
+    recording: {
+      ...current.recording,
+      ...patch.recording,
     },
     id: 'settings' as const,
     updatedAt: Date.now(),
@@ -148,6 +163,8 @@ export async function wipeAll(): Promise<void> {
       }
     },
   )
+  // Les vidéos ne sont jamais synchronisées : leur effacement doit être physique.
+  await db.recordingChunks.clear()
 }
 
 /** Identifiant unique, sans dépendance externe et sûr hors HTTPS. */
