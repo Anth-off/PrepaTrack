@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.4.0...v0.5.0) (2026-08-05)
+
+
+### Fonctionnalités
+
+* **mobile:** enregistrer localement la vacation avec la caméra avant et le microphone ([8647edf](https://github.com/N0thyTVOff/PrepaTrack/commit/8647edf5b761edd12b9989f7636b70c402c40145))
+
 ## [0.4.0](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.3.0...v0.4.0) (2026-08-04)
 
 
