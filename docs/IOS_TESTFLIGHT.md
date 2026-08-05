@@ -15,9 +15,12 @@ iOS native avec Capacitor. La PWA reste déployable indépendamment.
 1. Dans **Certificates, Identifiers & Profiles**, créer l'App ID explicite
    `com.n0thytvoff.prepatrack`.
 2. Dans **App Store Connect > Apps**, créer l'app **PrepaTrack** avec ce Bundle ID.
-3. Dans **Users and Access > Integrations > App Store Connect API**, créer une clé
-   d'équipe ayant le rôle `App Manager`, puis télécharger son fichier `.p8`. Le
-   fichier n'est téléchargeable qu'une fois.
+3. Dans **Users and Access > Integrations > App Store Connect API**, demander
+   d'abord l'accès à l'API si Apple l'affiche, puis créer une clé **d'équipe** dédiée
+   ayant le rôle `Admin` et télécharger son fichier `.p8`. La signature automatique
+   doit pouvoir créer le certificat et le profil de distribution ; une clé
+   individuelle ne dispose pas de ces accès. Le fichier `.p8` n'est téléchargeable
+   qu'une fois.
 4. Dans le dépôt GitHub, créer l'environnement `app-store-connect`. Une approbation
    manuelle peut y être exigée avant chaque envoi.
 5. Ajouter à cet environnement les secrets suivants :

@@ -24,6 +24,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSCameraUsageDescription</key>
 	<string>PrepaTrack utilise la caméra avant uniquement lorsque vous démarrez volontairement l’enregistrement de votre journée.</string>
 	<key>NSMicrophoneUsageDescription</key>
