@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.0](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.3.0...v0.4.0) (2026-08-04)
+
+
+### Fonctionnalités
+
+* **chronos:** sécuriser la reprise après veille ou fermeture ([c6b63de](https://github.com/N0thyTVOff/PrepaTrack/commit/c6b63de0213097718da5dd640f93c398d1ea3ee4))
+* **pwa:** différer les mises à jour pendant une vacation ([de78aee](https://github.com/N0thyTVOff/PrepaTrack/commit/de78aeef68d6d099f2602be397f440290a10a851))
+* **qualité:** détecter les incohérences et guider leur correction ([278435e](https://github.com/N0thyTVOff/PrepaTrack/commit/278435eb1ece9051b4b1da527029c59e88cfa121))
+
+
+### Corrections
+
+* **palettes:** permettre plusieurs palettes dès le début ou à la fin d'une commande ([662c208](https://github.com/N0thyTVOff/PrepaTrack/commit/662c2081fb5bfe5ce5d1579baeb2fd6db8edf9e6))
+* **palettes:** supprimer le choix manuel du magasin pendant la préparation ([e4cd66d](https://github.com/N0thyTVOff/PrepaTrack/commit/e4cd66dfe4808c358d5ca895f73d5153bc9ad3c6))
+* **trajets:** conserver la détection automatique après un redémarrage ([63376b6](https://github.com/N0thyTVOff/PrepaTrack/commit/63376b6517419d15c42b12624541d2c8d474250d))
+
 ## [0.3.0](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.2.2...v0.3.0) (2026-08-04)
 
 
