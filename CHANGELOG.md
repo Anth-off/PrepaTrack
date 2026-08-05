@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.5.0...v0.5.1) (2026-08-05)
+
+
+### Corrections
+
+* **mobile:** déplacer les commandes vidéo dans Réglages et faciliter l'enregistrement dans Photos ([1122245](https://github.com/N0thyTVOff/PrepaTrack/commit/1122245ad1e7465901567fbef0091bfd841d8040))
+
 ## [0.5.0](https://github.com/N0thyTVOff/PrepaTrack/compare/v0.4.0...v0.5.0) (2026-08-05)
 
 
