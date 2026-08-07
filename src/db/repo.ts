@@ -25,6 +25,7 @@ import type {
   Workday,
 } from '../core/types'
 import { EMPTY_SUPPORTS } from '../core/types'
+import { scheduleDurableBackup } from '../native/durableStorage'
 
 /**
  * Toutes les écritures passent par ici. Chaque transition ferme le segment
@@ -44,6 +45,7 @@ function stamp<T extends { updatedAt: number; syncState: 'pending' | 'synced'; o
   // Posé une seule fois, à la création. Un gestionnaire qui corrige la journée
   // d'un préparateur ne doit pas se l'attribuer au passage.
   if (o.ownerId === undefined) o.ownerId = currentOwnerId()
+  scheduleDurableBackup()
   return o
 }
 
@@ -304,6 +306,75 @@ export async function closeWorkdayAt(workdayId: string, at: number): Promise<voi
   workday.status = 'closed'
   workday.endedAt = end
   await db.workdays.put(stamp(workday))
+  await reconcileWorkdayBounds(workdayId)
+}
+
+/**
+ * Répercute une correction de chronologie sur les bornes récapitulatives.
+ *
+ * Les métriques utilisent surtout les segments, mais les en-têtes de journée,
+ * commandes et palettes possèdent aussi leurs propres bornes. Les laisser
+ * inchangées après une correction affichait plusieurs durées contradictoires.
+ */
+export async function reconcileWorkdayBounds(workdayId: string): Promise<void> {
+  const [workday, rawSegments, orders, pallets] = await Promise.all([
+    db.workdays.get(workdayId),
+    db.segments.where('workdayId').equals(workdayId).toArray(),
+    db.orders.where('workdayId').equals(workdayId).toArray(),
+    db.orderPallets.where('workdayId').equals(workdayId).toArray(),
+  ])
+  if (!workday || workday.deletedAt) return
+  const segments = rawSegments.filter((row) => !row.deletedAt)
+  const bounds = (rows: Segment[]) => {
+    if (rows.length === 0) return undefined
+    const startedAt = Math.min(...rows.map((row) => row.startedAt))
+    const open = rows.some((row) => row.endedAt === undefined)
+    const ended = rows.flatMap((row) => row.endedAt === undefined ? [] : [row.endedAt])
+    return { startedAt, open, endedAt: ended.length > 0 ? Math.max(...ended) : undefined }
+  }
+
+  for (const order of orders.filter((row) => !row.deletedAt)) {
+    const orderBounds = bounds(segments.filter((row) => row.orderId === order.id))
+    if (!orderBounds) continue
+    let changed = false
+    if (order.startedAt !== orderBounds.startedAt) {
+      order.startedAt = orderBounds.startedAt
+      changed = true
+    }
+    if (order.status === 'done' && !orderBounds.open && orderBounds.endedAt !== undefined && order.endedAt !== orderBounds.endedAt) {
+      order.endedAt = orderBounds.endedAt
+      changed = true
+    }
+    if (changed) await db.orders.put(stamp(order))
+  }
+
+  for (const pallet of pallets.filter((row) => !row.deletedAt)) {
+    const palletBounds = bounds(segments.filter((row) => row.palletId === pallet.id))
+    if (!palletBounds) continue
+    let changed = false
+    if (pallet.startedAt !== palletBounds.startedAt) {
+      pallet.startedAt = palletBounds.startedAt
+      changed = true
+    }
+    if (pallet.endedAt !== undefined && !palletBounds.open && palletBounds.endedAt !== undefined && pallet.endedAt !== palletBounds.endedAt) {
+      pallet.endedAt = palletBounds.endedAt
+      changed = true
+    }
+    if (changed) await db.orderPallets.put(stamp(pallet))
+  }
+
+  const dayBounds = bounds(segments)
+  if (!dayBounds) return
+  let changed = false
+  if (workday.startedAt !== dayBounds.startedAt) {
+    workday.startedAt = dayBounds.startedAt
+    changed = true
+  }
+  if (workday.status === 'closed' && !dayBounds.open && dayBounds.endedAt !== undefined && workday.endedAt !== dayBounds.endedAt) {
+    workday.endedAt = dayBounds.endedAt
+    changed = true
+  }
+  if (changed) await db.workdays.put(stamp(workday))
 }
 
 /** Marque le début (ou annule le marquage) des heures supplémentaires. */
@@ -566,6 +637,18 @@ export async function endInterruption(at: number = Date.now()): Promise<void> {
 export const AUTOMATIC_TRAVEL_NOTE = 'Détection automatique du chariot'
 
 /**
+ * Une action de prélèvement constitue une preuve métier que le chariot est
+ * arrivé. Elle ferme en dernier recours un trajet automatique que les capteurs
+ * n'auraient pas encore classé immobile.
+ */
+async function settleAutomaticTravelOnWorkAction(at: number): Promise<void> {
+  const view = deriveView(await loadSnapshot())
+  if (view.active?.type === 'travel' && view.active.note === AUTOMATIC_TRAVEL_NOTE) {
+    await endInterruption(at)
+  }
+}
+
+/**
  * Bascule un trajet détecté par les capteurs. L'automate n'agit que pendant le
  * prélèvement et ne ferme que les trajets qu'il a lui-même ouverts : une pause,
  * un aléa ou un trajet manuel reste toujours sous le contrôle de l'utilisateur.
@@ -606,6 +689,7 @@ export async function setAutomaticTravel(
 // --- Progression -----------------------------------------------------------
 
 export async function addColis(delta: number, at: number = Date.now()): Promise<void> {
+  await settleAutomaticTravelOnWorkAction(at)
   const snap = await loadSnapshot()
   const view = deriveView(snap)
   if (!snap.workday || !view.order) return
@@ -650,6 +734,7 @@ export async function createStockShortage(
   input: StockShortageInput,
   at: number = Date.now(),
 ): Promise<StockShortage | undefined> {
+  await settleAutomaticTravelOnWorkAction(at)
   const snap = await loadSnapshot()
   const view = deriveView(snap)
   if (!snap.workday || !view.inOrder || !view.order) return undefined
@@ -751,9 +836,10 @@ export async function editSegmentBounds(
     }
   }
 
-  if (bounds.endedAt !== undefined && segment.endedAt !== undefined) {
+  const wasOpen = segment.endedAt === undefined
+  if (bounds.endedAt !== undefined) {
     const min = segment.startedAt
-    const max = next?.endedAt ?? Number.POSITIVE_INFINITY
+    const max = next?.endedAt ?? now
     const value = Math.min(Math.max(bounds.endedAt, min), max)
     segment.endedAt = value
     if (next) {
@@ -764,6 +850,17 @@ export async function editSegmentBounds(
 
   segment.editedAt = Date.now()
   await db.segments.put(stamp(segment))
+  const stillOpen = await db.segments
+    .where('workdayId')
+    .equals(segment.workdayId)
+    .filter((row) => !row.deletedAt && row.endedAt === undefined)
+    .count()
+  const workday = await db.workdays.get(segment.workdayId)
+  if (wasOpen && segment.endedAt !== undefined && stillOpen === 0 && workday?.status === 'open') {
+    await closeWorkdayAt(segment.workdayId, (await plausibleEndFor(segment.workdayId)) ?? segment.endedAt)
+  } else {
+    await reconcileWorkdayBounds(segment.workdayId)
+  }
 }
 
 /** Supprime un segment ; le précédent absorbe sa durée pour éviter un trou. */
@@ -788,6 +885,7 @@ export async function deleteSegment(segmentId: string): Promise<void> {
 
   segment.deletedAt = Date.now()
   await db.segments.put(stamp(segment))
+  await reconcileWorkdayBounds(segment.workdayId)
 }
 
 /** Change le type d'un segment (erreur de bouton en pleine prépa). */
@@ -888,6 +986,9 @@ export async function deleteWorkday(workdayId: string): Promise<void> {
       await db.stockShortages.where('workdayId').equals(workdayId).modify(mark)
     },
   )
+  // `mark` n'utilise volontairement pas `stamp` dans la transaction. Recopie
+  // donc explicitement les tombstones dans le miroir natif après le commit.
+  scheduleDurableBackup()
 }
 
 /** Les vacations du compte courant. */

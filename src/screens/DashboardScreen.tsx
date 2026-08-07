@@ -117,7 +117,7 @@ export function DashboardScreen({ onOpen }: Props) {
   const palletWrapping = palletMetrics.reduce((sum, pallet) => sum + pallet.wrapping, 0)
 
   return (
-    <div className="flex flex-col gap-4 px-4 pb-4 md:px-6 md:py-6">
+    <div className="flex min-w-0 max-w-full flex-col gap-4 overflow-x-hidden px-4 pb-4 md:px-6 md:py-6">
       <div className="flex gap-1.5">
         {PERIODS.map((p) => (
           <button

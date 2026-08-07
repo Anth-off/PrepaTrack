@@ -48,6 +48,8 @@ interface Props {
   session: Session
   resume: ResumePromptControl
   onShowReport: () => void
+  /** Termine et sauvegarde la captation avant de fermer définitivement la vacation. */
+  onBeforeFinishDay?: () => Promise<void>
   /** Présentation bureau : deux colonnes, le suivi du jour à côté de l'action. */
   desktop?: boolean
 }
@@ -61,7 +63,7 @@ interface Props {
  * boutons de deux mètres de large n'aideraient personne — et la place gagnée
  * sert à afficher le bilan du jour en continu.
  */
-export function TodayScreen({ session, resume, onShowReport, desktop }: Props) {
+export function TodayScreen({ session, resume, onShowReport, onBeforeFinishDay, desktop }: Props) {
   const { view, snap, day, live: sessionLive, shortages, settings, now } = session
   const { days: historyDays } = useRecentDays(365)
   const [newOrder, setNewOrder] = useState(false)
@@ -177,6 +179,7 @@ export function TodayScreen({ session, resume, onShowReport, desktop }: Props) {
       case 'docking':
         return runUndoable('Fin de la mise à quai', () => advanceOrder())
       case 'cleanup':
+        await onBeforeFinishDay?.()
         return runWithoutUndo(() => finishDay())
       case 'interrupted':
         return runUndoable(`Fin — ${segmentDef(view.active!.type).label}`, () =>

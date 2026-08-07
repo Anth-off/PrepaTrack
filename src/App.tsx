@@ -10,6 +10,7 @@ import { useSession } from './hooks/useSession'
 import { useResumePrompt } from './hooks/useResumePrompt'
 import { useSync } from './hooks/useSync'
 import { useRecording } from './hooks/useRecording'
+import { useLiveActivity } from './hooks/useLiveActivity'
 import { formatShort, hhmm } from './core/time'
 import { DashboardScreen } from './screens/DashboardScreen'
 import { DayReportScreen } from './screens/DayReportScreen'
@@ -47,6 +48,7 @@ export default function App() {
     session.settings.recording.enabled,
     session.settings.recording.retentionDays,
   )
+  useLiveActivity(session, recording.status)
   const sync = useSync()
   const isDesktop = useMediaQuery(DESKTOP_QUERY)
   // Sur grand écran on arrive sur les statistiques : le PC sert à consulter le
@@ -128,6 +130,11 @@ export default function App() {
             setReportSegmentId(undefined)
             if (session.snap.workday) setReportId(session.snap.workday.id)
           }}
+          onBeforeFinishDay={() =>
+            recording.status === 'recording'
+              ? recording.stop('complete')
+              : Promise.resolve()
+          }
         />
       )}
 
@@ -210,7 +217,7 @@ export default function App() {
             dans les deux cas au contenu de respecter la hauteur de la coque. */}
         <main
           data-screen={isTodayScreen ? 'today' : reportId ? 'report' : activeTab}
-          className={`relative flex min-h-0 flex-1 flex-col ${
+          className={`relative flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden ${
             isTodayScreen
               ? 'overflow-hidden'
               : 'overflow-y-auto overscroll-contain'

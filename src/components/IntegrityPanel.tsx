@@ -17,7 +17,16 @@ export function IntegrityPanel({
   onDismiss: (issue: IntegrityIssue) => Promise<void>
 }) {
   const [confirming, setConfirming] = useState<string>()
+  const [expanded, setExpanded] = useState(false)
   if (issues.length === 0) return null
+
+  const grouped = issues.reduce<Record<string, { label: string; count: number }>>((result, item) => {
+    const label = item.title
+    result[item.rule] = result[item.rule]
+      ? { label, count: result[item.rule].count + 1 }
+      : { label, count: 1 }
+    return result
+  }, {})
 
   return (
     <section className="rounded-2xl border border-warn/40 bg-ink-800 p-3">
@@ -30,13 +39,31 @@ export function IntegrityPanel({
       <p className="mt-1 text-xs text-slate-500">
         Aucun chiffre n’est corrigé automatiquement.
       </p>
-      <div className="mt-3 flex flex-col gap-2">
+      {!expanded && (
+        <div className="mt-3 flex flex-col gap-2">
+          <div className="flex flex-wrap gap-1.5">
+            {Object.entries(grouped).map(([rule, group]) => (
+              <span key={rule} className="rounded-lg bg-ink-700 px-2 py-1 text-xs text-slate-300">
+                {group.label} · {group.count}
+              </span>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => setExpanded(true)}
+            className="pressable min-h-touch rounded-xl bg-ink-700 px-3 text-sm font-bold text-slate-200"
+          >
+            Examiner les {issues.length} contrôles
+          </button>
+        </div>
+      )}
+      {expanded && <div className="mt-3 flex min-w-0 flex-col gap-2">
         {issues.map((item) => {
           const level = LEVEL[item.severity]
           return (
-            <article key={item.id} className={`rounded-xl border p-3 ${level.tone}`}>
-              <div className="flex items-start justify-between gap-2">
-                <div>
+            <article key={item.id} className={`min-w-0 rounded-xl border p-3 ${level.tone}`}>
+              <div className="flex min-w-0 items-start justify-between gap-2">
+                <div className="min-w-0">
                   <span className="text-[0.65rem] font-bold uppercase tracking-wide">
                     {level.label}
                   </span>
@@ -50,8 +77,8 @@ export function IntegrityPanel({
                   Corriger ›
                 </button>
               </div>
-              <p className="mt-1 text-sm text-slate-300">{item.detail}</p>
-              <p className="mt-1 text-xs text-slate-500">{item.correction}</p>
+              <p className="mt-1 break-words text-sm text-slate-300">{item.detail}</p>
+              <p className="mt-1 break-words text-xs text-slate-500">{item.correction}</p>
               {confirming === item.id ? (
                 <div className="mt-2 flex gap-2">
                   <button
@@ -81,7 +108,14 @@ export function IntegrityPanel({
             </article>
           )
         })}
-      </div>
+        <button
+          type="button"
+          onClick={() => setExpanded(false)}
+          className="pressable rounded-xl bg-ink-700 py-3 text-sm font-semibold text-slate-300"
+        >
+          Replier les contrôles
+        </button>
+      </div>}
     </section>
   )
 }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  AutomaticTravelGuard,
   CartMotionDetector,
   MotionEnergyMeter,
   rootMeanSquare,
@@ -59,6 +60,7 @@ export function useCartMotion(session: Session): CartMotionControl {
   const permissionGranted = useRef(false)
   const runtimeMeter = useRef(new MotionEnergyMeter())
   const detector = useRef<CartMotionDetector>()
+  const travelGuard = useRef(new AutomaticTravelGuard())
   const calibration = useRef<CalibrationRun>()
   const transitionQueue = useRef(Promise.resolve())
   const enabled = session.settings.cartMotion.enabled
@@ -66,6 +68,7 @@ export function useCartMotion(session: Session): CartMotionControl {
 
   useEffect(() => {
     detector.current = threshold === undefined ? undefined : new CartMotionDetector(threshold)
+    travelGuard.current = new AutomaticTravelGuard()
     runtimeMeter.current = new MotionEnergyMeter()
   }, [threshold])
 
@@ -86,15 +89,27 @@ export function useCartMotion(session: Session): CartMotionControl {
   useEffect(() => {
     if (session.loading || !enabled || threshold === undefined) return
     if (status !== 'moving' && status !== 'stationary') return
+    const desiredMoving = travelGuard.current.desiredMoving(
+      status,
+      session.view.active?.type === 'travel',
+    )
     transitionQueue.current = transitionQueue.current
       .then(async () => {
-        await setAutomaticTravel(status === 'moving')
+        await setAutomaticTravel(desiredMoving)
       })
       .catch(() => {
         setError("Impossible d'enregistrer automatiquement le trajet.")
         setStatus('error')
       })
-  }, [enabled, session.loading, session.view.phase, status, threshold])
+  }, [
+    enabled,
+    session.loading,
+    session.view.active?.id,
+    session.view.active?.type,
+    session.view.phase,
+    status,
+    threshold,
+  ])
 
   useEffect(() => {
     if (!supported || session.loading) return
@@ -131,6 +146,16 @@ export function useCartMotion(session: Session): CartMotionControl {
     window.addEventListener('devicemotion', onMotion)
     return () => window.removeEventListener('devicemotion', onMotion)
   }, [enabled, session.loading, status, supported, threshold])
+
+  useEffect(() => {
+    if (!enabled || status !== 'moving') return
+    const watchdog = window.setInterval(() => {
+      // Cette horloge ne dépend pas de `devicemotion` : elle termine aussi un
+      // arrêt candidat quand iOS espace les mesures sans les couper totalement.
+      if (detector.current?.tick(Date.now()) === 'stationary') setStatus('stationary')
+    }, 500)
+    return () => window.clearInterval(watchdog)
+  }, [enabled, status])
 
   const requestPermission = useCallback(async () => {
     if (!supported) return false

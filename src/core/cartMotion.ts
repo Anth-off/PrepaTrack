@@ -17,6 +17,8 @@ const MIN_THRESHOLD = 0.08
 const GRAVITY_ALPHA = 0.08
 const WINDOW_MS = 1_000
 const MIN_WINDOW_SAMPLES = 5
+const STOP_THRESHOLD_RATIO = 1.15
+const SILENCE_STOP_MS = 4_500
 
 /**
  * Transforme les mesures orientées du téléphone en une intensité indépendante
@@ -50,6 +52,24 @@ export class MotionEnergyMeter {
 export type CartMotionTransition = 'moving' | 'stationary'
 
 /**
+ * Empêche les vibrations résiduelles de rouvrir un trajet que l'utilisateur
+ * vient de fermer. Le réarmement exige d'abord un véritable état immobile.
+ */
+export class AutomaticTravelGuard {
+  private travelWasOpen = false
+  private suppressedUntilStationary = false
+
+  desiredMoving(physical: CartMotionTransition, travelOpen: boolean): boolean {
+    if (this.travelWasOpen && !travelOpen && physical === 'moving') {
+      this.suppressedUntilStationary = true
+    }
+    if (physical === 'stationary') this.suppressedUntilStationary = false
+    this.travelWasOpen = travelOpen
+    return physical === 'moving' && !this.suppressedUntilStationary
+  }
+}
+
+/**
  * Classe les vibrations par fenêtres et exige une durée continue avant chaque
  * bascule. Un choc de palette ou un téléphone touché une fois ne peut donc pas
  * ouvrir un trajet.
@@ -59,6 +79,7 @@ export class CartMotionDetector {
   private state: CartMotionTransition = 'stationary'
   private candidateSince?: number
   private candidate?: CartMotionTransition
+  private lastSampleAt?: number
 
   constructor(
     private readonly threshold: number,
@@ -67,12 +88,49 @@ export class CartMotionDetector {
   ) {}
 
   push(at: number, energy: number): CartMotionTransition | undefined {
+    this.lastSampleAt = at
     this.samples.push({ at, energy })
     while (this.samples[0] && this.samples[0].at < at - WINDOW_MS) this.samples.shift()
+
+    if (this.state === 'moving') {
+      const stopThreshold = this.threshold * STOP_THRESHOLD_RATIO
+
+      // La première mesure calme démarre immédiatement le délai d'arrêt sans
+      // attendre que les anciennes vibrations roulantes quittent la fenêtre.
+      if (this.candidate !== 'stationary') {
+        if (energy < stopThreshold) {
+          this.candidate = 'stationary'
+          this.candidateSince = at
+        }
+        return undefined
+      }
+
+      const candidateEnergies = this.samples
+        .filter((sample) => sample.at >= (this.candidateSince ?? at))
+        .map((sample) => sample.energy)
+      // Plusieurs valeurs franchement roulantes annulent l'arrêt. Une pointe
+      // isolée reste tolérée ; un choc extrême annule par prudence.
+      const movingAgain = energy >= this.threshold * 2.5 || (
+        candidateEnergies.length >= 3 &&
+        percentile(candidateEnergies, 0.75) >= stopThreshold
+      )
+      if (movingAgain) {
+        this.candidate = undefined
+        this.candidateSince = undefined
+        return undefined
+      }
+      return this.completeCandidate(at)
+    }
+
     if (this.samples.length < MIN_WINDOW_SAMPLES) return undefined
 
-    const rms = rootMeanSquare(this.samples.map((sample) => sample.energy))
+    const energies = this.samples.map((sample) => sample.energy)
+    const rms = rootMeanSquare(energies)
     const next: CartMotionTransition = rms >= this.threshold ? 'moving' : 'stationary'
+    return this.consider(at, next)
+  }
+
+  private consider(at: number, next: CartMotionTransition): CartMotionTransition | undefined {
     if (next === this.state) {
       this.candidate = undefined
       this.candidateSince = undefined
@@ -85,18 +143,56 @@ export class CartMotionDetector {
       return undefined
     }
 
-    const delay = next === 'moving' ? this.startDelayMs : this.stopDelayMs
-    if (this.candidateSince === undefined || at - this.candidateSince < delay) return undefined
+    return this.completeCandidate(at)
+  }
 
-    this.state = next
+  private completeCandidate(at: number): CartMotionTransition | undefined {
+    if (!this.candidate || this.candidateSince === undefined) return undefined
+    const delay = this.candidate === 'moving' ? this.startDelayMs : this.stopDelayMs
+    if (at - this.candidateSince < delay) return undefined
+
+    this.state = this.candidate
     this.candidate = undefined
     this.candidateSince = undefined
-    return next
+    return this.state
+  }
+
+  /**
+   * Fait progresser les délais même lorsqu'iOS raréfie ou suspend les mesures.
+   * Appelé par une horloge indépendante de `devicemotion`.
+   */
+  tick(at: number): CartMotionTransition | undefined {
+    const completed = this.completeCandidate(at)
+    if (completed) return completed
+    if (
+      this.state === 'moving' &&
+      this.lastSampleAt !== undefined &&
+      at - this.lastSampleAt >= SILENCE_STOP_MS
+    ) {
+      return this.forceStationary()
+    }
+    return undefined
   }
 
   current(): CartMotionTransition {
     return this.state
   }
+
+  forceStationary(): CartMotionTransition | undefined {
+    this.samples.length = 0
+    this.candidate = undefined
+    this.candidateSince = undefined
+    if (this.state === 'stationary') return undefined
+    this.state = 'stationary'
+    return 'stationary'
+  }
+}
+
+export function percentile(values: number[], ratio: number): number {
+  if (values.length === 0) return 0
+  const sorted = [...values].sort((a, b) => a - b)
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1))
+  return sorted[index]
 }
 
 export function calibrationThreshold(stationary: number, moving: number): number | undefined {

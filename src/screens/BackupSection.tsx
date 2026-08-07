@@ -1,7 +1,12 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { downloadBackup, restoreBackup } from '../db/backup'
 import { db } from '../db/db'
+import {
+  durableBackupStatus,
+  durableBackupSupported,
+  type DurableBackupStatus,
+} from '../native/durableStorage'
 
 /**
  * Sauvegarde locale. Placée avant tout le reste dans les réglages : c'est la
@@ -12,6 +17,7 @@ export function BackupSection() {
   const [message, setMessage] = useState<string | undefined>()
   const [error, setError] = useState<string | undefined>()
   const [busy, setBusy] = useState(false)
+  const [nativeStatus, setNativeStatus] = useState<DurableBackupStatus>()
   const fileInput = useRef<HTMLInputElement>(null)
 
   const counts = useLiveQuery(async () => {
@@ -21,6 +27,14 @@ export function BackupSection() {
       db.segments.filter((s) => !s.deletedAt).count(),
     ])
     return { workdays, orders, segments }
+  }, [])
+
+  useEffect(() => {
+    if (!durableBackupSupported()) return
+    const refresh = () => { void durableBackupStatus().then(setNativeStatus) }
+    refresh()
+    const timer = window.setInterval(refresh, 5_000)
+    return () => window.clearInterval(timer)
   }, [])
 
   async function save() {
@@ -70,6 +84,13 @@ export function BackupSection() {
           : 'Lecture…'}{' '}
         Le fichier contient tout et se relit sur n'importe quel appareil.
       </p>
+      {durableBackupSupported() && (
+        <p className={`mb-3 text-sm ${nativeStatus?.available ? 'text-emerald-400' : 'text-red-400'}`}>
+          {nativeStatus?.available && nativeStatus.savedAt
+            ? `Protection native active · dernière copie ${new Date(nativeStatus.savedAt).toLocaleTimeString('fr-FR')} · ${Math.max(1, Math.round((nativeStatus.bytes ?? 0) / 1024))} Ko${nativeStatus.redundant ? ' · copie de secours valide' : ''}`
+            : 'Protection native en cours d’initialisation…'}
+        </p>
+      )}
 
       <div className="flex flex-col gap-2">
         <button

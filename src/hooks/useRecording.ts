@@ -15,6 +15,14 @@ import {
   saveRecordingChunk,
   type RecordingEndReason,
 } from '../db/recordings'
+import {
+  nativeRecordingSupported,
+  nativeRecordingStatus,
+  onNativeRecordingFinished,
+  startNativeRecording,
+  stopNativeRecording,
+  testNativeRecording,
+} from '../native/recording'
 
 export type RecordingStatus = 'disabled' | 'idle' | 'requesting' | 'recording' | 'stopping' | 'interrupted' | 'error'
 
@@ -48,7 +56,8 @@ export function useRecording(
   enabled: boolean,
   retentionDays: number,
 ): RecordingControl {
-  const supported = recordingSupported()
+  const native = nativeRecordingSupported()
+  const supported = native || recordingSupported()
   const [status, setStatus] = useState<RecordingStatus>(enabled ? 'idle' : 'disabled')
   const [startedAt, setStartedAt] = useState<number>()
   const [message, setMessage] = useState<string>()
@@ -145,6 +154,19 @@ export function useRecording(
     continueRef.current = false
     reasonRef.current = reason
     if (timerRef.current) window.clearTimeout(timerRef.current)
+    if (native) {
+      setStatus('stopping')
+      try {
+        const result = await stopNativeRecording()
+        setStartedAt(undefined)
+        setStatus(enabled ? (reason === 'interrupted' ? 'interrupted' : 'idle') : 'disabled')
+        if (result.saved) setMessage('Vidéo enregistrée dans Photos.')
+      } catch (error) {
+        setStatus('error')
+        setMessage(mediaErrorMessage(error))
+      }
+      return
+    }
     const recorder = recorderRef.current
     if (recorder && recorder.state !== 'inactive') {
       setStatus('stopping')
@@ -154,7 +176,7 @@ export function useRecording(
       setStartedAt(undefined)
       setStatus(enabled ? (reason === 'interrupted' ? 'interrupted' : 'idle') : 'disabled')
     }
-  }, [enabled, releaseStream])
+  }, [enabled, native, releaseStream])
 
   const start = useCallback(async () => {
     if (!enabled || !workdayId || status === 'recording' || status === 'requesting') return
@@ -167,6 +189,16 @@ export function useRecording(
     setStatus('requesting')
     const request = ++requestRef.current
     try {
+      if (native) {
+        const result = await startNativeRecording()
+        if (request !== requestRef.current || !enabled || dayRef.current !== workdayId) {
+          await stopNativeRecording()
+          return
+        }
+        setStartedAt(result.startedAt)
+        setStatus('recording')
+        return
+      }
       await purgeExpiredRecordings(retentionDays)
       const estimate = await navigator.storage?.estimate?.()
       const warning = recordingStorageWarning(estimate)
@@ -190,7 +222,7 @@ export function useRecording(
       setStatus('error')
       setMessage(mediaErrorMessage(error))
     }
-  }, [enabled, retentionDays, startChunk, status, stop, supported, workdayId, releaseStream])
+  }, [enabled, native, retentionDays, startChunk, status, stop, supported, workdayId, releaseStream])
 
   const testDevices = useCallback(async () => {
     if (!supported) {
@@ -198,6 +230,11 @@ export function useRecording(
       return false
     }
     try {
+      if (native) {
+        await testNativeRecording()
+        setMessage('Caméra avant, microphone et Photos disponibles.')
+        return true
+      }
       const stream = await navigator.mediaDevices.getUserMedia(CONSTRAINTS)
       stream.getTracks().forEach((track) => track.stop())
       setMessage('Caméra avant et microphone disponibles.')
@@ -206,7 +243,23 @@ export function useRecording(
       setMessage(mediaErrorMessage(error))
       return false
     }
-  }, [supported])
+  }, [native, supported])
+
+  useEffect(() => {
+    if (!native) return
+    let handle: Awaited<ReturnType<typeof onNativeRecordingFinished>> | undefined
+    void onNativeRecordingFinished((event) => {
+      setStartedAt(undefined)
+      if (event.saved) {
+        setStatus(enabled ? 'idle' : 'disabled')
+        setMessage('Vidéo enregistrée dans Photos.')
+      } else {
+        setStatus('error')
+        setMessage(event.error ?? 'La vidéo n’a pas pu être ajoutée à Photos.')
+      }
+    }).then((listener) => { handle = listener })
+    return () => { void handle?.remove() }
+  }, [enabled, native])
 
   useEffect(() => {
     if (!enabled) void stop('complete')
@@ -218,6 +271,22 @@ export function useRecording(
   }, [status, stop, workdayId])
 
   useEffect(() => {
+    if (native) {
+      const reconcile = () => {
+        if (document.visibilityState !== 'visible') return
+        void nativeRecordingStatus().then((value) => {
+          if (value.recording) {
+            setStartedAt(value.startedAt)
+            setStatus('recording')
+          } else {
+            setStartedAt(undefined)
+            setStatus(enabled ? 'idle' : 'disabled')
+          }
+        })
+      }
+      document.addEventListener('visibilitychange', reconcile)
+      return () => document.removeEventListener('visibilitychange', reconcile)
+    }
     const interrupt = () => void stop('interrupted')
     const onVisibility = () => {
       if (document.visibilityState === 'hidden') interrupt()
@@ -228,7 +297,7 @@ export function useRecording(
       window.removeEventListener('pagehide', interrupt)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [stop])
+  }, [enabled, native, stop])
 
   return { status, startedAt, message, supported, canStart: Boolean(workdayId), start, stop, testDevices }
 }

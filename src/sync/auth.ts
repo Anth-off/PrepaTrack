@@ -2,6 +2,7 @@ import { claimOrphans } from '../db/repo'
 import { getClient, resetClient } from './client'
 import { loadProfile, saveProfile, type Profile, type Role } from './profile'
 import { resetCursors } from './sync'
+import { clearDurableAuthSession } from '../native/durableStorage'
 
 /**
  * Connexion par numéro de badge et code personnel.
@@ -159,4 +160,5 @@ export async function signOut(): Promise<void> {
   // perdre une vacation en cours.
   await resetCursors()
   resetClient()
+  await clearDurableAuthSession()
 }

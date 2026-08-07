@@ -91,18 +91,19 @@ export function CorrectSheet({ segment, onClose }: Props) {
           />
         </label>
 
-        {segment.endedAt !== undefined && (
-          <label className="flex flex-col gap-1">
-            <span className="text-sm font-semibold text-slate-400">Fin</span>
+        <label className="flex flex-col gap-1">
+            <span className="text-sm font-semibold text-slate-400">
+              {segment.endedAt === undefined ? 'Fin — renseigne-la pour terminer ce chrono' : 'Fin'}
+            </span>
             <input
               type="datetime-local"
               value={end}
               min={start}
+              max={toLocalInput(now)}
               onChange={(e) => setEnd(e.target.value)}
               className="rounded-xl border border-ink-600 bg-ink-800 px-3 py-3 text-lg"
             />
-          </label>
-        )}
+        </label>
 
         <label className="flex flex-col gap-1">
           <span className="text-sm font-semibold text-slate-400">Note</span>

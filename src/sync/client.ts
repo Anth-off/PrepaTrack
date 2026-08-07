@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { loadSyncConfig, type SyncConfig } from './config'
+import { persistDurableAuthSession } from '../native/durableStorage'
 
 let client: SupabaseClient | undefined
 let clientKey = ''
@@ -35,6 +36,13 @@ export async function buildClient(config: SyncConfig): Promise<SupabaseClient> {
       detectSessionInUrl: true,
       storageKey: 'prepatrack-auth',
     },
+  })
+  // Supabase peut renouveler son jeton à n'importe quel moment. Le miroir
+  // Keychain est mis à jour dès l'événement, sans attendre la sauvegarde
+  // périodique, afin qu'une extinction juste après le renouvellement ne rende
+  // pas l'ancienne session inutilisable.
+  client.auth.onAuthStateChange((_event, session) => {
+    if (session) window.setTimeout(() => { void persistDurableAuthSession() }, 0)
   })
   clientKey = key
   return client

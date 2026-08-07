@@ -2,6 +2,7 @@ import Dexie, { type Table } from 'dexie'
 import type { ColisEvent, Order, OrderPallet, Segment, Settings, StockShortage, Workday } from '../core/types'
 import type { RecordingChunk } from './recordings'
 import { DEFAULT_SETTINGS } from '../core/types'
+import { scheduleDurableBackup } from '../native/durableStorage'
 
 /**
  * IndexedDB est la source de vérité de l'application. Rien ne dépend du réseau :
@@ -112,6 +113,7 @@ export async function saveSettings(patch: SettingsPatch): Promise<Settings> {
     updatedAt: Date.now(),
   }
   await db.settings.put(next)
+  scheduleDurableBackup()
   return next
 }
 
@@ -122,6 +124,7 @@ export async function getMeta<T>(key: string, fallback: T): Promise<T> {
 
 export async function setMeta(key: string, value: unknown): Promise<void> {
   await db.meta.put({ key, value })
+  scheduleDurableBackup()
 }
 
 /**
@@ -165,6 +168,7 @@ export async function wipeAll(): Promise<void> {
   )
   // Les vidéos ne sont jamais synchronisées : leur effacement doit être physique.
   await db.recordingChunks.clear()
+  scheduleDurableBackup()
 }
 
 /** Identifiant unique, sans dépendance externe et sûr hors HTTPS. */

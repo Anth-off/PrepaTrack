@@ -1,5 +1,5 @@
-/** Un fichier reste maniable, mais les raccords sont limités à un toutes les 30 minutes. */
-export const RECORDING_CHUNK_MS = 30 * 60_000
+/** Un enregistrement dure au maximum une heure dans un fichier unique. */
+export const RECORDING_CHUNK_MS = 60 * 60_000
 export const RECORDING_VIDEO_BITS_PER_SECOND = 1_500_000
 export const RECORDING_AUDIO_BITS_PER_SECOND = 64_000
 export const RECORDING_BITS_PER_SECOND =
