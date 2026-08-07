@@ -293,12 +293,22 @@ describe('interruptions', () => {
     expect(view.depth).toBe(0)
   })
 
-  it('automatise uniquement ses propres trajets pendant le prélèvement', async () => {
+  it('automatise ses propres trajets pendant toutes les phases normales', async () => {
     await startDay(at(0))
-    expect(await setAutomaticTravel(true, at(2))).toBe(false)
+    expect(await setAutomaticTravel(true, at(2))).toBe(true)
+    expect(deriveView(await loadSnapshot()).active?.type).toBe('travel')
+    expect(await setAutomaticTravel(false, at(5))).toBe(true)
+    expect(deriveView(await loadSnapshot()).active?.type).toBe('briefing')
+
     await endBriefing(at(10))
+    expect(await setAutomaticTravel(true, at(12))).toBe(true)
+    expect(await setAutomaticTravel(false, at(14))).toBe(true)
+    expect(deriveView(await loadSnapshot()).active?.type).toBe('poste_prep')
+
     await startOrder({ colisPlanned: 60, linesCount: 20, orderType: 'normale' }, at(15))
-    expect(await setAutomaticTravel(true, at(18))).toBe(false)
+    expect(await setAutomaticTravel(true, at(18))).toBe(true)
+    expect(await setAutomaticTravel(false, at(19))).toBe(true)
+    expect(deriveView(await loadSnapshot()).active?.type).toBe('order_setup')
     await advanceOrder(at(20))
 
     expect(await setAutomaticTravel(true, at(25))).toBe(true)
@@ -310,9 +320,42 @@ describe('interruptions', () => {
     view = deriveView(await loadSnapshot())
     expect(view.active?.type).toBe('picking')
 
-    await startInterruption('travel', at(35))
-    expect(await setAutomaticTravel(false, at(40))).toBe(false)
+    await advanceOrder(at(31))
+    expect(await setAutomaticTravel(true, at(32))).toBe(true)
+    expect(await setAutomaticTravel(false, at(33))).toBe(true)
+    expect(deriveView(await loadSnapshot()).active?.type).toBe('wrapping')
+
+    await advanceOrder(at(34))
+    expect(await setAutomaticTravel(true, at(35))).toBe(true)
+    expect(await setAutomaticTravel(false, at(36))).toBe(true)
+    expect(deriveView(await loadSnapshot()).active?.type).toBe('docking')
+
+    await advanceOrder(at(37))
+    expect(await setAutomaticTravel(true, at(38))).toBe(true)
+    expect(await setAutomaticTravel(false, at(39))).toBe(true)
+    expect(deriveView(await loadSnapshot()).active?.type).toBe('idle')
+
+    await startCleanup(at(40))
+    expect(await setAutomaticTravel(true, at(41))).toBe(true)
+    expect(await setAutomaticTravel(false, at(42))).toBe(true)
+    expect(deriveView(await loadSnapshot()).active?.type).toBe('cleanup')
+
+    await startInterruption('travel', at(43))
+    expect(await setAutomaticTravel(false, at(44))).toBe(false)
     expect(deriveView(await loadSnapshot()).active?.type).toBe('travel')
+  })
+
+  it('laisse les pauses et les aléas prioritaires sur le trajet automatique', async () => {
+    await startDay(at(0))
+    await startInterruption('break_10', at(5))
+
+    expect(await setAutomaticTravel(true, at(8))).toBe(false)
+    expect(deriveView(await loadSnapshot()).active?.type).toBe('break_10')
+
+    await endInterruption(at(15))
+    expect(await setAutomaticTravel(true, at(16))).toBe(true)
+    expect(await setAutomaticTravel(false, at(20))).toBe(true)
+    expect(deriveView(await loadSnapshot()).active?.type).toBe('briefing')
   })
 
   it('considère le prochain colis comme une confirmation d’arrivée', async () => {

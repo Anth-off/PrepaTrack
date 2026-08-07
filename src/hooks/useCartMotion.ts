@@ -83,9 +83,9 @@ export function useCartMotion(session: Session): CartMotionControl {
     })
   }, [enabled, session.loading, threshold])
 
-  // Réapplique l'état physique lorsque la phase métier change. Exemple : le
-  // chariot commence à rouler pendant la préparation de commande, puis la
-  // phase « prélèvement » démarre alors qu'il roule déjà.
+  // Réapplique l'état physique à chaque changement de phase métier. Le chariot
+  // est ainsi détecté pendant toute la vacation, y compris briefing, attente,
+  // préparation de commande, mise à quai et rangement.
   useEffect(() => {
     if (session.loading || !enabled || threshold === undefined) return
     if (status !== 'moving' && status !== 'stationary') return

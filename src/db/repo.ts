@@ -649,9 +649,10 @@ async function settleAutomaticTravelOnWorkAction(at: number): Promise<void> {
 }
 
 /**
- * Bascule un trajet détecté par les capteurs. L'automate n'agit que pendant le
- * prélèvement et ne ferme que les trajets qu'il a lui-même ouverts : une pause,
- * un aléa ou un trajet manuel reste toujours sous le contrôle de l'utilisateur.
+ * Bascule un trajet détecté par les capteurs pendant toute la vacation. Le
+ * trajet suspend la phase normale en cours et la reprend exactement à l'arrêt.
+ * Une pause, un aléa ou une autre interruption déjà ouverte reste prioritaire,
+ * et l'automate ne ferme jamais un trajet créé manuellement.
  */
 export async function setAutomaticTravel(
   moving: boolean,
@@ -669,16 +670,17 @@ export async function setAutomaticTravel(
     return true
   }
 
-  // Ne jamais empiler l'automatisation sur une interruption ou sur une phase
-  // autre que le prélèvement proprement dit.
-  if (view.phase !== 'picking' || view.basePhase !== 'picking' || !view.order) return false
+  // Les phases normales de toute la vacation sont automatisables (briefing,
+  // poste, attente, commande et rangement). Une interruption explicite reste
+  // prioritaire : le mouvement sera réévalué dès qu'elle sera terminée.
+  if (view.phase === 'interrupted') return false
 
   const stack = pushStack(view.active)
   await closeActive(at)
   await db.segments.put(
     newSegment(snap.workday.id, 'travel', at, {
-      orderId: view.order.id,
-      palletId: view.order.activePalletId,
+      orderId: view.order?.status === 'open' ? view.order.id : undefined,
+      palletId: view.order?.status === 'open' ? view.order.activePalletId : undefined,
       stack,
       note: AUTOMATIC_TRAVEL_NOTE,
     }),
