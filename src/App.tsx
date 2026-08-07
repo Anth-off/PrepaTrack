@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Capacitor } from '@capacitor/core'
 import { useAlerts } from './hooks/useAlerts'
 import { useCartMotion } from './hooks/useCartMotion'
 import { AppUpdateNotice } from './components/AppUpdateNotice'
@@ -156,7 +157,7 @@ export default function App() {
       {/* La marge haute reste sur la coque fixe : le contenu ne peut ainsi jamais
           passer sous l'heure ou la Dynamic Island pendant un défilement. */}
       <div
-        className="app-shell flex bg-ink-900"
+        className={`app-shell flex bg-ink-900 ${Capacitor.getPlatform() === 'ios' ? 'native-ios' : ''}`}
         style={{
           paddingTop: 'env(safe-area-inset-top)',
           paddingLeft: 'env(safe-area-inset-left)',

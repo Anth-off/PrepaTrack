@@ -108,6 +108,13 @@
     padding-bottom: max(calc(env(safe-area-inset-bottom) * 0.5), 0.5rem);
   }
 
+  /* Dans la coque native, le WKWebView va réellement jusqu'au bord physique.
+     Le fond de la navigation couvre donc toute la safe area, tandis que ce
+     padding maintient les boutons au-dessus de l'indicateur d'accueil. */
+  .native-ios .safe-bottom {
+    padding-bottom: max(env(safe-area-inset-bottom), 0.5rem);
+  }
+
   .safe-top {
     padding-top: max(env(safe-area-inset-top), 0.5rem);
   }
