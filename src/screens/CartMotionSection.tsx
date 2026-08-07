@@ -106,8 +106,9 @@ export function CartMotionSection({
         <div>
           <Title />
           <p className="mt-1 text-sm text-slate-500">
-            Détecte hors ligne les déplacements du chariot pendant le prélèvement. Les
-            mesures des capteurs ne quittent jamais l'iPhone.
+            Détecte hors ligne tous les déplacements du chariot pendant la vacation et
+            reprend automatiquement l'étape interrompue à l'arrêt. Les mesures des
+            capteurs ne quittent jamais l'iPhone.
           </p>
         </div>
         <StatusDot status={motion.status} enabled={config.enabled} />
