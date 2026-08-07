@@ -96,16 +96,11 @@ export function QuickActions({
           compact ? 'gap-1 px-1.5 py-1' : 'gap-2 px-2 py-2'
         }`}
       >
-        {cell(
-          'travel',
-          segmentDef('travel').emoji,
-          settings.cartMotion.enabled ? 'Trajet auto' : 'Trajet',
-          () => trigger('travel'),
-          {
+        {!settings.cartMotion.enabled &&
+          cell('travel', segmentDef('travel').emoji, 'Trajet', () => trigger('travel'), {
             active: activeType === 'travel',
             disabled: !canInterrupt(view, 'travel'),
-          },
-        )}
+          })}
         {cell('toilet', segmentDef('toilet').emoji, 'WC', () => trigger('toilet'), {
           active: activeType === 'toilet',
           disabled: !canInterrupt(view, 'toilet'),
