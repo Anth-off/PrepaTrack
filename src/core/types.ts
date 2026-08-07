@@ -32,6 +32,9 @@ export type KnownSegmentType =
   | 'incident_discussion'
   | 'incident_forklift'
   | 'incident_drink'
+  | 'incident_label'
+  | 'incident_supplies'
+  | 'incident_restock_wait'
   // --- Pauses réglementaires ----------------------------------------------
   | 'break_10'
   | 'break_30'
@@ -210,6 +213,9 @@ export const STANDARD_INCIDENTS: readonly IncidentDef[] = [
   { key: 'incident_discussion', label: 'Discussion', emoji: '💬' },
   { key: 'incident_forklift', label: 'Cariste', emoji: '🚜' },
   { key: 'incident_drink', label: 'Boire', emoji: '💧' },
+  { key: 'incident_label', label: 'Étiquette absente / illisible', emoji: '🏷️' },
+  { key: 'incident_supplies', label: 'Manque de consommables', emoji: '📦' },
+  { key: 'incident_restock_wait', label: 'Attente réapprovisionnement', emoji: '📥' },
 ]
 
 export interface CartMotionSettings {

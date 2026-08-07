@@ -59,7 +59,7 @@ export function QuickActions({
   return (
     <div className="relative">
       {menu === 'incident' && (
-        <MenuPanel onClose={() => setMenu(null)}>
+        <MenuPanel columns={4} onClose={() => setMenu(null)}>
           {INCIDENT_TYPES.map((type) =>
             cell(
               type,
@@ -73,7 +73,7 @@ export function QuickActions({
       )}
 
       {menu === 'break' && (
-        <MenuPanel onClose={() => setMenu(null)}>
+        <MenuPanel columns={2} onClose={() => setMenu(null)}>
           {BREAK_TYPES.map((type) => {
             const taken = breaksTaken[type] ?? 0
             const quota =
@@ -144,14 +144,20 @@ export function QuickActions({
 function MenuPanel({
   children,
   onClose,
+  columns,
 }: {
   children: React.ReactNode
   onClose: () => void
+  columns: 2 | 4
 }) {
   return (
     <>
       <div className="fixed inset-0 z-10" onClick={onClose} />
-      <div className="absolute bottom-full left-0 right-0 z-20 mb-1 flex gap-2 rounded-2xl border border-ink-600 bg-ink-800 p-2 shadow-2xl">
+      <div
+        className={`absolute bottom-full left-0 right-0 z-20 mb-1 grid gap-2 rounded-2xl border border-ink-600 bg-ink-800 p-2 shadow-2xl ${
+          columns === 4 ? 'grid-cols-4' : 'grid-cols-2'
+        }`}
+      >
         {children}
       </div>
     </>
