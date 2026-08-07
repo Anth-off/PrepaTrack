@@ -91,7 +91,7 @@ function loadCa() {
     const pem = readFileSync(path, 'utf8')
     if (pem.includes('BEGIN CERTIFICATE')) return { path, pem }
     fail(
-      `Le fichier ${path} n'est pas un certificat.`,
+      "Le fichier de certificat configuré n'est pas un certificat valide.",
       "Il a sans doute été enregistré depuis une page web. Retélécharge-le depuis\nle tableau de bord Supabase : Project Settings → Database → SSL Configuration.",
     )
   }
@@ -152,7 +152,7 @@ try {
     fail(
       'Certificat TLS refusé.',
       ca
-        ? `Le certificat fourni (${ca.path}) ne valide pas ce serveur. Retélécharge-le
+        ? `Le certificat fourni ne valide pas ce serveur. Retélécharge-le
 depuis Project Settings → Database → SSL Configuration de CE projet.`
         : `Il manque le certificat racine de Supabase.
 Télécharge-le dans Project Settings → Database → SSL Configuration et place
