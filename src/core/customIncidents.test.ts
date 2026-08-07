@@ -41,13 +41,16 @@ describe('résolution des types de segments', () => {
     expect(segmentDef('break_30').category).toBe('break')
   })
 
-  it('propose les cinq mêmes aléas canoniques sur tous les appareils', () => {
+  it('propose les huit mêmes aléas canoniques sur tous les appareils', () => {
     expect(INCIDENT_TYPES).toEqual([
       'incident_material',
       'incident_bug',
       'incident_discussion',
       'incident_forklift',
       'incident_drink',
+      'incident_label',
+      'incident_supplies',
+      'incident_restock_wait',
     ])
     expect(INCIDENT_TYPES.map((type) => segmentDef(type).short)).toEqual([
       'Matériel',
@@ -55,6 +58,9 @@ describe('résolution des types de segments', () => {
       'Discussion',
       'Cariste',
       'Boire',
+      'Étiquette',
+      'Consommables',
+      'Réappro',
     ])
   })
 
