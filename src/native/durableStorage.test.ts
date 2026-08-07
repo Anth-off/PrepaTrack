@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { newestAuthSession } from './durableStorage'
+import { authSessionTokens, newestAuthSession } from './durableStorage'
 
 const session = (expiresAt: number, token: string) =>
   JSON.stringify({ access_token: token, refresh_token: `refresh-${token}`, expires_at: expiresAt })
@@ -24,5 +24,17 @@ describe('récupération de la session Supabase protégée', () => {
 
   it('préfère la session active si les formats ne donnent aucune date', () => {
     expect(newestAuthSession('{"token":"local"}', '{"token":"durable"}')).toBe('{"token":"local"}')
+  })
+
+  it('extrait les jetons nécessaires à une restauration Supabase', () => {
+    expect(authSessionTokens(session(300, 'safe'))).toEqual({
+      access_token: 'safe',
+      refresh_token: 'refresh-safe',
+    })
+  })
+
+  it('refuse une copie Keychain tronquée au lieu de casser le démarrage', () => {
+    expect(authSessionTokens('{"access_token":"incomplet"}')).toBeUndefined()
+    expect(authSessionTokens('json cassé')).toBeUndefined()
   })
 })
