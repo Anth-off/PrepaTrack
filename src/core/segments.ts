@@ -195,6 +195,33 @@ export const SEGMENTS: Record<KnownSegmentType, SegmentDef> = {
     color: 'bg-cyan-500',
     hex: '#06b6d4',
   },
+  incident_label: {
+    label: 'Étiquette absente ou illisible',
+    short: 'Étiquette',
+    emoji: '🏷️',
+    category: 'waste',
+    interruption: true,
+    color: 'bg-purple-500',
+    hex: '#a855f7',
+  },
+  incident_supplies: {
+    label: 'Manque de consommables : film, carton ou étiquette',
+    short: 'Consommables',
+    emoji: '📦',
+    category: 'waste',
+    interruption: true,
+    color: 'bg-orange-600',
+    hex: '#ea580c',
+  },
+  incident_restock_wait: {
+    label: 'Attente de réapprovisionnement',
+    short: 'Réappro',
+    emoji: '📥',
+    category: 'waste',
+    interruption: true,
+    color: 'bg-lime-500',
+    hex: '#84cc16',
+  },
 
   break_10: {
     label: 'Pause 10 min',
@@ -225,6 +252,9 @@ export const INCIDENT_TYPES: SegmentType[] = [
   'incident_discussion',
   'incident_forklift',
   'incident_drink',
+  'incident_label',
+  'incident_supplies',
+  'incident_restock_wait',
 ]
 
 export const BREAK_TYPES: SegmentType[] = ['break_10', 'break_30']
