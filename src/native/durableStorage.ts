@@ -28,19 +28,48 @@ export async function recoverDurableBackup(): Promise<void> {
   if (!supported()) return
   try {
     const session = await plugin.loadSession()
-    if (session.data) window.localStorage.setItem('prepatrack-auth', session.data)
+    const localSession = window.localStorage.getItem('prepatrack-auth')
+    const selectedSession = newestAuthSession(localSession, session.data ?? undefined)
+    if (selectedSession && selectedSession !== localSession) {
+      window.localStorage.setItem('prepatrack-auth', selectedSession)
+    }
     const { data } = await plugin.load()
     if (!data) return
     const parsed = JSON.parse(data) as { nativeState?: NativeState }
     if (Array.isArray(parsed.nativeState?.meta)) {
-      const { db } = await import('../db/db')
-      await db.meta.bulkPut(parsed.nativeState.meta)
+      const { restoreMissingMeta } = await import('../db/db')
+      await restoreMissingMeta(parsed.nativeState.meta)
     }
     const { restoreBackup } = await import('../db/backup')
     await restoreBackup(data)
   } catch {
     // IndexedDB reste la source principale. Une copie native illisible ne doit
     // jamais empêcher l'application de démarrer.
+  }
+}
+
+/** Choisit la session Supabase la plus récente sans rétrograder le jeton local. */
+export function newestAuthSession(
+  local: string | null | undefined,
+  durable: string | null | undefined,
+): string | undefined {
+  if (!local) return durable ?? undefined
+  if (!durable) return local
+  const localExpiry = authExpiry(local)
+  const durableExpiry = authExpiry(durable)
+  // À égalité ou si le format est inconnu, la copie actuellement utilisée par
+  // Supabase reste prioritaire. Le Keychain est un filet, pas la source active.
+  return durableExpiry > localExpiry ? durable : local
+}
+
+function authExpiry(value: string): number {
+  try {
+    const parsed = JSON.parse(value) as { expires_at?: unknown }
+    return typeof parsed.expires_at === 'number' && Number.isFinite(parsed.expires_at)
+      ? parsed.expires_at
+      : Number.NEGATIVE_INFINITY
+  } catch {
+    return Number.NEGATIVE_INFINITY
   }
 }
 

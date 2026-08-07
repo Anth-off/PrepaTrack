@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { db } from './db'
 import {
   addColis,
@@ -26,6 +26,7 @@ import { deriveView } from '../core/machine'
 import { computeDayMetrics, computeOrderMetrics, segmentDuration } from '../core/metrics'
 import { MINUTE } from '../core/time'
 import { EMPTY_SUPPORTS } from '../core/types'
+import { saveProfile } from '../sync/profile'
 
 /** 30 juillet 2026, 13h00 : début d'une vacation type. */
 const START = new Date(2026, 6, 30, 13, 0, 0).getTime()
@@ -34,6 +35,58 @@ const at = (minutes: number) => START + minutes * MINUTE
 beforeEach(async () => {
   await db.delete()
   await db.open()
+  await saveProfile(undefined)
+})
+
+describe('ouverture fiable de la vacation', () => {
+  it("annule toute l'ouverture si la création du premier chrono échoue", async () => {
+    const put = vi.spyOn(db.segments, 'put').mockRejectedValueOnce(new Error('écriture interrompue'))
+
+    await expect(startDay(at(0))).rejects.toThrow('écriture interrompue')
+    put.mockRestore()
+
+    expect(await db.workdays.count()).toBe(0)
+    expect(await db.segments.count()).toBe(0)
+  })
+
+  it('ignore une ancienne vacation ouverte mais supprimée', async () => {
+    await db.workdays.put({
+      id: 'deleted', date: '2026-07-29', status: 'open', startedAt: at(-1_000),
+      deletedAt: at(-500), updatedAt: at(-500), syncState: 'pending',
+    })
+
+    const created = await startDay(at(0))
+
+    expect(created.id).not.toBe('deleted')
+    expect(created.deletedAt).toBeUndefined()
+    expect((await loadSnapshot()).workday?.id).toBe(created.id)
+  })
+
+  it("ignore la vacation ouverte d'un autre compte", async () => {
+    await saveProfile({
+      userId: 'me', preparerId: 'prep-me', badge: '6504109', name: 'Moi', role: 'preparer',
+    })
+    await db.workdays.put({
+      id: 'other', date: '2026-07-30', status: 'open', startedAt: at(-10),
+      ownerId: 'someone-else', updatedAt: at(-10), syncState: 'synced',
+    })
+
+    const created = await startDay(at(0))
+
+    expect(created.id).not.toBe('other')
+    expect(created.ownerId).toBe('me')
+    expect((await loadSnapshot()).workday?.id).toBe(created.id)
+  })
+
+  it('reprend la vacation ouverte la plus récente si plusieurs existent', async () => {
+    await db.workdays.bulkPut([
+      { id: 'old', date: '2026-07-29', status: 'open', startedAt: at(-1_000), updatedAt: at(-1_000), syncState: 'pending' },
+      { id: 'recent', date: '2026-07-30', status: 'open', startedAt: at(-10), updatedAt: at(-10), syncState: 'pending' },
+    ])
+
+    expect((await loadSnapshot()).workday?.id).toBe('recent')
+    expect((await startDay(at(0))).id).toBe('recent')
+  })
 })
 
 async function phase() {

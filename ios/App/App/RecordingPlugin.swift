@@ -81,14 +81,26 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
             }
             self.sessionQueue.async {
                 do {
-                    self.recordingRequested = true
-                    self.suspendedForBackground = false
-                    guard !self.movieOutput.isRecording else {
+                    if self.movieOutput.isRecording {
+                        self.recordingRequested = true
+                        self.suspendedForBackground = false
                         DispatchQueue.main.async {
                             call.resolve(["startedAt": (self.startedAt ?? Date()).timeIntervalSince1970 * 1_000])
                         }
                         return
                     }
+                    // Le fichier précédent peut être arrêté mais encore en
+                    // cours d'import dans Photos. En démarrer un autre ici
+                    // écraserait `currentURL`, puis le callback précédent
+                    // arrêterait la nouvelle capture.
+                    guard self.currentURL == nil else {
+                        DispatchQueue.main.async {
+                            call.reject("La vidéo précédente est encore en cours de sauvegarde dans Photos.")
+                        }
+                        return
+                    }
+                    self.recordingRequested = true
+                    self.suspendedForBackground = false
                     let startedAt = try self.startCapture()
                     DispatchQueue.main.async {
                         UIApplication.shared.isIdleTimerDisabled = true
@@ -122,9 +134,18 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
     }
 
     @objc func status(_ call: CAPPluginCall) {
-        var result: [String: Any] = ["recording": movieOutput.isRecording]
-        if let startedAt { result["startedAt"] = startedAt.timeIntervalSince1970 * 1_000 }
-        call.resolve(result)
+        sessionQueue.async {
+            // Pendant l'import Photos, l'enregistrement n'accepte pas encore
+            // un nouveau départ. Le signaler comme actif empêche l'interface
+            // de proposer un second démarrage dans cette courte fenêtre.
+            var result: [String: Any] = [
+                "recording": self.movieOutput.isRecording || self.currentURL != nil,
+            ]
+            if let startedAt = self.startedAt {
+                result["startedAt"] = startedAt.timeIntervalSince1970 * 1_000
+            }
+            DispatchQueue.main.async { call.resolve(result) }
+        }
     }
 
     @objc func test(_ call: CAPPluginCall) {
@@ -397,7 +418,8 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
         let group = DispatchGroup()
         var camera = AVCaptureDevice.authorizationStatus(for: .video) == .authorized
         var microphone = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        var photos = PHPhotoLibrary.authorizationStatus(for: .addOnly) == .authorized
+        let initialPhotos = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        var photos = initialPhotos == .authorized || initialPhotos == .limited
         if AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined {
             group.enter(); AVCaptureDevice.requestAccess(for: .video) { camera = $0; group.leave() }
         }

@@ -49,6 +49,19 @@ function stamp<T extends { updatedAt: number; syncState: 'pending' | 'synced'; o
   return o
 }
 
+/**
+ * Rend indivisible une transition métier qui touche plusieurs tables.
+ * Une extinction entre « fermer l'ancien chrono » et « ouvrir le nouveau » ne
+ * peut ainsi plus laisser une vacation sans phase active ou à moitié créée.
+ */
+function atomicStateChange<T>(change: () => Promise<T>): Promise<T> {
+  return db.transaction(
+    'rw',
+    [db.workdays, db.orders, db.orderPallets, db.segments, db.colisEvents, db.stockShortages],
+    change,
+  )
+}
+
 export async function loadSnapshot(): Promise<Snapshot> {
   // Une vacation supprimée — effacement manuel, ou suppression descendue de
   // l'autre appareil — garde son statut `open` : il faut l'écarter ici, sinon
@@ -57,11 +70,15 @@ export async function loadSnapshot(): Promise<Snapshot> {
   // Le filtre sur le propriétaire est tout aussi indispensable : un gestionnaire
   // reçoit les vacations de toute l'équipe, et sans lui il « reprendrait » la
   // journée en cours d'un préparateur au lieu de la sienne.
-  const workday = await db.workdays
+  const open = await db.workdays
     .where('status')
     .equals('open')
     .filter((w) => !w.deletedAt && ownedByCurrent(w))
-    .first()
+    .toArray()
+  // Une extinction ou une ancienne version a pu laisser plusieurs vacations
+  // ouvertes. La plus récente est la seule reprise plausible ; l'ordre de
+  // l'index `status` n'est pas un ordre chronologique.
+  const workday = open.sort((a, b) => b.startedAt - a.startedAt)[0]
   if (!workday) return { segments: [], orders: [] }
   return loadSnapshotFor(workday)
 }
@@ -138,6 +155,7 @@ export async function selectOrderPallet(
   palletId: string,
   at: number = Date.now(),
 ): Promise<void> {
+  return atomicStateChange(async () => {
   const [order, pallet] = await Promise.all([db.orders.get(orderId), db.orderPallets.get(palletId)])
   if (!order || !pallet || pallet.orderId !== orderId || pallet.endedAt !== undefined) return
   order.activePalletId = pallet.id
@@ -153,6 +171,7 @@ export async function selectOrderPallet(
       note: active.note,
     }))
   }
+  })
 }
 
 /**
@@ -201,7 +220,16 @@ async function closeActive(at: number): Promise<Segment | undefined> {
 // --- Journée ---------------------------------------------------------------
 
 export async function startDay(at: number = Date.now()): Promise<Workday> {
-  const existing = await db.workdays.where('status').equals('open').first()
+  return atomicStateChange(async () => {
+  // Réutilise uniquement une vacation visible du compte courant. Une ligne
+  // supprimée logiquement ou la vacation d'un collègue présente sur le PC d'un
+  // gestionnaire ne doit jamais empêcher de démarrer sa propre journée.
+  const existing = (await db.workdays
+    .where('status')
+    .equals('open')
+    .filter((workday) => !workday.deletedAt && ownedByCurrent(workday))
+    .toArray())
+    .sort((a, b) => b.startedAt - a.startedAt)[0]
   if (existing) return existing
 
   const workday: Workday = stamp({
@@ -215,16 +243,20 @@ export async function startDay(at: number = Date.now()): Promise<Workday> {
   await db.workdays.put(workday)
   await db.segments.put(newSegment(workday.id, 'briefing', at))
   return workday
+  })
 }
 
 /** Fin du briefing : bascule automatiquement sur la prépa du poste. */
 export async function endBriefing(at: number = Date.now()): Promise<void> {
+  return atomicStateChange(async () => {
   const closed = await closeActive(at)
   if (!closed) return
   await db.segments.put(newSegment(closed.workdayId, 'poste_prep', at))
+  })
 }
 
 export async function startCleanup(at: number = Date.now()): Promise<void> {
+  return atomicStateChange(async () => {
   const snap = await loadSnapshot()
   if (!snap.workday) return
   // Une commande encore ouverte est clôturée en l'état plutôt que laissée
@@ -239,15 +271,18 @@ export async function startCleanup(at: number = Date.now()): Promise<void> {
   }
   await closeActive(at)
   await db.segments.put(newSegment(snap.workday.id, 'cleanup', at))
+  })
 }
 
 export async function finishDay(at: number = Date.now()): Promise<void> {
+  return atomicStateChange(async () => {
   const snap = await loadSnapshot()
   if (!snap.workday) return
   await closeActive(at)
   snap.workday.status = 'closed'
   snap.workday.endedAt = at
   await db.workdays.put(stamp(snap.workday))
+  })
 }
 
 /**
@@ -272,6 +307,7 @@ export async function plausibleEndFor(workdayId: string): Promise<number | undef
  * courant, alors qu'un gestionnaire doit pouvoir réparer celle d'un préparateur.
  */
 export async function closeWorkdayAt(workdayId: string, at: number): Promise<void> {
+  return atomicStateChange(async () => {
   const workday = await db.workdays.get(workdayId)
   if (!workday || workday.deletedAt) return
 
@@ -307,6 +343,7 @@ export async function closeWorkdayAt(workdayId: string, at: number): Promise<voi
   workday.endedAt = end
   await db.workdays.put(stamp(workday))
   await reconcileWorkdayBounds(workdayId)
+  })
 }
 
 /**
@@ -400,6 +437,7 @@ export async function startOrder(
   input: NewOrderInput,
   at: number = Date.now(),
 ): Promise<Order | undefined> {
+  return atomicStateChange(async () => {
   const snap = await loadSnapshot()
   if (!snap.workday) return undefined
 
@@ -439,6 +477,7 @@ export async function startOrder(
     palletId: order.activePalletId,
   }))
   return order
+  })
 }
 
 /**
@@ -446,6 +485,7 @@ export async function startOrder(
  * Depuis la mise à quai, clôt la commande et repasse en attente.
  */
 export async function advanceOrder(at: number = Date.now()): Promise<void> {
+  return atomicStateChange(async () => {
   const snap = await loadSnapshot()
   const view = deriveView(snap)
   if (!snap.workday || !view.active) return
@@ -477,6 +517,7 @@ export async function advanceOrder(at: number = Date.now()): Promise<void> {
     orderId,
     palletId: order?.activePalletId,
   }))
+  })
 }
 
 /** Enregistre les supports et le total réel. Ne touche pas aux chronos. */
@@ -490,6 +531,7 @@ export async function saveOrderResult(
     additionalPallets?: Array<{ support?: OrderPallet['support'] }>
   },
 ): Promise<void> {
+  return atomicStateChange(async () => {
   const order = await db.orders.get(orderId)
   if (!order) return
   order.colisActual = data.colisActual
@@ -519,6 +561,7 @@ export async function saveOrderResult(
       })
     }))
   }
+  })
 }
 
 export async function updateOrder(orderId: string, patch: Partial<Order>): Promise<void> {
@@ -532,6 +575,7 @@ export async function updateOrderPallet(
   palletId: string,
   patch: Partial<Pick<OrderPallet, 'support' | 'startedAt' | 'endedAt' | 'startCount' | 'endCount'>>,
 ): Promise<void> {
+  return atomicStateChange(async () => {
   const pallet = await db.orderPallets.get(palletId)
   if (!pallet) return
   const startedAt = Math.max(0, patch.startedAt ?? pallet.startedAt)
@@ -559,6 +603,7 @@ export async function updateOrderPallet(
       await db.orders.put(stamp(order))
     }
   }
+  })
 }
 
 // --- Interruptions ---------------------------------------------------------
@@ -572,6 +617,7 @@ export async function startInterruption(
   type: SegmentType,
   at: number = Date.now(),
 ): Promise<void> {
+  return atomicStateChange(async () => {
   const snap = await loadSnapshot()
   const view = deriveView(snap)
   if (!snap.workday || !canInterrupt(view, type)) return
@@ -608,10 +654,12 @@ export async function startInterruption(
       stack,
     }),
   )
+  })
 }
 
 /** Ferme l'interruption en cours et rouvre ce qu'elle avait suspendu. */
 export async function endInterruption(at: number = Date.now()): Promise<void> {
+  return atomicStateChange(async () => {
   const snap = await loadSnapshot()
   const active = activeSegment(snap)
   if (!snap.workday || !active || !isSuspendingSegment(active)) return
@@ -632,6 +680,7 @@ export async function endInterruption(at: number = Date.now()): Promise<void> {
       stack: popped.rest,
     }),
   )
+  })
 }
 
 export const AUTOMATIC_TRAVEL_NOTE = 'Détection automatique du chariot'
@@ -657,6 +706,7 @@ export async function setAutomaticTravel(
   moving: boolean,
   at: number = Date.now(),
 ): Promise<boolean> {
+  return atomicStateChange(async () => {
   const snap = await loadSnapshot()
   const view = deriveView(snap)
   if (!snap.workday) return false
@@ -684,11 +734,13 @@ export async function setAutomaticTravel(
     }),
   )
   return true
+  })
 }
 
 // --- Progression -----------------------------------------------------------
 
 export async function addColis(delta: number, at: number = Date.now()): Promise<void> {
+  return atomicStateChange(async () => {
   await settleAutomaticTravelOnWorkAction(at)
   const snap = await loadSnapshot()
   const view = deriveView(snap)
@@ -708,6 +760,7 @@ export async function addColis(delta: number, at: number = Date.now()): Promise<
     syncState: 'pending',
   })
   await db.colisEvents.put(event)
+  })
 }
 
 export async function colisEventsFor(workdayId: string): Promise<ColisEvent[]> {
@@ -813,6 +866,7 @@ export async function editSegmentBounds(
   bounds: { startedAt?: number; endedAt?: number },
   now: number = Date.now(),
 ): Promise<void> {
+  return atomicStateChange(async () => {
   const segment = await db.segments.get(segmentId)
   if (!segment) return
   const all = (await db.segments.where('workdayId').equals(segment.workdayId).toArray())
@@ -861,10 +915,12 @@ export async function editSegmentBounds(
   } else {
     await reconcileWorkdayBounds(segment.workdayId)
   }
+  })
 }
 
 /** Supprime un segment ; le précédent absorbe sa durée pour éviter un trou. */
 export async function deleteSegment(segmentId: string): Promise<void> {
+  return atomicStateChange(async () => {
   const segment = await db.segments.get(segmentId)
   if (!segment) return
   const all = (await db.segments.where('workdayId').equals(segment.workdayId).toArray())
@@ -886,6 +942,7 @@ export async function deleteSegment(segmentId: string): Promise<void> {
   segment.deletedAt = Date.now()
   await db.segments.put(stamp(segment))
   await reconcileWorkdayBounds(segment.workdayId)
+  })
 }
 
 /** Change le type d'un segment (erreur de bouton en pleine prépa). */
@@ -949,6 +1006,7 @@ export async function claimOrphans(ownerId: string): Promise<number> {
     },
   )
 
+  if (claimed > 0) scheduleDurableBackup()
   return claimed
 }
 

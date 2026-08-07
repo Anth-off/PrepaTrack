@@ -2,6 +2,7 @@ import type { Table } from 'dexie'
 import type { ColisEvent, Order, OrderPallet, Segment, StockShortage, Workday } from '../core/types'
 import { db } from './db'
 import { loadSnapshot } from './repo'
+import { scheduleDurableBackup } from '../native/durableStorage'
 
 export const UNDO_WINDOW_MS = 10_000
 const UNDO_META_KEY = 'undo:last-action'
@@ -107,7 +108,11 @@ async function clearUndoCheckpointInternal(): Promise<void> {
  * une vraie modification concurrente annule prudemment la possibilité d'undo.
  */
 export function undoLastAction(at: number = Date.now()): Promise<boolean> {
-  return enqueue(() => undoLastActionInternal(at))
+  return enqueue(async () => {
+    const restored = await undoLastActionInternal(at)
+    if (restored) scheduleDurableBackup()
+    return restored
+  })
 }
 
 async function undoLastActionInternal(at: number): Promise<boolean> {

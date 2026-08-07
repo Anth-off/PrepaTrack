@@ -40,8 +40,14 @@ function fail(message, hint) {
   process.exit(1)
 }
 
-const env = { ...readEnvLocal(), ...process.env }
-const url = env.SUPABASE_DB_URL
+// Ne copie pas tout l'environnement du processus dans un objet applicatif :
+// il peut contenir d'autres secrets sans rapport avec cette commande.
+const localEnv = readEnvLocal()
+const url = process.env.SUPABASE_DB_URL ?? localEnv.SUPABASE_DB_URL
+const caCertPath = process.env.SUPABASE_CA_CERT ?? localEnv.SUPABASE_CA_CERT
+const insecureDatabase = process.env.SUPABASE_DB_INSECURE ?? localEnv.SUPABASE_DB_INSECURE
+const managerBadge = process.env.MANAGER_BADGE ?? localEnv.MANAGER_BADGE
+const managerName = process.env.MANAGER_NAME ?? localEnv.MANAGER_NAME
 
 if (!url) {
   fail(
@@ -75,7 +81,7 @@ const schemas = SCHEMA_FILES.map((name) => {
  */
 function loadCa() {
   const candidates = [
-    env.SUPABASE_CA_CERT,
+    caCertPath,
     join(root, 'supabase', 'prod-ca-2021.crt'),
     join(root, 'prod-ca-2021.crt'),
   ].filter(Boolean)
@@ -93,7 +99,7 @@ function loadCa() {
 }
 
 const ca = loadCa()
-const insecure = env.SUPABASE_DB_INSECURE === '1'
+const insecure = insecureDatabase === '1'
 
 if (!ca && !insecure) {
   fail(
@@ -259,8 +265,8 @@ try {
 
   // Premier gestionnaire : sans lui, aucun badge ne pourrait être déclaré et
   // personne ne pourrait se connecter.
-  const badge = (env.MANAGER_BADGE ?? '').trim()
-  const name = (env.MANAGER_NAME ?? '').trim()
+  const badge = (managerBadge ?? '').trim()
+  const name = (managerName ?? '').trim()
 
   if (badge) {
     if (!/^\d{4,12}$/.test(badge)) {

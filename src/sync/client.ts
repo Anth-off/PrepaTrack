@@ -1,9 +1,14 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { loadSyncConfig, type SyncConfig } from './config'
-import { persistDurableAuthSession } from '../native/durableStorage'
+import {
+  clearDurableAuthSession,
+  persistDurableAuthSession,
+} from '../native/durableStorage'
 
 let client: SupabaseClient | undefined
 let clientKey = ''
+let authSubscription: { unsubscribe: () => void } | undefined
+let clientGeneration = 0
 
 /**
  * Client Supabase, créé à la demande et mémorisé. Renvoie `undefined` tant que
@@ -25,6 +30,7 @@ export async function getClient(): Promise<SupabaseClient | undefined> {
 export async function buildClient(config: SyncConfig): Promise<SupabaseClient> {
   const key = `${config.url}|${config.anonKey}`
   if (client && clientKey === key) return client
+  releaseClient()
 
   const { createClient } = await import('@supabase/supabase-js')
   client = createClient(config.url, config.anonKey, {
@@ -37,18 +43,31 @@ export async function buildClient(config: SyncConfig): Promise<SupabaseClient> {
       storageKey: 'prepatrack-auth',
     },
   })
+  const generation = ++clientGeneration
   // Supabase peut renouveler son jeton à n'importe quel moment. Le miroir
   // Keychain est mis à jour dès l'événement, sans attendre la sauvegarde
   // périodique, afin qu'une extinction juste après le renouvellement ne rende
   // pas l'ancienne session inutilisable.
-  client.auth.onAuthStateChange((_event, session) => {
-    if (session) window.setTimeout(() => { void persistDurableAuthSession() }, 0)
+  const { data } = client.auth.onAuthStateChange((_event, session) => {
+    window.setTimeout(() => {
+      if (generation !== clientGeneration) return
+      void (session ? persistDurableAuthSession() : clearDurableAuthSession())
+    }, 0)
   })
+  authSubscription = data.subscription
   clientKey = key
   return client
 }
 
 export function resetClient(): void {
+  releaseClient()
+}
+
+function releaseClient(): void {
+  clientGeneration += 1
+  authSubscription?.unsubscribe()
+  authSubscription = undefined
+  client?.auth.stopAutoRefresh()
   client = undefined
   clientKey = ''
 }

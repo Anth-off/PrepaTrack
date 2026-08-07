@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { db, getSettings, saveSettings } from './db'
+import { db, getSettings, restoreMissingMeta, saveSettings } from './db'
 
 beforeEach(async () => {
   await db.delete()
@@ -39,5 +39,26 @@ describe('réglages du détecteur de trajet', () => {
       stationaryEnergy: 0.3,
       threshold: 1,
     })
+  })
+})
+
+describe('récupération des métadonnées natives', () => {
+  it('restaure une configuration absente', async () => {
+    expect(await restoreMissingMeta([{ key: 'supabase', value: { url: 'native' } }])).toBe(1)
+    expect(await db.meta.get('supabase')).toEqual({ key: 'supabase', value: { url: 'native' } })
+  })
+
+  it('ne remplace jamais une configuration locale encore présente', async () => {
+    await db.meta.put({ key: 'supabase', value: { url: 'local-plus-recent' } })
+
+    expect(await restoreMissingMeta([{ key: 'supabase', value: { url: 'ancienne-copie-native' } }])).toBe(0)
+    expect((await db.meta.get('supabase'))?.value).toEqual({ url: 'local-plus-recent' })
+  })
+
+  it('respecte une suppression locale explicite', async () => {
+    await db.meta.put({ key: 'profile', value: undefined })
+
+    expect(await restoreMissingMeta([{ key: 'profile', value: { userId: 'ancien' } }])).toBe(0)
+    expect(await db.meta.get('profile')).toEqual({ key: 'profile', value: undefined })
   })
 })

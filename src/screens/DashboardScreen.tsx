@@ -11,6 +11,7 @@ import { TimeBreakdown } from '../components/TimeBreakdown'
 import { byDensity, byHour, byOrderType, bySupport, byWeekday, losses } from '../core/analysis'
 import { recommend } from '../core/recommendations'
 import { inspectIntegrity } from '../core/integrity'
+import { isRateMeaningful } from '../core/metrics'
 import { formatDayLabel, formatShort } from '../core/time'
 import { useRecentDays } from '../hooks/useRecentDays'
 import { useNow } from '../hooks/useNow'
@@ -111,6 +112,7 @@ export function DashboardScreen({ onOpen }: Props) {
     { colis: 0, orders: 0, worked: 0, waste: 0, overtime: 0 },
   )
   const averageRate = totals.worked > 0 ? totals.colis / (totals.worked / 3_600_000) : 0
+  const averageRateShown = averageRate > 0 && isRateMeaningful(totals.worked)
   const palletMetrics = days.flatMap((day) => day.metrics.orders.flatMap((order) => order.pallets))
   const palletOrders = days.flatMap((day) => day.metrics.orders).filter((order) => order.pallets.length > 0)
   const palletColis = palletMetrics.reduce((sum, pallet) => sum + pallet.colis, 0)
@@ -200,9 +202,9 @@ export function DashboardScreen({ onOpen }: Props) {
         <Kpi label="Colis cumulés" value={String(totals.colis)} />
         <Kpi
           label="Cadence moyenne"
-          value={averageRate > 0 ? String(Math.round(averageRate)) : '—'}
-          unit={averageRate > 0 ? '/h' : undefined}
-          tone={averageRate >= targetRate ? 'ok' : 'warn'}
+          value={averageRateShown ? String(Math.round(averageRate)) : '—'}
+          unit={averageRateShown ? '/h' : undefined}
+          tone={averageRateShown ? (averageRate >= targetRate ? 'ok' : 'warn') : undefined}
         />
         <Kpi label="Commandes" value={String(totals.orders)} />
         <Kpi label="Temps perdu" value={formatShort(totals.waste)} />

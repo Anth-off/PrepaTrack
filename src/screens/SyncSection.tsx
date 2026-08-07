@@ -91,13 +91,18 @@ function SignInForm({ sync }: Props) {
 
     setBusy(true)
     setError(undefined)
-    const failure = await action(badge, pin)
-    setBusy(false)
-    if (failure) return setError(failure)
-    // Le code n'a plus lieu d'être conservé une fois la session ouverte.
-    setPin('')
-    await sync.refreshUser()
-    await sync.sync()
+    try {
+      const failure = await action(badge, pin)
+      if (failure) return setError(failure)
+      // Le code n'a plus lieu d'être conservé une fois la session ouverte.
+      setPin('')
+      await sync.refreshUser()
+      await sync.sync()
+    } catch {
+      setError('Connexion impossible pour le moment. Tes données locales restent disponibles.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (

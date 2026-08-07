@@ -128,6 +128,24 @@ export async function setMeta(key: string, value: unknown): Promise<void> {
 }
 
 /**
+ * Restaure uniquement les métadonnées absentes depuis le miroir natif.
+ *
+ * Les métadonnées n'ont historiquement pas de date de modification. Écraser
+ * systématiquement une configuration Supabase ou un profil encore présent
+ * dans IndexedDB par une copie native plus ancienne pourrait donc déconnecter
+ * l'app après un crash. Une valeur locale, même explicitement `undefined`, est
+ * toujours prioritaire ; le miroir ne sert qu'à reconstruire une ligne perdue.
+ */
+export async function restoreMissingMeta(rows: MetaRow[]): Promise<number> {
+  if (rows.length === 0) return 0
+  const unique = [...new Map(rows.map((row) => [row.key, row])).values()]
+  const existing = await db.meta.bulkGet(unique.map((row) => row.key))
+  const missing = unique.filter((_row, index) => existing[index] === undefined)
+  if (missing.length > 0) await db.meta.bulkPut(missing)
+  return missing.length
+}
+
+/**
  * Efface toutes les journées enregistrées. La suppression est logique et non
  * physique, volontairement : un effacement purement local serait annulé au
  * premier pull, le serveur renvoyant gentiment tout ce qu'on vient de jeter.

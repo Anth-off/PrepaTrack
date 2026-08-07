@@ -68,6 +68,8 @@ export function useSync(): SyncInfo {
       await claimOrphans(current.userId)
     }
 
+    if (!mounted.current) return
+
     setProfile(current)
     setConfigured(Boolean(config))
   }, [])

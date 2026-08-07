@@ -1,4 +1,5 @@
 import { db, getSettings } from './db'
+import { scheduleDurableBackup } from '../native/durableStorage'
 import type {
   ColisEvent,
   Order,
@@ -153,7 +154,7 @@ export async function restoreBackup(json: string): Promise<RestoreResult> {
 
   await db.transaction(
     'rw',
-    [db.workdays, db.orders, db.orderPallets, db.segments, db.colisEvents, db.stockShortages],
+    [db.workdays, db.orders, db.orderPallets, db.segments, db.colisEvents, db.stockShortages, db.settings],
     async () => {
       await merge(db.workdays, parsed.workdays, result)
       await merge(db.orders, parsed.orders, result)
@@ -161,10 +162,24 @@ export async function restoreBackup(json: string): Promise<RestoreResult> {
       await merge(db.segments, parsed.segments, result)
       await merge(db.colisEvents, parsed.colisEvents, result)
       await merge(db.stockShortages, parsed.stockShortages ?? [], result)
+      await restoreSettings(parsed.settings)
     },
   )
 
+  // Les écritures de fusion contournent volontairement `stamp`. Il faut donc
+  // demander explicitement une nouvelle photographie native après un import.
+  scheduleDurableBackup()
+
   return result
+}
+
+async function restoreSettings(settings: unknown): Promise<void> {
+  if (!settings || typeof settings !== 'object') return
+  const candidate = settings as Partial<Settings>
+  if (candidate.id !== 'settings' || !Number.isFinite(candidate.updatedAt)) return
+  const current = await db.settings.get('settings')
+  if (current && current.updatedAt >= candidate.updatedAt!) return
+  await db.settings.put(candidate as Settings)
 }
 
 async function merge<T extends { id: string; updatedAt: number; syncState: string }>(

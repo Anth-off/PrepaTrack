@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { buildBackup, restoreBackup } from './backup'
-import { db } from './db'
+import { db, getSettings, saveSettings } from './db'
 import type { Segment, StockShortage, Workday } from '../core/types'
 
 const T = new Date(2026, 6, 31, 13, 0, 0).getTime()
@@ -84,6 +84,19 @@ describe('export', () => {
     expect(restored?.endedAt).toBe(T + 600_000)
     expect(await db.stockShortages.get('r1')).toMatchObject({ quantity: 4, syncState: 'pending' })
   })
+
+  it('restaure réellement les réglages annoncés dans le fichier', async () => {
+    await saveSettings({ targetRate: 157, soundAlerts: false })
+    const backup = JSON.stringify(await buildBackup())
+
+    await db.delete()
+    await db.open()
+    expect((await getSettings()).targetRate).toBe(110)
+
+    await restoreBackup(backup)
+
+    expect(await getSettings()).toMatchObject({ targetRate: 157, soundAlerts: false })
+  })
 })
 
 describe('restauration', () => {
@@ -122,6 +135,17 @@ describe('restauration', () => {
     expect(result.updated).toBe(0)
     // Restaurer une vieille sauvegarde ne doit pas effacer le travail d'après.
     expect((await db.segments.get('s1'))?.note).toBe('correction faite après')
+  })
+
+  it('ne remplace jamais des réglages locaux plus récents', async () => {
+    await saveSettings({ targetRate: 130 })
+    const json = JSON.stringify(await buildBackup())
+    await new Promise((resolve) => setTimeout(resolve, 2))
+    await saveSettings({ targetRate: 170 })
+
+    await restoreBackup(json)
+
+    expect((await getSettings()).targetRate).toBe(170)
   })
 
   it('met à jour ce qui est plus ancien localement', async () => {
