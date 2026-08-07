@@ -19,6 +19,8 @@ import {
   nativeRecordingSupported,
   nativeRecordingStatus,
   onNativeRecordingFinished,
+  onNativeRecordingResumed,
+  onNativeRecordingResumeFailed,
   startNativeRecording,
   stopNativeRecording,
   testNativeRecording,
@@ -247,18 +249,39 @@ export function useRecording(
 
   useEffect(() => {
     if (!native) return
-    let handle: Awaited<ReturnType<typeof onNativeRecordingFinished>> | undefined
+    let finishedHandle: Awaited<ReturnType<typeof onNativeRecordingFinished>> | undefined
+    let resumedHandle: Awaited<ReturnType<typeof onNativeRecordingResumed>> | undefined
+    let failedHandle: Awaited<ReturnType<typeof onNativeRecordingResumeFailed>> | undefined
     void onNativeRecordingFinished((event) => {
       setStartedAt(undefined)
-      if (event.saved) {
+      if (event.willResume) {
+        setStatus(enabled ? 'requesting' : 'disabled')
+        setMessage(event.saved
+          ? 'Vidéo sauvegardée. Reprise automatique au déverrouillage…'
+          : 'Vidéo conservée localement. Reprise automatique au déverrouillage…')
+      } else if (event.saved) {
         setStatus(enabled ? 'idle' : 'disabled')
         setMessage('Vidéo enregistrée dans Photos.')
       } else {
         setStatus('error')
         setMessage(event.error ?? 'La vidéo n’a pas pu être ajoutée à Photos.')
       }
-    }).then((listener) => { handle = listener })
-    return () => { void handle?.remove() }
+    }).then((listener) => { finishedHandle = listener })
+    void onNativeRecordingResumed((event) => {
+      setStartedAt(event.startedAt)
+      setStatus('recording')
+      setMessage('Enregistrement repris automatiquement après le déverrouillage.')
+    }).then((listener) => { resumedHandle = listener })
+    void onNativeRecordingResumeFailed((event) => {
+      setStartedAt(undefined)
+      setStatus('error')
+      setMessage(event.error ?? 'La caméra n’a pas pu reprendre après le déverrouillage.')
+    }).then((listener) => { failedHandle = listener })
+    return () => {
+      void finishedHandle?.remove()
+      void resumedHandle?.remove()
+      void failedHandle?.remove()
+    }
   }, [enabled, native])
 
   useEffect(() => {

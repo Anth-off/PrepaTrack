@@ -21,12 +21,23 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
     private var startedAt: Date?
     private var currentURL: URL?
     private var stopCalls: [CAPPluginCall] = []
+    // L'intention utilisateur reste active quand iOS coupe matériellement la
+    // caméra au verrouillage. Elle permet une reprise dans un nouveau fichier.
+    private var recordingRequested = false
+    private var suspendedForBackground = false
+    private var applicationIsActive = true
 
     public override func load() {
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(applicationDidEnterBackground),
             name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
             object: nil
         )
         recoverPendingRecordings()
@@ -47,7 +58,17 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
 
     @objc private func applicationDidEnterBackground() {
         sessionQueue.async {
+            self.applicationIsActive = false
+            guard self.recordingRequested else { return }
+            self.suspendedForBackground = true
             if self.movieOutput.isRecording { self.movieOutput.stopRecording() }
+        }
+    }
+
+    @objc private func applicationDidBecomeActive() {
+        sessionQueue.async {
+            self.applicationIsActive = true
+            self.resumeRecordingIfNeeded()
         }
     }
 
@@ -60,30 +81,21 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
             }
             self.sessionQueue.async {
                 do {
-                    try self.configureIfNeeded()
-                    let audioChannels = try self.configureAudioSession()
-                    self.configureAudioOutput(channels: audioChannels)
+                    self.recordingRequested = true
+                    self.suspendedForBackground = false
                     guard !self.movieOutput.isRecording else {
                         DispatchQueue.main.async {
                             call.resolve(["startedAt": (self.startedAt ?? Date()).timeIntervalSince1970 * 1_000])
                         }
                         return
                     }
-                    if !self.captureSession.isRunning { self.captureSession.startRunning() }
-                    let url = self.recordingsDirectory
-                        .appendingPathComponent("prepatrack-\(UUID().uuidString).mov")
-                    self.currentURL = url
-                    self.startedAt = Date()
-                    self.movieOutput.maxRecordedDuration = CMTime(seconds: 3_600, preferredTimescale: 600)
-                    // Un fragment court rend le MOV relisible après une coupure
-                    // brutale, avec au pire quelques secondes non finalisées.
-                    self.movieOutput.movieFragmentInterval = CMTime(seconds: 5, preferredTimescale: 600)
-                    self.movieOutput.startRecording(to: url, recordingDelegate: self)
+                    let startedAt = try self.startCapture()
                     DispatchQueue.main.async {
                         UIApplication.shared.isIdleTimerDisabled = true
-                        call.resolve(["startedAt": self.startedAt!.timeIntervalSince1970 * 1_000])
+                        call.resolve(["startedAt": startedAt.timeIntervalSince1970 * 1_000])
                     }
                 } catch {
+                    self.recordingRequested = false
                     DispatchQueue.main.async { call.reject(error.localizedDescription) }
                 }
             }
@@ -92,6 +104,8 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
 
     @objc func stop(_ call: CAPPluginCall) {
         sessionQueue.async {
+            self.recordingRequested = false
+            self.suspendedForBackground = false
             guard self.movieOutput.isRecording else {
                 if self.currentURL != nil {
                     // Le fichier est déjà arrêté mais Photos termine encore son
@@ -149,12 +163,68 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
             self.startedAt = nil
             let calls = self.stopCalls
             self.stopCalls.removeAll()
+            let interruptedForBackground = self.recordingRequested && self.suspendedForBackground
             DispatchQueue.main.async {
                 UIApplication.shared.isIdleTimerDisabled = false
                 var payload: [String: Any] = ["saved": saved]
                 if let error { payload["error"] = error }
+                if interruptedForBackground {
+                    payload["interrupted"] = true
+                    payload["willResume"] = true
+                }
                 calls.forEach { saved ? $0.resolve(payload) : $0.reject(error ?? "La vidéo n’a pas pu être ajoutée à Photos.") }
                 self.notifyListeners("recordingFinished", data: payload)
+            }
+            // Le déverrouillage peut arriver pendant l'import dans Photos.
+            // Retenter ici évite de perdre cette course entre les callbacks.
+            self.resumeRecordingIfNeeded()
+        }
+    }
+
+    /** Démarre un nouveau fichier avec la configuration déjà validée. */
+    private func startCapture() throws -> Date {
+        try configureIfNeeded()
+        let audioChannels = try configureAudioSession()
+        configureAudioOutput(channels: audioChannels)
+        if !captureSession.isRunning { captureSession.startRunning() }
+        let url = recordingsDirectory
+            .appendingPathComponent("prepatrack-\(UUID().uuidString).mov")
+        let start = Date()
+        currentURL = url
+        startedAt = start
+        movieOutput.maxRecordedDuration = CMTime(seconds: 3_600, preferredTimescale: 600)
+        movieOutput.movieFragmentInterval = CMTime(seconds: 5, preferredTimescale: 600)
+        movieOutput.startRecording(to: url, recordingDelegate: self)
+        return start
+    }
+
+    /**
+     * Reprend uniquement une capture interrompue par le verrouillage. L'arrêt
+     * manuel remet `recordingRequested` à false et reste toujours prioritaire.
+     */
+    private func resumeRecordingIfNeeded() {
+        guard recordingRequested,
+              suspendedForBackground,
+              currentURL == nil,
+              !movieOutput.isRecording,
+              applicationIsActive else { return }
+        do {
+            let resumedAt = try startCapture()
+            suspendedForBackground = false
+            DispatchQueue.main.async {
+                UIApplication.shared.isIdleTimerDisabled = true
+                self.notifyListeners("recordingResumed", data: [
+                    "startedAt": resumedAt.timeIntervalSince1970 * 1_000,
+                ])
+            }
+        } catch {
+            recordingRequested = false
+            suspendedForBackground = false
+            DispatchQueue.main.async {
+                UIApplication.shared.isIdleTimerDisabled = false
+                self.notifyListeners("recordingResumeFailed", data: [
+                    "error": error.localizedDescription,
+                ])
             }
         }
     }
