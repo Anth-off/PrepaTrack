@@ -35,6 +35,17 @@ export type KnownSegmentType =
   | 'incident_label'
   | 'incident_supplies'
   | 'incident_restock_wait'
+  | 'incident_colleague_blocked'
+  | 'incident_support_inverted'
+  | 'incident_vmax_invalid'
+  | 'incident_wrong_support'
+  | 'incident_support_unavailable'
+  | 'incident_zone_blocked'
+  | 'incident_location_error'
+  | 'incident_product_damaged'
+  | 'incident_quality_wait'
+  | 'incident_safety_cleanup'
+  | 'incident_other'
   // --- Pauses réglementaires ----------------------------------------------
   | 'break_10'
   | 'break_30'
@@ -196,7 +207,7 @@ export interface StockShortage extends Syncable {
 }
 
 export interface IncidentDef {
-  /** Correspond à un SegmentType pour les trois types livrés, libre ensuite. */
+  /** Correspond à un SegmentType livré, ou à une ancienne clé personnalisée. */
   key: string
   label: string
   emoji: string
@@ -209,13 +220,26 @@ export interface IncidentDef {
  */
 export const STANDARD_INCIDENTS: readonly IncidentDef[] = [
   { key: 'incident_material', label: 'Matériel', emoji: '🔧' },
-  { key: 'incident_bug', label: 'Bug', emoji: '🐛' },
+  { key: 'incident_bug', label: 'Bug application / réseau', emoji: '🐛' },
+  { key: 'incident_colleague_blocked', label: 'Bloqué par des collègues', emoji: '🚧' },
+  { key: 'incident_wait', label: 'Attente / blocage non classé', emoji: '⏳' },
+  { key: 'incident_human', label: 'Attente chef / aide collègue', emoji: '👥' },
   { key: 'incident_discussion', label: 'Discussion', emoji: '💬' },
   { key: 'incident_forklift', label: 'Cariste', emoji: '🚜' },
-  { key: 'incident_drink', label: 'Boire', emoji: '💧' },
+  { key: 'incident_support_inverted', label: 'Support inversé', emoji: '🔃' },
+  { key: 'incident_vmax_invalid', label: 'Support VMAX non valide', emoji: '⛔' },
+  { key: 'incident_wrong_support', label: 'Mauvais support choisi', emoji: '↩️' },
+  { key: 'incident_support_unavailable', label: 'Support absent ou abîmé', emoji: '🪵' },
+  { key: 'incident_zone_blocked', label: 'Allée ou zone bloquée', emoji: '🚫' },
   { key: 'incident_label', label: 'Étiquette absente / illisible', emoji: '🏷️' },
   { key: 'incident_supplies', label: 'Manque de consommables', emoji: '📦' },
   { key: 'incident_restock_wait', label: 'Attente réapprovisionnement', emoji: '📥' },
+  { key: 'incident_location_error', label: 'Emplacement erroné ou vide', emoji: '📍' },
+  { key: 'incident_product_damaged', label: 'Produit endommagé', emoji: '💥' },
+  { key: 'incident_quality_wait', label: 'Attente de contrôle qualité', emoji: '🔎' },
+  { key: 'incident_safety_cleanup', label: 'Casse, nettoyage ou danger', emoji: '⚠️' },
+  { key: 'incident_drink', label: 'Boire', emoji: '💧' },
+  { key: 'incident_other', label: 'Autre aléa', emoji: '❓' },
 ]
 
 export interface CartMotionSettings {
