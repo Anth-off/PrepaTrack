@@ -19,6 +19,12 @@
         "scheme": "App",
         "buildConfiguration": "Release"
       }
+    },
+    "production-testflight": {
+      "extends": "production",
+      "env": {
+        "DIRECT_TESTFLIGHT_UPLOAD": "1"
+      }
     }
   },
   "submit": {

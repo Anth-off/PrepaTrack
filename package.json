@@ -14,6 +14,7 @@
     "typecheck": "tsc -b",
     "build:vite": "vite build",
     "eas-build-post-install": "npm run build && cap copy ios",
+    "eas-build-on-success": "bash scripts/eas-upload-testflight.sh",
     "ios:add": "npm run build && cap add ios",
     "ios:sync": "npm run build && cap sync ios",
     "db:check": "node scripts/db-check.mjs",
