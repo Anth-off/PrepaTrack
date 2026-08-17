@@ -1,5 +1,10 @@
 {
   "expo": {
+    "name": "PrepaTrack",
+    "slug": "prepatrack",
+    "ios": {
+      "bundleIdentifier": "com.n0thytvoff.prepatrack"
+    },
     "extra": {
       "eas": {
         "projectId": "1ef43d4f-c37f-48e2-8f52-fc2a976e757e"
