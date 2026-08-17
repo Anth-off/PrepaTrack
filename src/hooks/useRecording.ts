@@ -23,6 +23,7 @@ import {
   onNativeRecordingResumeFailed,
   startNativeRecording,
   stopNativeRecording,
+  showNativeMicrophoneModes,
   testNativeRecording,
   type NativeCaptureProfile,
 } from '../native/recording'
@@ -38,6 +39,7 @@ export interface RecordingControl {
   start: () => Promise<void>
   stop: (reason?: RecordingEndReason) => Promise<void>
   testDevices: () => Promise<boolean>
+  showMicrophoneModes: () => Promise<void>
 }
 
 const CONSTRAINTS: MediaStreamConstraints = {
@@ -59,6 +61,13 @@ const stabilizationLabel = (mode: string) => ({
   off: 'inactive',
 }[mode] ?? mode)
 
+const microphoneModeLabel = (mode?: string) => ({
+  automatic: 'automatique',
+  standard: 'standard',
+  voiceIsolation: 'isolement de la voix',
+  wideSpectrum: 'large spectre',
+}[mode ?? ''] ?? mode)
+
 const captureProfileMessage = (profile: NativeCaptureProfile, recording = false) => {
   const mode = recording && profile.activeStabilization !== 'off'
     ? profile.activeStabilization
@@ -66,7 +75,10 @@ const captureProfileMessage = (profile: NativeCaptureProfile, recording = false)
   const state = recording && profile.activeStabilization === 'off'
     ? ' demandée (confirmation iOS en cours)'
     : ''
-  return `Profil caméra : ${profile.width}×${profile.height} à ${profile.framesPerSecond} i/s, champ ${Math.round(profile.fieldOfView)}°, zoom ${profile.zoomFactor.toFixed(1)}×, stabilisation ${stabilizationLabel(mode)}${state}.`
+  const microphone = profile.activeMicrophoneMode
+    ? `, micro ${microphoneModeLabel(profile.activeMicrophoneMode)} (${profile.audioChannels ?? 1} ${profile.audioChannels === 1 ? 'canal' : 'canaux'})`
+    : ''
+  return `Profil caméra : ${profile.width}×${profile.height} à ${profile.framesPerSecond} i/s, champ ${Math.round(profile.fieldOfView)}°, zoom ${profile.zoomFactor.toFixed(1)}×, stabilisation ${stabilizationLabel(mode)}${state}${microphone}.`
 }
 
 /**
@@ -277,6 +289,19 @@ export function useRecording(
     }
   }, [native, supported])
 
+  const showMicrophoneModes = useCallback(async () => {
+    if (!native) {
+      setMessage('Le sélecteur de modes micro est disponible uniquement dans l’app iPhone.')
+      return
+    }
+    try {
+      await showNativeMicrophoneModes()
+      setMessage('Choisis Automatique, Standard, Isolement de la voix ou Large spectre dans le panneau iOS.')
+    } catch (error) {
+      setMessage(mediaErrorMessage(error))
+    }
+  }, [native])
+
   useEffect(() => {
     if (!native) return
     let finishedHandle: Awaited<ReturnType<typeof onNativeRecordingFinished>> | undefined
@@ -352,7 +377,7 @@ export function useRecording(
     }
   }, [enabled, native, stop])
 
-  return { status, startedAt, message, supported, canStart: Boolean(workdayId), start, stop, testDevices }
+  return { status, startedAt, message, supported, canStart: Boolean(workdayId), start, stop, testDevices, showMicrophoneModes }
 }
 
 export const RECORDING_ESTIMATED_BITS_PER_SECOND = RECORDING_BITS_PER_SECOND

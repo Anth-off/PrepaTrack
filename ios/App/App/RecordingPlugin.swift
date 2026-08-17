@@ -12,6 +12,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
         CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "status", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "test", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "showMicrophoneModes", returnType: CAPPluginReturnPromise),
     ]
 
     private let captureSession = AVCaptureSession()
@@ -156,6 +157,25 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
                 result["captureProfile"] = self.captureProfilePayload()
             }
             DispatchQueue.main.async { call.resolve(result) }
+        }
+    }
+
+    /**
+     * Ouvre le panneau iOS officiel. Apple réserve le choix du mode micro à
+     * l'utilisateur : l'application peut rendre les modes compatibles et
+     * présenter ce panneau, mais ne peut pas imposer « Large spectre ».
+     */
+    @objc func showMicrophoneModes(_ call: CAPPluginCall) {
+        sessionQueue.async {
+            let recording = self.movieOutput.isRecording
+            DispatchQueue.main.async {
+                guard recording else {
+                    call.reject("Démarre d’abord l’enregistrement pour choisir le mode micro iOS.")
+                    return
+                }
+                AVCaptureDevice.showSystemUserInterface(.microphoneModes)
+                call.resolve()
+            }
         }
     }
 
@@ -341,7 +361,9 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
         guard !configured else { return }
         captureSession.beginConfiguration()
         defer { captureSession.commitConfiguration() }
+        captureSession.usesApplicationAudioSession = true
         captureSession.automaticallyConfiguresApplicationAudioSession = false
+        captureSession.configuresApplicationAudioSessionToMixWithOthers = false
         guard let profile = selectFrontCaptureProfile(),
               let microphone = AVCaptureDevice.default(for: .audio) else {
             throw RecordingError.deviceUnavailable
@@ -488,6 +510,9 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
             "zoomFactor": Double(camera.videoZoomFactor),
             "requestedStabilization": stabilizationName(requestedStabilizationMode),
             "activeStabilization": stabilizationName(connection?.activeVideoStabilizationMode ?? .off),
+            "preferredMicrophoneMode": microphoneModeName(AVCaptureDevice.preferredMicrophoneMode),
+            "activeMicrophoneMode": microphoneModeName(AVCaptureDevice.activeMicrophoneMode),
+            "audioChannels": AVAudioSession.sharedInstance().inputNumberOfChannels,
         ]
     }
 
@@ -516,27 +541,35 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
         }
     }
 
+    private func microphoneModeName(_ mode: AVCaptureDevice.MicrophoneMode) -> String {
+        switch mode {
+        case .standard: return "standard"
+        case .voiceIsolation: return "voiceIsolation"
+        case .wideSpectrum: return "wideSpectrum"
+        @unknown default: return "automatic"
+        }
+    }
+
     /**
-     * Utilise le traitement audio prévu par Apple pour une captation vidéo,
-     * le micro dirigé vers la caméra avant et le stéréo lorsqu'il existe.
+     * Utilise une session entrée/sortie non mixable : contrairement à la
+     * catégorie `.record`, elle fournit à iOS le chemin de sortie nécessaire
+     * aux modes micro système, dont « Large spectre ». Le profil vidéo reste
+     * à 48 kHz et iOS garde la main sur le traitement/polar pattern afin de ne
+     * pas rendre un mode incompatible en forçant le stéréo.
      */
     private func configureAudioSession() throws -> Int {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .videoRecording, options: [])
+        try session.setCategory(.playAndRecord, mode: .videoRecording, options: [.defaultToSpeaker])
         try? session.setPreferredSampleRate(48_000)
+        try? session.setPreferredInputNumberOfChannels(1)
         try session.setActive(true)
 
         if let builtIn = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
             try? session.setPreferredInput(builtIn)
             if let front = builtIn.dataSources?.first(where: { $0.orientation == .front }) {
-                if front.supportedPolarPatterns?.contains(.stereo) == true {
-                    try? front.setPreferredPolarPattern(.stereo)
-                }
+                try? front.setPreferredPolarPattern(nil)
                 try? builtIn.setPreferredDataSource(front)
             }
-        }
-        if session.inputNumberOfChannels >= 2 {
-            try? session.setPreferredInputOrientation(.portrait)
         }
         return max(1, min(2, session.inputNumberOfChannels))
     }

@@ -43,7 +43,7 @@ export function RecordingSettingsSection({ settings, recording }: { settings: Se
             </select>
           </label>
           <p className="mt-2 text-xs text-slate-500">
-            Qualité équilibrée 720p à 30 i/s : environ {estimatedRecordingMegabytes(7.5)} Mo pour 7 h 30, en fichiers d’une heure maximum. Sur iPhone, PrepaTrack verrouille le format avant stabilisé offrant le champ de vision le plus large, puis vérifie le mode réellement appliqué par iOS. Le son utilise le mode vidéo Apple à 48 kHz, le microphone avant et le stéréo haute qualité lorsque l’appareil le permet. Chaque fichier reste dans le stockage durable jusqu’à ce que Photos confirme son import, puis il est récupéré automatiquement après une interruption. Les vidéos sont exclues de Supabase et des sauvegardes JSON.
+            Qualité équilibrée 720p à 30 i/s : environ {estimatedRecordingMegabytes(7.5)} Mo pour 7 h 30, en fichiers d’une heure maximum. Sur iPhone, PrepaTrack verrouille le format avant stabilisé offrant le champ de vision le plus large, puis vérifie le mode réellement appliqué par iOS. Le son est encodé en AAC 48 kHz et laisse iOS appliquer le mode choisi : Automatique, Standard, Isolement de la voix ou Large spectre. Chaque fichier reste dans le stockage durable jusqu’à ce que Photos confirme son import, puis il est récupéré automatiquement après une interruption. Les vidéos sont exclues de Supabase et des sauvegardes JSON.
           </p>
           <button
             type="button"
@@ -52,6 +52,17 @@ export function RecordingSettingsSection({ settings, recording }: { settings: Se
           >
             Tester la caméra et le microphone
           </button>
+          <button
+            type="button"
+            disabled={recording.status !== 'recording'}
+            onClick={() => void recording.showMicrophoneModes()}
+            className="pressable mt-2 w-full rounded-xl bg-ink-700 py-3 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Choisir le mode micro iOS
+          </button>
+          {recording.status !== 'recording' && (
+            <p className="mt-1 text-xs text-slate-500">Démarre une captation pour ouvrir Automatique, Standard, Isolement de la voix ou Large spectre.</p>
+          )}
           {recording.message && <p role="status" className="mt-2 text-xs text-slate-400">{recording.message}</p>}
           <div className="mt-3">
             <RecordingControlBar recording={recording} />

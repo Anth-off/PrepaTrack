@@ -19,6 +19,9 @@ export interface NativeCaptureProfile {
   zoomFactor: number
   requestedStabilization: string
   activeStabilization: string
+  preferredMicrophoneMode?: string
+  activeMicrophoneMode?: string
+  audioChannels?: number
 }
 
 interface NativeRecordingState {
@@ -32,6 +35,7 @@ interface NativeRecordingPlugin {
   stop(): Promise<{ saved: boolean }>
   status(): Promise<NativeRecordingState>
   test(): Promise<{ captureProfile?: NativeCaptureProfile }>
+  showMicrophoneModes(): Promise<void>
   addListener(eventName: 'recordingFinished', listener: (event: FinishedEvent) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'recordingResumed', listener: (event: ResumedEvent) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'recordingResumeFailed', listener: (event: ResumeFailedEvent) => void): Promise<PluginListenerHandle>
@@ -43,6 +47,7 @@ export const startNativeRecording = () => plugin.start({ maxDurationSeconds: 3_6
 export const stopNativeRecording = () => plugin.stop()
 export const nativeRecordingStatus = () => plugin.status()
 export const testNativeRecording = () => plugin.test()
+export const showNativeMicrophoneModes = () => plugin.showMicrophoneModes()
 export const onNativeRecordingFinished = (listener: (event: FinishedEvent) => void) =>
   plugin.addListener('recordingFinished', listener)
 export const onNativeRecordingResumed = (listener: (event: ResumedEvent) => void) =>
