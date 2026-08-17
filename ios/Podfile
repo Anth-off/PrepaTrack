@@ -1,0 +1,10 @@
+platform :ios, '16.2'
+
+# PrepaTrack uses Swift Package Manager through the native Capacitor project.
+# EAS Build still runs `pod install` for generic iOS projects, so this empty
+# non-integrating target only lets that phase complete without altering Xcode.
+project 'App/App.xcodeproj'
+install! 'cocoapods', :integrate_targets => false
+
+target 'App' do
+end
