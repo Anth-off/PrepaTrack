@@ -58,12 +58,6 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
             name: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance()
         )
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(audioEngineConfigurationChanged),
-            name: .AVAudioEngineConfigurationChange,
-            object: audioEngine
-        )
         recoverPendingRecordings()
     }
 
@@ -95,6 +89,9 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
     @objc private func applicationDidBecomeActive() {
         sessionQueue.async {
             self.applicationIsActive = true
+            // Certaines suspensions iOS ne livrent pas le callback `.ended`.
+            // Une nouvelle activation confirme que l'app peut retenter la route.
+            self.audioInterruptionActive = false
             self.resumeRecordingIfNeeded()
         }
     }
@@ -109,12 +106,6 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
             } else {
                 self.resumeRecordingIfNeeded()
             }
-        }
-    }
-
-    @objc private func audioEngineConfigurationChanged(_ notification: Notification) {
-        sessionQueue.async {
-            self.interruptActiveRecordingIfNeeded()
         }
     }
 
@@ -771,8 +762,14 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
         guard input.isVoiceProcessingEnabled else { throw RecordingError.voiceProcessingUnavailable }
         input.installTap(onBus: 0, bufferSize: 2_048, format: format) { _, _ in }
         audioTapInstalled = true
-        audioEngine.prepare()
-        try audioEngine.start()
+        do {
+            audioEngine.prepare()
+            try audioEngine.start()
+        } catch {
+            stopAudioCapture()
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            throw error
+        }
 
         let work = DispatchWorkItem { [weak self] in
             guard let self,
