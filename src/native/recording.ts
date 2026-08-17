@@ -22,6 +22,10 @@ export interface NativeCaptureProfile {
   preferredMicrophoneMode?: string
   activeMicrophoneMode?: string
   audioChannels?: number
+  voiceProcessingEnabled?: boolean
+  audioSessionCategory?: string
+  audioSessionMode?: string
+  audioInputRoute?: string
 }
 
 interface NativeRecordingState {

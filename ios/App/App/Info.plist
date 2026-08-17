@@ -30,6 +30,8 @@
 	<string>PrepaTrack utilise la caméra avant uniquement lorsque vous démarrez volontairement l’enregistrement de votre journée.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>PrepaTrack utilise le microphone uniquement lorsque vous démarrez volontairement l’enregistrement de votre journée.</string>
+	<key>NSAlwaysAllowMicrophoneModeControl</key>
+	<true/>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSPhotoLibraryAddUsageDescription</key>

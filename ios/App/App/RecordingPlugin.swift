@@ -17,10 +17,17 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
 
     private let captureSession = AVCaptureSession()
     private let movieOutput = AVCaptureMovieFileOutput()
+    private let audioEngine = AVAudioEngine()
+    private let audioStateLock = NSLock()
     private let sessionQueue = DispatchQueue(label: "com.n0thytvoff.prepatrack.recording")
     private var configured = false
     private var startedAt: Date?
     private var currentURL: URL?
+    private var currentAudioURL: URL?
+    private var audioFile: AVAudioFile?
+    private var audioTapInstalled = false
+    private var acceptsAudioBuffers = false
+    private var audioWriteError: String?
     private var stopCalls: [CAPPluginCall] = []
     // L'intention utilisateur reste active quand iOS coupe matériellement la
     // caméra au verrouillage. Elle permet une reprise dans un nouveau fichier.
@@ -64,7 +71,10 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
             self.applicationIsActive = false
             guard self.recordingRequested else { return }
             self.suspendedForBackground = true
-            if self.movieOutput.isRecording { self.movieOutput.stopRecording() }
+            if self.movieOutput.isRecording {
+                self.stopAudioCapture()
+                self.movieOutput.stopRecording()
+            }
         }
     }
 
@@ -138,6 +148,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
                 return
             }
             self.stopCalls.append(call)
+            self.stopAudioCapture()
             self.movieOutput.stopRecording()
         }
     }
@@ -167,12 +178,13 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
      */
     @objc func showMicrophoneModes(_ call: CAPPluginCall) {
         sessionQueue.async {
-            let recording = self.movieOutput.isRecording
+            do {
+                try self.prepareAudioSessionForMicrophoneModes()
+            } catch {
+                DispatchQueue.main.async { call.reject(error.localizedDescription) }
+                return
+            }
             DispatchQueue.main.async {
-                guard recording else {
-                    call.reject("Démarre d’abord l’enregistrement pour choisir le mode micro iOS.")
-                    return
-                }
                 AVCaptureDevice.showSystemUserInterface(.microphoneModes)
                 call.resolve()
             }
@@ -201,32 +213,60 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
 
     public func fileOutput(
         _ output: AVCaptureFileOutput,
+        didStartRecordingTo outputFileURL: URL,
+        from connections: [AVCaptureConnection]
+    ) {
+        audioStateLock.lock()
+        acceptsAudioBuffers = outputFileURL == currentURL
+        audioStateLock.unlock()
+    }
+
+    public func fileOutput(
+        _ output: AVCaptureFileOutput,
         didFinishRecordingTo outputFileURL: URL,
         from connections: [AVCaptureConnection],
         error: Error?
     ) {
+        stopAudioCapture()
         let successfullyFinished = (error as NSError?)?
             .userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool ?? (error == nil)
         guard FileManager.default.fileExists(atPath: outputFileURL.path) else {
-            finish(saved: false, error: error?.localizedDescription ?? "Enregistrement interrompu", sourceURL: nil)
+            finish(saved: false, error: error?.localizedDescription ?? "Enregistrement interrompu", cleanupURLs: [])
             return
         }
         // Même si AVFoundation signale une interruption, le conteneur fragmenté
         // peut rester lisible. On tente donc l'import et on ne supprime jamais
         // le fichier durable tant que Photos ne l'a pas confirmé.
-        saveToPhotos(outputFileURL) { [weak self] saved, photoError in
-            let reason = photoError ?? (!successfullyFinished ? error?.localizedDescription : nil)
-            self?.finish(saved: saved, error: reason, sourceURL: outputFileURL)
+        let audioURL = currentAudioURL
+        prepareFinalRecording(videoURL: outputFileURL, audioURL: audioURL) { [weak self] finalURL, merged, mergeError in
+            guard let self else { return }
+            self.saveToPhotos(finalURL) { saved, photoError in
+                let reason = photoError
+                    ?? mergeError
+                    ?? self.audioWriteError
+                    ?? (!successfullyFinished ? error?.localizedDescription : nil)
+                var cleanupURLs = [outputFileURL]
+                if merged {
+                    if let audioURL { cleanupURLs.append(audioURL) }
+                    if finalURL != outputFileURL { cleanupURLs.append(finalURL) }
+                }
+                self.finish(saved: saved, error: reason, cleanupURLs: cleanupURLs)
+            }
         }
     }
 
-    private func finish(saved: Bool, error: String?, sourceURL: URL?) {
+    private func finish(saved: Bool, error: String?, cleanupURLs: [URL]) {
         sessionQueue.async {
             self.captureSession.stopRunning()
+            self.stopAudioCapture()
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            if saved, let url = sourceURL { try? FileManager.default.removeItem(at: url) }
+            if saved {
+                for url in Set(cleanupURLs) { try? FileManager.default.removeItem(at: url) }
+            }
             self.currentURL = nil
+            self.currentAudioURL = nil
             self.startedAt = nil
+            self.audioWriteError = nil
             let calls = self.stopCalls
             self.stopCalls.removeAll()
             let interruptedForBackground = self.recordingRequested && self.suspendedForBackground
@@ -250,24 +290,31 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
     /** Démarre un nouveau fichier avec la configuration déjà validée. */
     private func startCapture() throws -> Date {
         try configureIfNeeded()
-        let audioChannels = try configureAudioSession()
-        configureAudioOutput(channels: audioChannels)
-        if !captureSession.isRunning { captureSession.startRunning() }
+        let baseName = "prepatrack-\(UUID().uuidString)"
+        let videoURL = recordingsDirectory.appendingPathComponent("\(baseName).video.mov")
+        let audioURL = recordingsDirectory.appendingPathComponent("\(baseName).audio.m4a")
+        currentURL = videoURL
+        currentAudioURL = audioURL
+        audioWriteError = nil
         do {
+            try startAudioCapture(to: audioURL)
+            if !captureSession.isRunning { captureSession.startRunning() }
             try verifyVideoStabilization()
         } catch {
+            stopAudioCapture()
             captureSession.stopRunning()
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            currentURL = nil
+            currentAudioURL = nil
+            try? FileManager.default.removeItem(at: videoURL)
+            try? FileManager.default.removeItem(at: audioURL)
             throw error
         }
-        let url = recordingsDirectory
-            .appendingPathComponent("prepatrack-\(UUID().uuidString).mov")
         let start = Date()
-        currentURL = url
         startedAt = start
         movieOutput.maxRecordedDuration = CMTime(seconds: 3_600, preferredTimescale: 600)
         movieOutput.movieFragmentInterval = CMTime(seconds: 5, preferredTimescale: 600)
-        movieOutput.startRecording(to: url, recordingDelegate: self)
+        movieOutput.startRecording(to: videoURL, recordingDelegate: self)
         return start
     }
 
@@ -317,33 +364,66 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
      */
     private func recoverPendingRecordings() {
         let manager = FileManager.default
-        let durable = (try? manager.contentsOfDirectory(
+        let durable = ((try? manager.contentsOfDirectory(
             at: recordingsDirectory,
             includingPropertiesForKeys: [.fileSizeKey],
             options: [.skipsHiddenFiles]
-        )) ?? []
+        )) ?? []).filter {
+            ((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0
+        }
         let temporary = ((try? manager.contentsOfDirectory(
             at: manager.temporaryDirectory,
             includingPropertiesForKeys: [.fileSizeKey],
             options: [.skipsHiddenFiles]
-        )) ?? []).filter { $0.lastPathComponent.hasPrefix("prepatrack-") && $0.pathExtension == "mov" }
-        let pending = (durable + temporary).filter {
-            ((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0
+        )) ?? []).filter {
+            $0.lastPathComponent.hasPrefix("prepatrack-")
+                && $0.pathExtension == "mov"
+                && ((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0
         }
-        guard !pending.isEmpty else { return }
+        let finalVideos = durable.filter {
+            $0.pathExtension == "mov" && !$0.lastPathComponent.hasSuffix(".video.mov")
+        }
+        let rawVideos = durable.filter { $0.lastPathComponent.hasSuffix(".video.mov") }
+        guard !finalVideos.isEmpty || !rawVideos.isEmpty || !temporary.isEmpty else { return }
 
         let importFiles = { [weak self] in
             guard let self else { return }
-            for url in pending {
-                self.saveToPhotos(url) { saved, error in
-                    if saved { try? manager.removeItem(at: url) }
-                    DispatchQueue.main.async {
-                        var payload: [String: Any] = ["saved": saved, "recovered": true]
-                        if let error { payload["error"] = error }
-                        self.notifyListeners("recordingFinished", data: payload)
-                    }
+            let notify: (Bool, String?) -> Void = { saved, error in
+                DispatchQueue.main.async {
+                    var payload: [String: Any] = ["saved": saved, "recovered": true]
+                    if let error { payload["error"] = error }
+                    self.notifyListeners("recordingFinished", data: payload)
                 }
             }
+            let importVideo: (URL, [URL], String?) -> Void = { url, cleanup, earlierError in
+                self.saveToPhotos(url) { saved, error in
+                    if saved {
+                        for candidate in Set(cleanup) { try? manager.removeItem(at: candidate) }
+                    }
+                    notify(saved, error ?? earlierError)
+                }
+            }
+
+            let finalNames = Set(finalVideos.map { $0.deletingPathExtension().lastPathComponent })
+            for url in finalVideos {
+                let base = url.deletingPathExtension().lastPathComponent
+                let raw = url.deletingLastPathComponent().appendingPathComponent("\(base).video.mov")
+                let audio = url.deletingLastPathComponent().appendingPathComponent("\(base).audio.m4a")
+                importVideo(url, [url, raw, audio], nil)
+            }
+            for videoURL in rawVideos {
+                let videoStem = videoURL.deletingPathExtension().lastPathComponent
+                let base = videoStem.hasSuffix(".video")
+                    ? String(videoStem.dropLast(".video".count))
+                    : videoStem
+                guard !finalNames.contains(base) else { continue }
+                let audioURL = videoURL.deletingLastPathComponent().appendingPathComponent("\(base).audio.m4a")
+                self.prepareFinalRecording(videoURL: videoURL, audioURL: audioURL) { finalURL, merged, mergeError in
+                    let cleanup = merged ? [videoURL, audioURL, finalURL] : [videoURL]
+                    importVideo(finalURL, cleanup, mergeError)
+                }
+            }
+            for url in temporary { importVideo(url, [url], nil) }
         }
         let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
         if status == .authorized || status == .limited {
@@ -366,25 +446,19 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
         if #available(iOS 18.0, *) {
             captureSession.configuresApplicationAudioSessionToMixWithOthers = false
         }
-        guard let profile = selectFrontCaptureProfile(),
-              let microphone = AVCaptureDevice.default(for: .audio) else {
+        guard let profile = selectFrontCaptureProfile() else {
             throw RecordingError.deviceUnavailable
         }
         let camera = profile.device
         let cameraInput = try AVCaptureDeviceInput(device: camera)
-        let microphoneInput = try AVCaptureDeviceInput(device: microphone)
         var cameraAdded = false
-        var microphoneAdded = false
         var outputAdded = false
         do {
-            guard captureSession.canAddInput(cameraInput), captureSession.canAddInput(microphoneInput),
-                  captureSession.canAddOutput(movieOutput) else {
+            guard captureSession.canAddInput(cameraInput), captureSession.canAddOutput(movieOutput) else {
                 throw RecordingError.configurationFailed
             }
             captureSession.addInput(cameraInput)
             cameraAdded = true
-            captureSession.addInput(microphoneInput)
-            microphoneAdded = true
             captureSession.addOutput(movieOutput)
             outputAdded = true
             try camera.lockForConfiguration()
@@ -402,7 +476,6 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
             camera.activeVideoMaxFrameDuration = duration
         } catch {
             if outputAdded { captureSession.removeOutput(movieOutput) }
-            if microphoneAdded { captureSession.removeInput(microphoneInput) }
             if cameraAdded { captureSession.removeInput(cameraInput) }
             throw error
         }
@@ -503,6 +576,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
         guard let camera = captureCamera else { return [:] }
         let dimensions = CMVideoFormatDescriptionGetDimensions(camera.activeFormat.formatDescription)
         let connection = movieOutput.connection(with: .video)
+        let audioSession = AVAudioSession.sharedInstance()
         return [
             "camera": camera.localizedName,
             "width": Int(dimensions.width),
@@ -514,7 +588,11 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
             "activeStabilization": stabilizationName(connection?.activeVideoStabilizationMode ?? .off),
             "preferredMicrophoneMode": microphoneModeName(AVCaptureDevice.preferredMicrophoneMode),
             "activeMicrophoneMode": microphoneModeName(AVCaptureDevice.activeMicrophoneMode),
-            "audioChannels": AVAudioSession.sharedInstance().inputNumberOfChannels,
+            "audioChannels": audioSession.inputNumberOfChannels,
+            "voiceProcessingEnabled": audioEngine.inputNode.isVoiceProcessingEnabled,
+            "audioSessionCategory": audioSession.category.rawValue,
+            "audioSessionMode": audioSession.mode.rawValue,
+            "audioInputRoute": audioSession.currentRoute.inputs.first?.portName ?? "none",
         ]
     }
 
@@ -552,43 +630,179 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
         }
     }
 
-    /**
-     * Utilise une session entrée/sortie non mixable : contrairement à la
-     * catégorie `.record`, elle fournit à iOS le chemin de sortie nécessaire
-     * aux modes micro système, dont « Large spectre ». Le profil vidéo reste
-     * à 48 kHz et iOS garde la main sur le traitement/polar pattern afin de ne
-     * pas rendre un mode incompatible en forçant le stéréo.
-     */
-    private func configureAudioSession() throws -> Int {
+    /** Configure la route qui permet à iOS de mémoriser un mode micro avant la capture. */
+    private func prepareAudioSessionForMicrophoneModes() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .videoRecording, options: [.defaultToSpeaker])
+        try session.setCategory(.playAndRecord, mode: .videoChat, options: [.defaultToSpeaker])
         try? session.setPreferredSampleRate(48_000)
         try? session.setPreferredInputNumberOfChannels(1)
-        try session.setActive(true)
-
-        if let builtIn = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
-            try? session.setPreferredInput(builtIn)
-            if let front = builtIn.dataSources?.first(where: { $0.orientation == .front }) {
-                try? front.setPreferredPolarPattern(nil)
-                try? builtIn.setPreferredDataSource(front)
-            }
-        }
-        return max(1, min(2, session.inputNumberOfChannels))
     }
 
-    /** Encode le son en AAC 48 kHz avec le débit maximal utile à 1 ou 2 canaux. */
-    private func configureAudioOutput(channels: Int) {
-        guard let connection = movieOutput.connection(with: .audio) else { return }
-        let supported = Set(movieOutput.supportedOutputSettingsKeys(for: connection))
-        let candidates: [String: Any] = [
+    /**
+     * Les modes micro Apple exigent Voice Processing I/O. Le moteur enregistre
+     * donc la piste réellement traitée dans un fichier AAC durable, tandis que
+     * AVCaptureMovieFileOutput conserve la vidéo stabilisée sans posséder le micro.
+     */
+    private func startAudioCapture(to url: URL) throws {
+        stopAudioCapture()
+        try prepareAudioSessionForMicrophoneModes()
+        let session = AVAudioSession.sharedInstance()
+        try session.setActive(true)
+
+        let input = audioEngine.inputNode
+        try input.setVoiceProcessingEnabled(true)
+        guard input.isVoiceProcessingEnabled else { throw RecordingError.voiceProcessingUnavailable }
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw RecordingError.voiceProcessingUnavailable
+        }
+        let channels = Int(format.channelCount)
+        let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 48_000,
+            AVSampleRateKey: format.sampleRate,
             AVNumberOfChannelsKey: channels,
             AVEncoderBitRateKey: channels >= 2 ? 256_000 : 160_000,
             AVEncoderAudioQualityKey: AVAudioQuality.max.rawValue,
         ]
-        let settings = candidates.filter { supported.contains($0.key) }
-        if !settings.isEmpty { movieOutput.setOutputSettings(settings, for: connection) }
+        let file = try AVAudioFile(
+            forWriting: url,
+            settings: settings,
+            commonFormat: format.commonFormat,
+            interleaved: format.isInterleaved
+        )
+        audioStateLock.lock()
+        audioFile = file
+        acceptsAudioBuffers = false
+        audioWriteError = nil
+        audioStateLock.unlock()
+
+        input.installTap(onBus: 0, bufferSize: 2_048, format: format) { [weak self] buffer, _ in
+            guard let self else { return }
+            self.audioStateLock.lock()
+            let target = self.acceptsAudioBuffers ? self.audioFile : nil
+            self.audioStateLock.unlock()
+            guard let target else { return }
+            do {
+                try target.write(from: buffer)
+            } catch {
+                self.audioStateLock.lock()
+                if self.audioWriteError == nil { self.audioWriteError = error.localizedDescription }
+                self.audioStateLock.unlock()
+            }
+        }
+        audioTapInstalled = true
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+        } catch {
+            stopAudioCapture()
+            throw error
+        }
+    }
+
+    private func stopAudioCapture() {
+        audioStateLock.lock()
+        acceptsAudioBuffers = false
+        audioStateLock.unlock()
+        if audioTapInstalled {
+            audioEngine.inputNode.removeTap(onBus: 0)
+            audioTapInstalled = false
+        }
+        if audioEngine.isRunning { audioEngine.stop() }
+        audioStateLock.lock()
+        audioFile = nil
+        audioStateLock.unlock()
+        audioEngine.reset()
+    }
+
+    /** Réunit sans réencodage la vidéo stabilisée et l'audio Voice Processing. */
+    private func prepareFinalRecording(
+        videoURL: URL,
+        audioURL: URL?,
+        completion: @escaping (URL, Bool, String?) -> Void
+    ) {
+        guard let audioURL,
+              FileManager.default.fileExists(atPath: audioURL.path) else {
+            completion(videoURL, false, "La piste audio Voice Processing est absente; la vidéo seule a été conservée.")
+            return
+        }
+        let stem = videoURL.deletingPathExtension().lastPathComponent
+        let baseName = stem.hasSuffix(".video") ? String(stem.dropLast(".video".count)) : stem
+        let finalURL = videoURL.deletingLastPathComponent().appendingPathComponent("\(baseName).mov")
+
+        Task {
+            do {
+                let videoAsset = AVURLAsset(url: videoURL)
+                let audioAsset = AVURLAsset(url: audioURL)
+                guard let sourceVideo = try await videoAsset.loadTracks(withMediaType: .video).first,
+                      let sourceAudio = try await audioAsset.loadTracks(withMediaType: .audio).first else {
+                    completion(videoURL, false, "La piste audio ou vidéo est illisible; la vidéo source a été conservée.")
+                    return
+                }
+                let videoDuration = try await videoAsset.load(.duration)
+                let audioDuration = try await audioAsset.load(.duration)
+                guard videoDuration.isValid, videoDuration.seconds > 0,
+                      audioDuration.isValid, audioDuration.seconds > 0 else {
+                    completion(videoURL, false, "La piste audio ou vidéo est vide; la vidéo source a été conservée.")
+                    return
+                }
+
+                let composition = AVMutableComposition()
+                guard let targetVideo = composition.addMutableTrack(
+                    withMediaType: .video,
+                    preferredTrackID: kCMPersistentTrackID_Invalid
+                ), let targetAudio = composition.addMutableTrack(
+                    withMediaType: .audio,
+                    preferredTrackID: kCMPersistentTrackID_Invalid
+                ) else {
+                    completion(videoURL, false, "Impossible de préparer les pistes finales; la vidéo source a été conservée.")
+                    return
+                }
+                try targetVideo.insertTimeRange(
+                    CMTimeRange(start: .zero, duration: videoDuration),
+                    of: sourceVideo,
+                    at: .zero
+                )
+                targetVideo.preferredTransform = try await sourceVideo.load(.preferredTransform)
+                let audioRangeDuration = CMTimeCompare(audioDuration, videoDuration) > 0
+                    ? videoDuration
+                    : audioDuration
+                try targetAudio.insertTimeRange(
+                    CMTimeRange(start: .zero, duration: audioRangeDuration),
+                    of: sourceAudio,
+                    at: .zero
+                )
+
+                guard let export = AVAssetExportSession(
+                    asset: composition,
+                    presetName: AVAssetExportPresetPassthrough
+                ) else {
+                    completion(videoURL, false, "Impossible de finaliser la vidéo; les sources ont été conservées.")
+                    return
+                }
+                if FileManager.default.fileExists(atPath: finalURL.path) {
+                    try FileManager.default.removeItem(at: finalURL)
+                }
+                export.outputURL = finalURL
+                export.outputFileType = .mov
+                export.shouldOptimizeForNetworkUse = false
+                export.exportAsynchronously {
+                    if export.status == .completed,
+                       FileManager.default.fileExists(atPath: finalURL.path) {
+                        completion(finalURL, true, nil)
+                    } else {
+                        completion(
+                            videoURL,
+                            false,
+                            export.error?.localizedDescription
+                                ?? "La fusion audio/vidéo a échoué; les sources ont été conservées."
+                        )
+                    }
+                }
+            } catch {
+                completion(videoURL, false, error.localizedDescription)
+            }
+        }
     }
 
     private func requestPermissions(completion: @escaping (Bool) -> Void) {
@@ -617,11 +831,13 @@ private enum RecordingError: LocalizedError {
     case deviceUnavailable
     case configurationFailed
     case stabilizationUnavailable
+    case voiceProcessingUnavailable
     var errorDescription: String? {
         switch self {
         case .deviceUnavailable: return "Caméra avant ou microphone introuvable."
         case .configurationFailed: return "Impossible de configurer la capture vidéo."
         case .stabilizationUnavailable: return "iOS n’a pas activé la stabilisation vidéo sur ce profil."
+        case .voiceProcessingUnavailable: return "iOS n’a pas activé le traitement vocal requis pour les modes micro."
         }
     }
 }

@@ -76,7 +76,7 @@ const captureProfileMessage = (profile: NativeCaptureProfile, recording = false)
     ? ' demandée (confirmation iOS en cours)'
     : ''
   const microphone = profile.activeMicrophoneMode
-    ? `, micro ${microphoneModeLabel(profile.activeMicrophoneMode)} (${profile.audioChannels ?? 1} ${profile.audioChannels === 1 ? 'canal' : 'canaux'})`
+    ? `, micro ${microphoneModeLabel(profile.activeMicrophoneMode)} (${profile.audioChannels ?? 1} ${profile.audioChannels === 1 ? 'canal' : 'canaux'}, traitement vocal ${profile.voiceProcessingEnabled ? 'actif' : 'inactif'})`
     : ''
   return `Profil caméra : ${profile.width}×${profile.height} à ${profile.framesPerSecond} i/s, champ ${Math.round(profile.fieldOfView)}°, zoom ${profile.zoomFactor.toFixed(1)}×, stabilisation ${stabilizationLabel(mode)}${state}${microphone}.`
 }

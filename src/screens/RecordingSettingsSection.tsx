@@ -54,15 +54,12 @@ export function RecordingSettingsSection({ settings, recording }: { settings: Se
           </button>
           <button
             type="button"
-            disabled={recording.status !== 'recording'}
             onClick={() => void recording.showMicrophoneModes()}
-            className="pressable mt-2 w-full rounded-xl bg-ink-700 py-3 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+            className="pressable mt-2 w-full rounded-xl bg-ink-700 py-3 text-sm font-semibold"
           >
             Choisir le mode micro iOS
           </button>
-          {recording.status !== 'recording' && (
-            <p className="mt-1 text-xs text-slate-500">Démarre une captation pour ouvrir Automatique, Standard, Isolement de la voix ou Large spectre.</p>
-          )}
+          <p className="mt-1 text-xs text-slate-500">Le choix est possible avant ou pendant la captation et reste mémorisé par iOS pour PrepaTrack.</p>
           {recording.message && <p role="status" className="mt-2 text-xs text-slate-400">{recording.message}</p>}
           <div className="mt-3">
             <RecordingControlBar recording={recording} />
