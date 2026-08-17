@@ -13,7 +13,9 @@
     },
     "production": {
       "autoIncrement": true,
+      "node": "22.18.0",
       "ios": {
+        "image": "latest",
         "scheme": "App",
         "buildConfiguration": "Release"
       }
