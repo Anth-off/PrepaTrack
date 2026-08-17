@@ -26,6 +26,8 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
     private var recordingRequested = false
     private var suspendedForBackground = false
     private var applicationIsActive = true
+    private var captureCamera: AVCaptureDevice?
+    private var requestedStabilizationMode: AVCaptureVideoStabilizationMode = .off
 
     public override func load() {
         NotificationCenter.default.addObserver(
@@ -85,7 +87,10 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
                         self.recordingRequested = true
                         self.suspendedForBackground = false
                         DispatchQueue.main.async {
-                            call.resolve(["startedAt": (self.startedAt ?? Date()).timeIntervalSince1970 * 1_000])
+                            call.resolve([
+                                "startedAt": (self.startedAt ?? Date()).timeIntervalSince1970 * 1_000,
+                                "captureProfile": self.captureProfilePayload(),
+                            ])
                         }
                         return
                     }
@@ -104,7 +109,10 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
                     let startedAt = try self.startCapture()
                     DispatchQueue.main.async {
                         UIApplication.shared.isIdleTimerDisabled = true
-                        call.resolve(["startedAt": startedAt.timeIntervalSince1970 * 1_000])
+                        call.resolve([
+                            "startedAt": startedAt.timeIntervalSince1970 * 1_000,
+                            "captureProfile": self.captureProfilePayload(),
+                        ])
                     }
                 } catch {
                     self.recordingRequested = false
@@ -144,13 +152,30 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
             if let startedAt = self.startedAt {
                 result["startedAt"] = startedAt.timeIntervalSince1970 * 1_000
             }
+            if self.configured {
+                result["captureProfile"] = self.captureProfilePayload()
+            }
             DispatchQueue.main.async { call.resolve(result) }
         }
     }
 
     @objc func test(_ call: CAPPluginCall) {
-        requestPermissions { granted in
-            granted ? call.resolve() : call.reject("Permissions caméra, microphone ou Photos refusées.")
+        requestPermissions { [weak self] granted in
+            guard let self else { return }
+            guard granted else {
+                call.reject("Permissions caméra, microphone ou Photos refusées.")
+                return
+            }
+            self.sessionQueue.async {
+                do {
+                    try self.configureIfNeeded()
+                    DispatchQueue.main.async {
+                        call.resolve(["captureProfile": self.captureProfilePayload()])
+                    }
+                } catch {
+                    DispatchQueue.main.async { call.reject(error.localizedDescription) }
+                }
+            }
         }
     }
 
@@ -208,6 +233,13 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
         let audioChannels = try configureAudioSession()
         configureAudioOutput(channels: audioChannels)
         if !captureSession.isRunning { captureSession.startRunning() }
+        do {
+            try verifyVideoStabilization()
+        } catch {
+            captureSession.stopRunning()
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            throw error
+        }
         let url = recordingsDirectory
             .appendingPathComponent("prepatrack-\(UUID().uuidString).mov")
         let start = Date()
@@ -310,68 +342,178 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
         captureSession.beginConfiguration()
         defer { captureSession.commitConfiguration() }
         captureSession.automaticallyConfiguresApplicationAudioSession = false
-        captureSession.sessionPreset = .hd1280x720
-        guard let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front),
+        guard let profile = selectFrontCaptureProfile(),
               let microphone = AVCaptureDevice.default(for: .audio) else {
             throw RecordingError.deviceUnavailable
         }
+        let camera = profile.device
         let cameraInput = try AVCaptureDeviceInput(device: camera)
         let microphoneInput = try AVCaptureDeviceInput(device: microphone)
-        guard captureSession.canAddInput(cameraInput), captureSession.canAddInput(microphoneInput),
-              captureSession.canAddOutput(movieOutput) else {
-            throw RecordingError.configurationFailed
-        }
-        captureSession.addInput(cameraInput)
-        captureSession.addInput(microphoneInput)
-        captureSession.addOutput(movieOutput)
-        // 1× est le champ de vision natif maximal. Sur l'iPhone 15 Plus, la
-        // caméra TrueDepth avant est un capteur unique : un facteur inférieur
-        // à 1× n'existe pas et ne ferait qu'inventer des pixels.
+        var cameraAdded = false
+        var microphoneAdded = false
+        var outputAdded = false
         do {
+            guard captureSession.canAddInput(cameraInput), captureSession.canAddInput(microphoneInput),
+                  captureSession.canAddOutput(movieOutput) else {
+                throw RecordingError.configurationFailed
+            }
+            captureSession.addInput(cameraInput)
+            cameraAdded = true
+            captureSession.addInput(microphoneInput)
+            microphoneAdded = true
+            captureSession.addOutput(movieOutput)
+            outputAdded = true
             try camera.lockForConfiguration()
-            camera.videoZoomFactor = max(1, camera.minAvailableVideoZoomFactor)
+            defer { camera.unlockForConfiguration() }
+            camera.activeFormat = profile.format
+            camera.videoZoomFactor = camera.minAvailableVideoZoomFactor
+            // Conserver la correction Apple évite les déformations de visages
+            // et de lignes droites aux bords. La sélection compare donc le
+            // champ réellement disponible après cette correction.
             if camera.isGeometricDistortionCorrectionSupported {
                 camera.isGeometricDistortionCorrectionEnabled = true
             }
-            // Une cadence fixe donne à la stabilisation cinématique une
-            // fenêtre temporelle régulière, particulièrement importante sur
-            // un chariot qui vibre. On garde 30 i/s pour limiter le flou de
-            // mouvement sans augmenter la définition ni la taille du fichier.
-            let preferredFPS = 30.0
-            if camera.activeFormat.videoSupportedFrameRateRanges.contains(where: {
-                $0.minFrameRate <= preferredFPS && $0.maxFrameRate >= preferredFPS
-            }) {
-                let duration = CMTime(value: 1, timescale: 30)
-                camera.activeVideoMinFrameDuration = duration
-                camera.activeVideoMaxFrameDuration = duration
-            }
-            camera.unlockForConfiguration()
+            let duration = CMTime(value: 1, timescale: 30)
+            camera.activeVideoMinFrameDuration = duration
+            camera.activeVideoMaxFrameDuration = duration
         } catch {
-            // Le réglage par défaut reste utilisable si iOS réserve brièvement
-            // la caméra pendant une transition système.
+            if outputAdded { captureSession.removeOutput(movieOutput) }
+            if microphoneAdded { captureSession.removeInput(microphoneInput) }
+            if cameraAdded { captureSession.removeInput(cameraInput) }
+            throw error
         }
-        if let connection = movieOutput.connection(with: .video) {
-            if connection.isVideoOrientationSupported { connection.videoOrientation = .portrait }
-            if connection.isVideoStabilizationSupported {
-                let format = camera.activeFormat
-                if #available(iOS 18.0, *),
-                   format.isVideoStabilizationModeSupported(.cinematicExtendedEnhanced) {
-                    // Mode recommandé par Apple pour la meilleure stabilité.
-                    // Il recadre davantage, mais le zoom optique reste à son
-                    // minimum afin de conserver tout le champ encore disponible.
-                    connection.preferredVideoStabilizationMode = .cinematicExtendedEnhanced
-                } else if format.isVideoStabilizationModeSupported(.cinematicExtended) {
-                    connection.preferredVideoStabilizationMode = .cinematicExtended
-                } else if format.isVideoStabilizationModeSupported(.cinematic) {
-                    connection.preferredVideoStabilizationMode = .cinematic
-                } else if format.isVideoStabilizationModeSupported(.standard) {
-                    connection.preferredVideoStabilizationMode = .standard
-                } else {
-                    connection.preferredVideoStabilizationMode = .auto
+        captureCamera = camera
+        requestedStabilizationMode = profile.stabilizationMode
+        applyVideoConnectionConfiguration()
+        configured = true
+    }
+
+    /**
+     * Sélectionne explicitement le format avant 720p/30 stabilisé ayant le
+     * plus grand champ horizontal. Un simple preset pouvait être réévalué au
+     * commit de la session et rendre le mode demandé inactif silencieusement.
+     */
+    private func selectFrontCaptureProfile() -> VideoCaptureProfile? {
+        let discovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera],
+            mediaType: .video,
+            position: .front
+        )
+        let allCandidates = discovery.devices.flatMap { device in
+            device.formats.compactMap { format -> VideoCaptureProfile? in
+                let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+                guard format.videoSupportedFrameRateRanges.contains(where: {
+                    $0.minFrameRate <= 30 && $0.maxFrameRate >= 30
+                }), let stabilization = strongestStabilizationMode(for: format) else {
+                    return nil
                 }
+                return VideoCaptureProfile(
+                    device: device,
+                    format: format,
+                    dimensions: dimensions,
+                    fieldOfView: format.geometricDistortionCorrectedVideoFieldOfView,
+                    stabilizationMode: stabilization
+                )
             }
         }
-        configured = true
+        let candidates720p = allCandidates.filter {
+            $0.dimensions.width == 1_280 && $0.dimensions.height == 720
+        }
+        let candidates1080p = allCandidates.filter {
+            $0.dimensions.width == 1_920 && $0.dimensions.height == 1_080
+        }
+        let candidates = !candidates720p.isEmpty ? candidates720p : candidates1080p
+        guard let bestRank = candidates.map({ stabilizationRank($0.stabilizationMode) }).max() else {
+            return nil
+        }
+        return candidates
+            .filter { stabilizationRank($0.stabilizationMode) == bestRank }
+            .max { $0.fieldOfView < $1.fieldOfView }
+    }
+
+    private func strongestStabilizationMode(
+        for format: AVCaptureDevice.Format
+    ) -> AVCaptureVideoStabilizationMode? {
+        if #available(iOS 18.0, *),
+           format.isVideoStabilizationModeSupported(.cinematicExtendedEnhanced) {
+            return .cinematicExtendedEnhanced
+        }
+        if format.isVideoStabilizationModeSupported(.cinematicExtended) { return .cinematicExtended }
+        if format.isVideoStabilizationModeSupported(.cinematic) { return .cinematic }
+        if format.isVideoStabilizationModeSupported(.standard) { return .standard }
+        return nil
+    }
+
+    private func applyVideoConnectionConfiguration() {
+        guard let connection = movieOutput.connection(with: .video) else { return }
+        if connection.isVideoOrientationSupported { connection.videoOrientation = .portrait }
+        if connection.isVideoStabilizationSupported {
+            connection.preferredVideoStabilizationMode = requestedStabilizationMode
+        }
+    }
+
+    private func verifyVideoStabilization() throws {
+        guard let connection = movieOutput.connection(with: .video),
+              connection.isVideoStabilizationSupported else {
+            throw RecordingError.stabilizationUnavailable
+        }
+        applyVideoConnectionConfiguration()
+        if !waitForActiveStabilization(connection) {
+            requestedStabilizationMode = .auto
+            connection.preferredVideoStabilizationMode = .auto
+        }
+        guard waitForActiveStabilization(connection) else {
+            throw RecordingError.stabilizationUnavailable
+        }
+    }
+
+    private func waitForActiveStabilization(_ connection: AVCaptureConnection) -> Bool {
+        for _ in 0..<10 {
+            if connection.activeVideoStabilizationMode != .off { return true }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return connection.activeVideoStabilizationMode != .off
+    }
+
+    private func captureProfilePayload() -> [String: Any] {
+        guard let camera = captureCamera else { return [:] }
+        let dimensions = CMVideoFormatDescriptionGetDimensions(camera.activeFormat.formatDescription)
+        let connection = movieOutput.connection(with: .video)
+        return [
+            "camera": camera.localizedName,
+            "width": Int(dimensions.width),
+            "height": Int(dimensions.height),
+            "framesPerSecond": 30,
+            "fieldOfView": Double(camera.activeFormat.geometricDistortionCorrectedVideoFieldOfView),
+            "zoomFactor": Double(camera.videoZoomFactor),
+            "requestedStabilization": stabilizationName(requestedStabilizationMode),
+            "activeStabilization": stabilizationName(connection?.activeVideoStabilizationMode ?? .off),
+        ]
+    }
+
+    private func stabilizationRank(_ mode: AVCaptureVideoStabilizationMode) -> Int {
+        if #available(iOS 18.0, *), mode == .cinematicExtendedEnhanced { return 5 }
+        switch mode {
+        case .cinematicExtended: return 4
+        case .cinematic: return 3
+        case .standard: return 2
+        case .auto: return 1
+        default: return 0
+        }
+    }
+
+    private func stabilizationName(_ mode: AVCaptureVideoStabilizationMode) -> String {
+        if #available(iOS 18.0, *), mode == .cinematicExtendedEnhanced {
+            return "cinematicExtendedEnhanced"
+        }
+        switch mode {
+        case .cinematicExtended: return "cinematicExtended"
+        case .cinematic: return "cinematic"
+        case .standard: return "standard"
+        case .auto: return "auto"
+        case .off: return "off"
+        default: return "other"
+        }
     }
 
     /**
@@ -439,10 +581,20 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
 private enum RecordingError: LocalizedError {
     case deviceUnavailable
     case configurationFailed
+    case stabilizationUnavailable
     var errorDescription: String? {
         switch self {
         case .deviceUnavailable: return "Caméra avant ou microphone introuvable."
         case .configurationFailed: return "Impossible de configurer la capture vidéo."
+        case .stabilizationUnavailable: return "iOS n’a pas activé la stabilisation vidéo sur ce profil."
         }
     }
+}
+
+private struct VideoCaptureProfile {
+    let device: AVCaptureDevice
+    let format: AVCaptureDevice.Format
+    let dimensions: CMVideoDimensions
+    let fieldOfView: Float
+    let stabilizationMode: AVCaptureVideoStabilizationMode
 }

@@ -10,11 +10,28 @@ interface FinishedEvent {
 interface ResumedEvent { startedAt: number }
 interface ResumeFailedEvent { error?: string }
 
+export interface NativeCaptureProfile {
+  camera: string
+  width: number
+  height: number
+  framesPerSecond: number
+  fieldOfView: number
+  zoomFactor: number
+  requestedStabilization: string
+  activeStabilization: string
+}
+
+interface NativeRecordingState {
+  recording: boolean
+  startedAt?: number
+  captureProfile?: NativeCaptureProfile
+}
+
 interface NativeRecordingPlugin {
-  start(options: { maxDurationSeconds: number }): Promise<{ startedAt: number }>
+  start(options: { maxDurationSeconds: number }): Promise<{ startedAt: number; captureProfile?: NativeCaptureProfile }>
   stop(): Promise<{ saved: boolean }>
-  status(): Promise<{ recording: boolean; startedAt?: number }>
-  test(): Promise<void>
+  status(): Promise<NativeRecordingState>
+  test(): Promise<{ captureProfile?: NativeCaptureProfile }>
   addListener(eventName: 'recordingFinished', listener: (event: FinishedEvent) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'recordingResumed', listener: (event: ResumedEvent) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'recordingResumeFailed', listener: (event: ResumeFailedEvent) => void): Promise<PluginListenerHandle>

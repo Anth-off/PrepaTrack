@@ -13,6 +13,7 @@
     "lint": "eslint src scripts vite.config.ts vitest.config.ts",
     "typecheck": "tsc -b",
     "build:vite": "vite build",
+    "eas-build-post-install": "npm run build && cap copy ios",
     "ios:add": "npm run build && cap add ios",
     "ios:sync": "npm run build && cap sync ios",
     "db:check": "node scripts/db-check.mjs",

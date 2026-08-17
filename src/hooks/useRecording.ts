@@ -24,6 +24,7 @@ import {
   startNativeRecording,
   stopNativeRecording,
   testNativeRecording,
+  type NativeCaptureProfile,
 } from '../native/recording'
 
 export type RecordingStatus = 'disabled' | 'idle' | 'requesting' | 'recording' | 'stopping' | 'interrupted' | 'error'
@@ -47,6 +48,25 @@ const CONSTRAINTS: MediaStreamConstraints = {
     height: { ideal: 720, max: 720 },
     frameRate: { ideal: 24, max: 30 },
   },
+}
+
+const stabilizationLabel = (mode: string) => ({
+  cinematicExtendedEnhanced: 'cinématique renforcée',
+  cinematicExtended: 'cinématique étendue',
+  cinematic: 'cinématique',
+  standard: 'standard',
+  auto: 'automatique',
+  off: 'inactive',
+}[mode] ?? mode)
+
+const captureProfileMessage = (profile: NativeCaptureProfile, recording = false) => {
+  const mode = recording && profile.activeStabilization !== 'off'
+    ? profile.activeStabilization
+    : profile.requestedStabilization
+  const state = recording && profile.activeStabilization === 'off'
+    ? ' demandée (confirmation iOS en cours)'
+    : ''
+  return `Profil caméra : ${profile.width}×${profile.height} à ${profile.framesPerSecond} i/s, champ ${Math.round(profile.fieldOfView)}°, zoom ${profile.zoomFactor.toFixed(1)}×, stabilisation ${stabilizationLabel(mode)}${state}.`
 }
 
 /**
@@ -199,6 +219,14 @@ export function useRecording(
         }
         setStartedAt(result.startedAt)
         setStatus('recording')
+        if (result.captureProfile) setMessage(captureProfileMessage(result.captureProfile, true))
+        window.setTimeout(() => {
+          void nativeRecordingStatus().then((value) => {
+            if (value.recording && value.captureProfile) {
+              setMessage(captureProfileMessage(value.captureProfile, true))
+            }
+          })
+        }, 1_000)
         return
       }
       await purgeExpiredRecordings(retentionDays)
@@ -233,8 +261,10 @@ export function useRecording(
     }
     try {
       if (native) {
-        await testNativeRecording()
-        setMessage('Caméra avant, microphone et Photos disponibles.')
+        const result = await testNativeRecording()
+        setMessage(result.captureProfile
+          ? `Caméra avant, microphone et Photos disponibles. ${captureProfileMessage(result.captureProfile)}`
+          : 'Caméra avant, microphone et Photos disponibles.')
         return true
       }
       const stream = await navigator.mediaDevices.getUserMedia(CONSTRAINTS)
