@@ -363,7 +363,9 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
         defer { captureSession.commitConfiguration() }
         captureSession.usesApplicationAudioSession = true
         captureSession.automaticallyConfiguresApplicationAudioSession = false
-        captureSession.configuresApplicationAudioSessionToMixWithOthers = false
+        if #available(iOS 18.0, *) {
+            captureSession.configuresApplicationAudioSessionToMixWithOthers = false
+        }
         guard let profile = selectFrontCaptureProfile(),
               let microphone = AVCaptureDevice.default(for: .audio) else {
             throw RecordingError.deviceUnavailable
