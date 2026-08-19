@@ -1,5 +1,9 @@
-/** Un enregistrement dure au maximum une heure dans un fichier unique. */
-export const RECORDING_CHUNK_MS = 60 * 60_000
+/**
+ * Les fichiers courts sont finalisés régulièrement. Après un crash brutal, au
+ * pire seul l’extrait courant doit être récupéré ; les précédents sont déjà
+ * durables et l’arrêt reste rapide.
+ */
+export const RECORDING_CHUNK_MS = 10 * 60_000
 export const RECORDING_VIDEO_BITS_PER_SECOND = 1_500_000
 export const RECORDING_AUDIO_BITS_PER_SECOND = 64_000
 export const RECORDING_BITS_PER_SECOND =

@@ -21,6 +21,10 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
     private var startedAt: Date?
     private var currentURL: URL?
     private var stopCalls: [CAPPluginCall] = []
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var pendingPhotoOperations = 0
+    /** Des fichiers courts limitent la perte maximale après un crash brutal. */
+    private var segmentDurationSeconds: Double = 10 * 60
     // L'intention utilisateur reste active quand iOS coupe matériellement la
     // caméra au verrouillage. Elle permet une reprise dans un nouveau fichier.
     private var recordingRequested = false
@@ -40,6 +44,12 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
             name: UIApplication.didBecomeActiveNotification,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationWillTerminate),
+            name: UIApplication.willTerminateNotification,
+            object: nil
+        )
         recoverPendingRecordings()
     }
 
@@ -57,8 +67,32 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
     }
 
     @objc private func applicationDidEnterBackground() {
+        beginBackgroundFinalization()
         sessionQueue.async {
             self.applicationIsActive = false
+            guard self.recordingRequested ||
+                    self.movieOutput.isRecording ||
+                    self.currentURL != nil ||
+                    self.pendingPhotoOperations > 0 else {
+                self.endBackgroundFinalization()
+                return
+            }
+            guard self.recordingRequested else { return }
+            self.suspendedForBackground = true
+            if self.movieOutput.isRecording { self.movieOutput.stopRecording() }
+        }
+    }
+
+    @objc private func applicationWillTerminate() {
+        beginBackgroundFinalization()
+        sessionQueue.async {
+            guard self.recordingRequested ||
+                    self.movieOutput.isRecording ||
+                    self.currentURL != nil ||
+                    self.pendingPhotoOperations > 0 else {
+                self.endBackgroundFinalization()
+                return
+            }
             guard self.recordingRequested else { return }
             self.suspendedForBackground = true
             if self.movieOutput.isRecording { self.movieOutput.stopRecording() }
@@ -81,6 +115,8 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
             }
             self.sessionQueue.async {
                 do {
+                    let requestedDuration = Double(call.getInt("maxDurationSeconds") ?? 600)
+                    self.segmentDurationSeconds = min(600, max(60, requestedDuration))
                     self.recordingRequested = true
                     self.suspendedForBackground = false
                     guard !self.movieOutput.isRecording else {
@@ -108,8 +144,8 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
             self.suspendedForBackground = false
             guard self.movieOutput.isRecording else {
                 if self.currentURL != nil {
-                    // Le fichier est déjà arrêté mais Photos termine encore son
-                    // import : la clôture doit attendre le même accusé final.
+                    // AVFoundation termine encore le conteneur local. L'appel
+                    // sera libéré dès que le MOV durable sera exploitable.
                     self.stopCalls.append(call)
                     return
                 }
@@ -122,9 +158,13 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
     }
 
     @objc func status(_ call: CAPPluginCall) {
-        var result: [String: Any] = ["recording": movieOutput.isRecording]
-        if let startedAt { result["startedAt"] = startedAt.timeIntervalSince1970 * 1_000 }
-        call.resolve(result)
+        sessionQueue.async {
+            var result: [String: Any] = ["recording": self.movieOutput.isRecording]
+            if let startedAt = self.startedAt {
+                result["startedAt"] = startedAt.timeIntervalSince1970 * 1_000
+            }
+            DispatchQueue.main.async { call.resolve(result) }
+        }
     }
 
     @objc func test(_ call: CAPPluginCall) {
@@ -141,59 +181,155 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
     ) {
         let successfullyFinished = (error as NSError?)?
             .userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool ?? (error == nil)
-        guard FileManager.default.fileExists(atPath: outputFileURL.path) else {
-            finish(saved: false, error: error?.localizedDescription ?? "Enregistrement interrompu", sourceURL: nil)
-            return
-        }
-        // Même si AVFoundation signale une interruption, le conteneur fragmenté
-        // peut rester lisible. On tente donc l'import et on ne supprime jamais
-        // le fichier durable tant que Photos ne l'a pas confirmé.
-        saveToPhotos(outputFileURL) { [weak self] saved, photoError in
-            let reason = photoError ?? (!successfullyFinished ? error?.localizedDescription : nil)
-            self?.finish(saved: saved, error: reason, sourceURL: outputFileURL)
+        sessionQueue.async {
+            guard FileManager.default.fileExists(atPath: outputFileURL.path) else {
+                self.finishWithoutFile(error?.localizedDescription ?? "Enregistrement interrompu")
+                return
+            }
+
+            let nsError = error as NSError?
+            let reachedDurationLimit =
+                nsError?.domain == AVFoundationErrorDomain &&
+                nsError?.code == AVError.Code.maximumDurationReached.rawValue
+            let shouldRotate =
+                reachedDurationLimit &&
+                self.recordingRequested &&
+                !self.suspendedForBackground &&
+                self.applicationIsActive
+
+            self.currentURL = nil
+            let calls = self.stopCalls
+            self.stopCalls.removeAll()
+
+            var continues = false
+            var rotationError: String?
+            if shouldRotate {
+                do {
+                    _ = try self.startCapture(preserveSessionStart: true)
+                    continues = true
+                } catch {
+                    self.recordingRequested = false
+                    rotationError = error.localizedDescription
+                }
+            }
+
+            if !continues {
+                self.captureSession.stopRunning()
+                try? AVAudioSession.sharedInstance().setActive(
+                    false,
+                    options: .notifyOthersOnDeactivation
+                )
+                self.startedAt = nil
+            }
+
+            // Le fichier MOV est maintenant finalisé dans Application Support :
+            // l'arrêt utilisateur n'attend plus le lent import dans Photos.
+            // Même si iOS suspend l'app juste après, ce fichier sera récupéré au
+            // prochain lancement.
+            DispatchQueue.main.async {
+                UIApplication.shared.isIdleTimerDisabled = continues
+                let securedPayload: [String: Any] = [
+                    "saved": false,
+                    "pending": true,
+                ]
+                calls.forEach { $0.resolve(securedPayload) }
+            }
+
+            let originalError =
+                rotationError ??
+                (!successfullyFinished && !reachedDurationLimit ? error?.localizedDescription : nil)
+            self.pendingPhotoOperations += 1
+            self.prepareForPhotos(outputFileURL) { [weak self] preparedURL, preparationError in
+                guard let self else { return }
+                self.saveToPhotos(preparedURL) { saved, photoError in
+                    self.sessionQueue.async {
+                        if saved {
+                            try? FileManager.default.removeItem(at: outputFileURL)
+                            if preparedURL != outputFileURL {
+                                try? FileManager.default.removeItem(at: preparedURL)
+                            }
+                        } else if preparedURL != outputFileURL {
+                            try? FileManager.default.removeItem(at: preparedURL)
+                        }
+
+                        // À la jonction automatique, AVCaptureMovieFileOutput
+                        // reste brièvement inactif entre deux fichiers. C'est
+                        // l'intention utilisateur et le cycle de vie qui font
+                        // foi, sinon un ancien import ferait clignoter l'UI à
+                        // tort sur « arrêté » pendant cette fenêtre.
+                        let isRecording =
+                            self.recordingRequested &&
+                            self.applicationIsActive &&
+                            !self.suspendedForBackground
+                        let willResume =
+                            self.recordingRequested &&
+                            self.suspendedForBackground &&
+                            !isRecording
+                        let reason = photoError ?? preparationError ?? originalError
+                        DispatchQueue.main.async {
+                            var payload: [String: Any] = [
+                                "saved": saved,
+                                "continues": isRecording,
+                            ]
+                            if let reason { payload["error"] = reason }
+                            if willResume {
+                                payload["interrupted"] = true
+                                payload["willResume"] = true
+                            }
+                            self.notifyListeners("recordingFinished", data: payload)
+                        }
+                        self.pendingPhotoOperations = max(0, self.pendingPhotoOperations - 1)
+                        if self.pendingPhotoOperations == 0 &&
+                           (self.applicationIsActive || !self.movieOutput.isRecording) {
+                            self.endBackgroundFinalization()
+                        }
+                        // Le déverrouillage peut arriver pendant la préparation
+                        // ou l'import dans Photos.
+                        self.resumeRecordingIfNeeded()
+                    }
+                }
+            }
         }
     }
 
-    private func finish(saved: Bool, error: String?, sourceURL: URL?) {
-        sessionQueue.async {
-            self.captureSession.stopRunning()
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            if saved, let url = sourceURL { try? FileManager.default.removeItem(at: url) }
-            self.currentURL = nil
-            self.startedAt = nil
-            let calls = self.stopCalls
-            self.stopCalls.removeAll()
-            let interruptedForBackground = self.recordingRequested && self.suspendedForBackground
-            DispatchQueue.main.async {
-                UIApplication.shared.isIdleTimerDisabled = false
-                var payload: [String: Any] = ["saved": saved]
-                if let error { payload["error"] = error }
-                if interruptedForBackground {
-                    payload["interrupted"] = true
-                    payload["willResume"] = true
-                }
-                calls.forEach { saved ? $0.resolve(payload) : $0.reject(error ?? "La vidéo n’a pas pu être ajoutée à Photos.") }
-                self.notifyListeners("recordingFinished", data: payload)
-            }
-            // Le déverrouillage peut arriver pendant l'import dans Photos.
-            // Retenter ici évite de perdre cette course entre les callbacks.
-            self.resumeRecordingIfNeeded()
+    private func finishWithoutFile(_ error: String) {
+        captureSession.stopRunning()
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        currentURL = nil
+        startedAt = nil
+        recordingRequested = false
+        suspendedForBackground = false
+        let calls = stopCalls
+        stopCalls.removeAll()
+        DispatchQueue.main.async {
+            UIApplication.shared.isIdleTimerDisabled = false
+            calls.forEach { $0.reject(error) }
+            self.notifyListeners("recordingFinished", data: [
+                "saved": false,
+                "error": error,
+            ])
         }
+        endBackgroundFinalization()
     }
 
     /** Démarre un nouveau fichier avec la configuration déjà validée. */
-    private func startCapture() throws -> Date {
+    private func startCapture(preserveSessionStart: Bool = false) throws -> Date {
         try configureIfNeeded()
         let audioChannels = try configureAudioSession()
         configureAudioOutput(channels: audioChannels)
         if !captureSession.isRunning { captureSession.startRunning() }
         let url = recordingsDirectory
             .appendingPathComponent("prepatrack-\(UUID().uuidString).mov")
-        let start = Date()
+        let start = preserveSessionStart ? (startedAt ?? Date()) : Date()
         currentURL = url
         startedAt = start
-        movieOutput.maxRecordedDuration = CMTime(seconds: 3_600, preferredTimescale: 600)
-        movieOutput.movieFragmentInterval = CMTime(seconds: 5, preferredTimescale: 600)
+        movieOutput.maxRecordedDuration = CMTime(
+            seconds: segmentDurationSeconds,
+            preferredTimescale: 600
+        )
+        // Une table de fragments fréquente rend le dernier fichier beaucoup
+        // plus récupérable après un crash ou une extinction brutale.
+        movieOutput.movieFragmentInterval = CMTime(seconds: 1, preferredTimescale: 600)
         movieOutput.startRecording(to: url, recordingDelegate: self)
         return start
     }
@@ -238,6 +374,109 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
     }
 
     /**
+     * Remuxe sans réencoder et place le début des pistes audio et vidéo au même
+     * instant. Cela retire le léger décalage de démarrage observé sur certains
+     * iPhone sans ralentir l'arrêt : ce travail se fait après que le fichier
+     * durable a déjà été rendu à l'interface.
+     */
+    private func prepareForPhotos(
+        _ sourceURL: URL,
+        completion: @escaping (URL, String?) -> Void
+    ) {
+        let asset = AVURLAsset(url: sourceURL)
+        let keys = ["tracks", "duration", "playable"]
+        asset.loadValuesAsynchronously(forKeys: keys) {
+            var loadingError: NSError?
+            guard keys.allSatisfy({
+                asset.statusOfValue(forKey: $0, error: &loadingError) == .loaded
+            }) else {
+                completion(
+                    sourceURL,
+                    loadingError?.localizedDescription ?? "La vidéo brute sera importée sans correction audio."
+                )
+                return
+            }
+
+            let videoTracks = asset.tracks(withMediaType: .video)
+            let audioTracks = asset.tracks(withMediaType: .audio)
+            guard !videoTracks.isEmpty, !audioTracks.isEmpty else {
+                completion(sourceURL, audioTracks.isEmpty ? "La piste audio est absente." : nil)
+                return
+            }
+
+            let composition = AVMutableComposition()
+            do {
+                for source in videoTracks {
+                    guard let target = composition.addMutableTrack(
+                        withMediaType: .video,
+                        preferredTrackID: kCMPersistentTrackID_Invalid
+                    ) else { continue }
+                    try target.insertTimeRange(source.timeRange, of: source, at: .zero)
+                    target.preferredTransform = source.preferredTransform
+                }
+                for source in audioTracks {
+                    guard let target = composition.addMutableTrack(
+                        withMediaType: .audio,
+                        preferredTrackID: kCMPersistentTrackID_Invalid
+                    ) else { continue }
+                    try target.insertTimeRange(source.timeRange, of: source, at: .zero)
+                }
+            } catch {
+                completion(sourceURL, error.localizedDescription)
+                return
+            }
+
+            let normalizedURL = FileManager.default.temporaryDirectory
+                // Ne correspond volontairement pas au préfixe de récupération
+                // des sources brutes, afin d'éviter un double import après crash.
+                .appendingPathComponent("normalized-prepatrack-\(UUID().uuidString).mov")
+            guard let exporter = AVAssetExportSession(
+                asset: composition,
+                presetName: AVAssetExportPresetPassthrough
+            ) else {
+                completion(sourceURL, "La normalisation audio n'est pas disponible.")
+                return
+            }
+            exporter.outputURL = normalizedURL
+            exporter.outputFileType = .mov
+            exporter.shouldOptimizeForNetworkUse = false
+            exporter.exportAsynchronously {
+                if exporter.status == .completed,
+                   FileManager.default.fileExists(atPath: normalizedURL.path) {
+                    completion(normalizedURL, nil)
+                } else {
+                    try? FileManager.default.removeItem(at: normalizedURL)
+                    completion(
+                        sourceURL,
+                        exporter.error?.localizedDescription ?? "La vidéo brute sera importée sans correction audio."
+                    )
+                }
+            }
+        }
+    }
+
+    private func beginBackgroundFinalization() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard backgroundTask == .invalid else { return }
+        backgroundTask = UIApplication.shared.beginBackgroundTask(
+            withName: "Finaliser la vidéo PrepaTrack"
+        ) { [weak self] in
+            // Le MOV fragmenté reste dans Application Support. S'il n'a pas eu
+            // le temps d'être importé, recoverPendingRecordings() le reprendra.
+            self?.endBackgroundFinalization()
+        }
+    }
+
+    private func endBackgroundFinalization() {
+        DispatchQueue.main.async {
+            guard self.backgroundTask != .invalid else { return }
+            let task = self.backgroundTask
+            self.backgroundTask = .invalid
+            UIApplication.shared.endBackgroundTask(task)
+        }
+    }
+
+    /**
      * Récupère les captures abandonnées par une extinction, un crash ou une
      * ancienne version. Le dossier temporaire est aussi inspecté pour sauver
      * les fichiers laissés par les builds précédentes.
@@ -253,24 +492,18 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
             at: manager.temporaryDirectory,
             includingPropertiesForKeys: [.fileSizeKey],
             options: [.skipsHiddenFiles]
-        )) ?? []).filter { $0.lastPathComponent.hasPrefix("prepatrack-") && $0.pathExtension == "mov" }
+        )) ?? []).filter {
+            $0.lastPathComponent.hasPrefix("prepatrack-") &&
+            !$0.lastPathComponent.hasPrefix("prepatrack-normalized-") &&
+            $0.pathExtension == "mov"
+        }
         let pending = (durable + temporary).filter {
             ((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0
         }
         guard !pending.isEmpty else { return }
 
         let importFiles = { [weak self] in
-            guard let self else { return }
-            for url in pending {
-                self.saveToPhotos(url) { saved, error in
-                    if saved { try? manager.removeItem(at: url) }
-                    DispatchQueue.main.async {
-                        var payload: [String: Any] = ["saved": saved, "recovered": true]
-                        if let error { payload["error"] = error }
-                        self.notifyListeners("recordingFinished", data: payload)
-                    }
-                }
-            }
+            self?.recoverPendingRecordings(pending, at: 0)
         }
         let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
         if status == .authorized || status == .limited {
@@ -282,6 +515,37 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
         }
         // En cas de refus, les fichiers restent intacts pour une prochaine
         // ouverture après réactivation de l'autorisation dans Réglages iOS.
+    }
+
+    /** Importe en série pour ne pas saturer Photos au lancement. */
+    private func recoverPendingRecordings(_ pending: [URL], at index: Int) {
+        guard index < pending.count else { return }
+        let sourceURL = pending[index]
+        prepareForPhotos(sourceURL) { [weak self] preparedURL, preparationError in
+            guard let self else { return }
+            self.saveToPhotos(preparedURL) { saved, photoError in
+                if saved {
+                    try? FileManager.default.removeItem(at: sourceURL)
+                    if preparedURL != sourceURL {
+                        try? FileManager.default.removeItem(at: preparedURL)
+                    }
+                } else if preparedURL != sourceURL {
+                    try? FileManager.default.removeItem(at: preparedURL)
+                }
+                DispatchQueue.main.async {
+                    var payload: [String: Any] = [
+                        "saved": saved,
+                        "recovered": true,
+                        "continues": false,
+                    ]
+                    if let error = photoError ?? preparationError {
+                        payload["error"] = error
+                    }
+                    self.notifyListeners("recordingFinished", data: payload)
+                }
+                self.recoverPendingRecordings(pending, at: index + 1)
+            }
+        }
     }
 
     private func configureIfNeeded() throws {
@@ -361,6 +625,9 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.record, mode: .videoRecording, options: [])
         try? session.setPreferredSampleRate(48_000)
+        // Un tampon court réduit la latence d'entrée qui se manifestait par un
+        // léger retard du son sur l'image après multiplexage.
+        try? session.setPreferredIOBufferDuration(0.005)
         try session.setActive(true)
 
         if let builtIn = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
@@ -373,6 +640,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
             }
         }
         if session.inputNumberOfChannels >= 2 {
+            try? session.setPreferredInputNumberOfChannels(2)
             try? session.setPreferredInputOrientation(.portrait)
         }
         return max(1, min(2, session.inputNumberOfChannels))
@@ -397,7 +665,8 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
         let group = DispatchGroup()
         var camera = AVCaptureDevice.authorizationStatus(for: .video) == .authorized
         var microphone = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        var photos = PHPhotoLibrary.authorizationStatus(for: .addOnly) == .authorized
+        let photoStatus = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        var photos = photoStatus == .authorized || photoStatus == .limited
         if AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined {
             group.enter(); AVCaptureDevice.requestAccess(for: .video) { camera = $0; group.leave() }
         }

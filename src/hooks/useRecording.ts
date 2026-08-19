@@ -162,7 +162,11 @@ export function useRecording(
         const result = await stopNativeRecording()
         setStartedAt(undefined)
         setStatus(enabled ? (reason === 'interrupted' ? 'interrupted' : 'idle') : 'disabled')
-        if (result.saved) setMessage('Vidéo enregistrée dans Photos.')
+        if (result.pending) {
+          setMessage('Vidéo sécurisée sur l’iPhone. Ajout à Photos en arrière-plan…')
+        } else if (result.saved) {
+          setMessage('Vidéo enregistrée dans Photos.')
+        }
       } catch (error) {
         setStatus('error')
         setMessage(mediaErrorMessage(error))
@@ -253,6 +257,19 @@ export function useRecording(
     let resumedHandle: Awaited<ReturnType<typeof onNativeRecordingResumed>> | undefined
     let failedHandle: Awaited<ReturnType<typeof onNativeRecordingResumeFailed>> | undefined
     void onNativeRecordingFinished((event) => {
+      if (event.recovered) {
+        setMessage(event.saved
+          ? 'Une vidéo interrompue a été récupérée et ajoutée à Photos.'
+          : event.error ?? 'Une vidéo interrompue reste sécurisée sur l’iPhone.')
+        return
+      }
+      if (event.continues) {
+        setStatus('recording')
+        setMessage(event.saved
+          ? 'Extrait sécurisé dans Photos. L’enregistrement continue.'
+          : 'L’enregistrement continue ; un extrait reste sécurisé sur l’iPhone.')
+        return
+      }
       setStartedAt(undefined)
       if (event.willResume) {
         setStatus(enabled ? 'requesting' : 'disabled')

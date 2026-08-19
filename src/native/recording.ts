@@ -1,7 +1,10 @@
 import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core'
+import { RECORDING_CHUNK_MS } from '../core/recording'
 
 interface FinishedEvent {
   saved: boolean
+  continues?: boolean
+  recovered?: boolean
   error?: string
   interrupted?: boolean
   willResume?: boolean
@@ -12,7 +15,7 @@ interface ResumeFailedEvent { error?: string }
 
 interface NativeRecordingPlugin {
   start(options: { maxDurationSeconds: number }): Promise<{ startedAt: number }>
-  stop(): Promise<{ saved: boolean }>
+  stop(): Promise<{ saved: boolean; pending?: boolean }>
   status(): Promise<{ recording: boolean; startedAt?: number }>
   test(): Promise<void>
   addListener(eventName: 'recordingFinished', listener: (event: FinishedEvent) => void): Promise<PluginListenerHandle>
@@ -22,7 +25,8 @@ interface NativeRecordingPlugin {
 
 const plugin = registerPlugin<NativeRecordingPlugin>('NativeRecording')
 export const nativeRecordingSupported = () => Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'ios'
-export const startNativeRecording = () => plugin.start({ maxDurationSeconds: 3_600 })
+export const startNativeRecording = () =>
+  plugin.start({ maxDurationSeconds: RECORDING_CHUNK_MS / 1_000 })
 export const stopNativeRecording = () => plugin.stop()
 export const nativeRecordingStatus = () => plugin.status()
 export const testNativeRecording = () => plugin.test()

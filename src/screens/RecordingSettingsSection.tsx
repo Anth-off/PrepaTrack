@@ -43,7 +43,7 @@ export function RecordingSettingsSection({ settings, recording }: { settings: Se
             </select>
           </label>
           <p className="mt-2 text-xs text-slate-500">
-            Qualité équilibrée 720p à 30 i/s : environ {estimatedRecordingMegabytes(7.5)} Mo pour 7 h 30, en fichiers d’une heure maximum. Sur iPhone, le zoom avant reste à son minimum et la meilleure stabilisation cinématique disponible est activée. Le son utilise le mode vidéo Apple à 48 kHz, le microphone avant et le stéréo haute qualité lorsque l’appareil le permet. Chaque fichier reste dans le stockage durable jusqu’à ce que Photos confirme son import, puis il est récupéré automatiquement après une interruption. Les vidéos sont exclues de Supabase et des sauvegardes JSON.
+            Qualité équilibrée 720p à 30 i/s : environ {estimatedRecordingMegabytes(7.5)} Mo pour 7 h 30, en extraits de 10 minutes maximum. Sur iPhone, le zoom avant reste à son minimum et la meilleure stabilisation cinématique disponible est activée. Le son utilise le mode vidéo Apple à 48 kHz, avec une faible latence et un alignement automatique des pistes. Chaque extrait est d’abord sécurisé dans le stockage durable, puis ajouté à Photos en arrière-plan. Après une veille, une fermeture ou un crash, les fichiers restants sont récupérés au prochain lancement. Les vidéos sont exclues de Supabase et des sauvegardes JSON.
           </p>
           <button
             type="button"
