@@ -50,6 +50,12 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
             name: UIApplication.willTerminateNotification,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioRouteChange),
+            name: AVAudioSession.routeChangeNotification,
+            object: nil
+        )
         recoverPendingRecordings()
     }
 
@@ -312,12 +318,23 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
         endBackgroundFinalization()
     }
 
+    /** iOS peut basculer sur le micro du casque dès qu'une route Bluetooth apparaît. */
+    @objc private func handleAudioRouteChange(_: Notification) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            guard self.recordingRequested || self.movieOutput.isRecording else { return }
+            self.preferBuiltInMicrophone(AVAudioSession.sharedInstance())
+        }
+    }
+
     /** Démarre un nouveau fichier avec la configuration déjà validée. */
     private func startCapture(preserveSessionStart: Bool = false) throws -> Date {
         try configureIfNeeded()
         let audioChannels = try configureAudioSession()
         configureAudioOutput(channels: audioChannels)
         if !captureSession.isRunning { captureSession.startRunning() }
+        // `startRunning` réécrit souvent la route : on reforce le micro intégré.
+        preferBuiltInMicrophone(AVAudioSession.sharedInstance())
         let url = recordingsDirectory
             .appendingPathComponent("prepatrack-\(UUID().uuidString).mov")
         let start = preserveSessionStart ? (startedAt ?? Date()) : Date()
@@ -555,7 +572,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
         captureSession.automaticallyConfiguresApplicationAudioSession = false
         captureSession.sessionPreset = .hd1280x720
         guard let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front),
-              let microphone = AVCaptureDevice.default(for: .audio) else {
+              let microphone = builtInAudioDevice() else {
             throw RecordingError.deviceUnavailable
         }
         let cameraInput = try AVCaptureDeviceInput(device: camera)
@@ -618,36 +635,45 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
     }
 
     /**
-     * Garde la musique des autres apps (Spotify, Apple Music…) pendant la
-     * captation, force le micro du téléphone, et active l'annulation d'écho
-     * pour laisser le moins de musique possible dans la vidéo.
+     * La musique des autres apps peut continuer (casque A2DP). On enregistre
+     * uniquement le micro du téléphone, jamais celui du casque : ce dernier
+     * capte surtout ce qui sort des écouteurs. Le mode `videoChat` est évité
+     * volontairement : son AGC se cale sur le signal le plus fort, donc la
+     * musique, et étouffe la voix. L'annulation d'écho iOS 18.2 est faite
+     * pour le micro intégré + haut-parleur, sans ce traitement « voix ».
      */
     private func configureAudioSession() throws -> Int {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(
             .playAndRecord,
-            mode: .videoChat,
-            options: [.mixWithOthers, .allowBluetoothA2DP, .defaultToSpeaker]
+            mode: .default,
+            options: [.mixWithOthers, .allowBluetoothA2DP]
         )
         try? session.setPreferredSampleRate(48_000)
-        // Un tampon court réduit la latence d'entrée qui se manifestait par un
-        // léger retard du son sur l'image après multiplexage.
-        try? session.setPreferredIOBufferDuration(0.005)
+        // 20 ms : assez court pour la synchro lèvre, assez long pour l'écho.
+        try? session.setPreferredIOBufferDuration(0.02)
+        if #available(iOS 18.2, *) {
+            try? session.setPrefersEchoCancelledInput(true)
+        }
         try session.setActive(true)
-
         preferBuiltInMicrophone(session)
-
-        let stereo = session.inputNumberOfChannels >= 2 &&
-            session.preferredInput?.dataSources?.contains(where: {
-                $0.selectedPolarPattern == .stereo
-            }) == true
-        if stereo {
-            try? session.setPreferredInputNumberOfChannels(2)
-            try? session.setPreferredInputOrientation(.portrait)
-            return 2
+        if #available(iOS 18.2, *), session.isEchoCancelledInputAvailable {
+            try? session.setPrefersEchoCancelledInput(true)
         }
         try? session.setPreferredInputNumberOfChannels(1)
         return 1
+    }
+
+    /** Micro physique de l'iPhone, jamais le casque Bluetooth. */
+    private func builtInAudioDevice() -> AVCaptureDevice? {
+        if let device = AVCaptureDevice.default(.builtInMicrophone, for: .audio, position: .unspecified) {
+            return device
+        }
+        return AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInMicrophone],
+            mediaType: .audio,
+            position: .unspecified
+        ).devices.first
     }
 
     /** Évite le micro du casque, qui enregistrerait surtout la musique. */

@@ -11,7 +11,7 @@ export function RecordingSettingsSection({ settings, recording }: { settings: Se
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Enregistrement de la vacation</h3>
-          <p className="mt-1 text-sm text-slate-500">Caméra avant et micro du téléphone. Tu peux laisser ta musique tourner : le casque n’est pas utilisé comme micro.</p>
+          <p className="mt-1 text-sm text-slate-500">Caméra avant et micro du téléphone. Le casque sert seulement à écouter : sa musique ne doit plus passer dans la vidéo. Un casque reste le plus fiable ; en haut-parleur, iOS atténue l’écho autant que l’appareil le permet.</p>
         </div>
         <button
           type="button"
@@ -43,7 +43,7 @@ export function RecordingSettingsSection({ settings, recording }: { settings: Se
             </select>
           </label>
           <p className="mt-2 text-xs text-slate-500">
-            Qualité équilibrée 720p à 30 i/s : environ {estimatedRecordingMegabytes(7.5)} Mo pour 7 h 30, en extraits de 10 minutes maximum. Sur iPhone, le zoom avant reste à son minimum et la meilleure stabilisation cinématique disponible est activée. La musique peut continuer pendant la captation : le micro intégré et l’annulation d’écho visent à n’enregistrer presque que ta voix, pas le casque. Chaque extrait est d’abord sécurisé dans le stockage durable, puis ajouté à Photos en arrière-plan. Après une veille, une fermeture ou un crash, les fichiers restants sont récupérés au prochain lancement. Les vidéos sont exclues de Supabase et des sauvegardes JSON.
+            Qualité équilibrée 720p à 30 i/s : environ {estimatedRecordingMegabytes(7.5)} Mo pour 7 h 30, en extraits de 10 minutes maximum. Sur iPhone, le zoom avant reste à son minimum et la meilleure stabilisation cinématique disponible est activée. La musique peut rester dans le casque pendant la captation : seul le micro du téléphone est enregistré, avec annulation d’écho quand iOS la propose. Chaque extrait est d’abord sécurisé dans le stockage durable, puis ajouté à Photos en arrière-plan. Après une veille, une fermeture ou un crash, les fichiers restants sont récupérés au prochain lancement. Les vidéos sont exclues de Supabase et des sauvegardes JSON.
           </p>
           <button
             type="button"
