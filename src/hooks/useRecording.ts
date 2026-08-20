@@ -5,6 +5,7 @@ import {
   RECORDING_CHUNK_MS,
   RECORDING_VIDEO_BITS_PER_SECOND,
   mediaErrorMessage,
+  recordingRecoveryMessage,
   recordingStorageWarning,
   recordingSupported,
   selectRecordingMime,
@@ -22,6 +23,7 @@ import {
   onNativeRecordingSegmentFinished,
   onNativeRecordingResumed,
   onNativeRecordingResumeFailed,
+  recoverNativeRecordings,
   startNativeRecording,
   stopNativeRecording,
   showNativeMicrophoneModes,
@@ -37,9 +39,12 @@ export interface RecordingControl {
   message?: string
   supported: boolean
   canStart: boolean
+  recovering: boolean
+  recoveryMessage?: string
   start: () => Promise<void>
   stop: (reason?: RecordingEndReason) => Promise<void>
   testDevices: () => Promise<boolean>
+  recoverVideos: () => Promise<void>
   showMicrophoneModes: () => Promise<void>
 }
 
@@ -104,6 +109,8 @@ export function useRecording(
   const [status, setStatus] = useState<RecordingStatus>(enabled ? 'idle' : 'disabled')
   const [startedAt, setStartedAt] = useState<number>()
   const [message, setMessage] = useState<string>()
+  const [recovering, setRecovering] = useState(false)
+  const [recoveryMessage, setRecoveryMessage] = useState<string>()
   const streamRef = useRef<MediaStream>()
   const recorderRef = useRef<MediaRecorder>()
   const timerRef = useRef<number>()
@@ -112,6 +119,7 @@ export function useRecording(
   const dayRef = useRef(workdayId)
   const sequenceRef = useRef(1)
   const requestRef = useRef(0)
+  const recoveryRequestRef = useRef(false)
   const startChunkRef = useRef<(stream: MediaStream, dayId: string) => void>(() => undefined)
 
   useEffect(() => {
@@ -223,8 +231,9 @@ export function useRecording(
   }, [enabled, native, releaseStream])
 
   const start = useCallback(async () => {
-    if (!enabled || !workdayId || status === 'recording' || status === 'requesting') return
+    if (!enabled || !workdayId || recovering || status === 'recording' || status === 'requesting') return
     setMessage(undefined)
+    setRecoveryMessage(undefined)
     if (!supported) {
       setStatus('error')
       setMessage('L’enregistrement caméra/micro n’est pas pris en charge sur cet appareil.')
@@ -274,7 +283,7 @@ export function useRecording(
       setStatus('error')
       setMessage(mediaErrorMessage(error))
     }
-  }, [enabled, native, retentionDays, startChunk, status, stop, supported, workdayId, releaseStream])
+  }, [enabled, native, recovering, retentionDays, startChunk, status, stop, supported, workdayId, releaseStream])
 
   const testDevices = useCallback(async () => {
     if (!supported) {
@@ -311,6 +320,29 @@ export function useRecording(
       setMessage(mediaErrorMessage(error))
     }
   }, [native])
+
+  const recoverVideos = useCallback(async () => {
+    if (recoveryRequestRef.current || ['recording', 'requesting', 'stopping'].includes(status)) return
+    if (!native) {
+      setRecoveryMessage('La récupération des vidéos locales est disponible uniquement dans l’app iPhone.')
+      return
+    }
+    recoveryRequestRef.current = true
+    setRecovering(true)
+    setRecoveryMessage('Recherche des vidéos conservées localement…')
+    try {
+      const result = await recoverNativeRecordings()
+      setRecoveryMessage(recordingRecoveryMessage(result))
+    } catch (error) {
+      const detail = error instanceof Error && error.message
+        ? error.message
+        : 'le stockage vidéo local est momentanément indisponible.'
+      setRecoveryMessage(`Récupération impossible : ${detail}`)
+    } finally {
+      recoveryRequestRef.current = false
+      setRecovering(false)
+    }
+  }, [native, status])
 
   useEffect(() => {
     if (!native) return
@@ -420,7 +452,20 @@ export function useRecording(
     }
   }, [enabled, native, stop])
 
-  return { status, startedAt, message, supported, canStart: Boolean(workdayId), start, stop, testDevices, showMicrophoneModes }
+  return {
+    status,
+    startedAt,
+    message,
+    supported,
+    canStart: Boolean(workdayId),
+    recovering,
+    recoveryMessage,
+    start,
+    stop,
+    testDevices,
+    recoverVideos,
+    showMicrophoneModes,
+  }
 }
 
 export const RECORDING_ESTIMATED_BITS_PER_SECOND = RECORDING_BITS_PER_SECOND

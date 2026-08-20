@@ -25,7 +25,7 @@ export function RecordingControl({ recording }: { recording: Control }) {
       </div>
       <button
         type="button"
-        disabled={!recording.canStart || recording.status === 'requesting' || recording.status === 'stopping'}
+        disabled={!recording.canStart || recording.recovering || recording.status === 'requesting' || recording.status === 'stopping'}
         onClick={() => void (active ? recording.stop('complete') : recording.start())}
         className={`pressable min-h-[2.25rem] shrink-0 rounded-lg px-3 text-xs font-bold ${active ? 'bg-bad text-white' : 'bg-ink-700 text-slate-200'}`}
       >

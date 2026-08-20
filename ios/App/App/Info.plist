@@ -36,6 +36,8 @@
 	<true/>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>PrepaTrack ajoute dans Photos les vidéos que vous enregistrez volontairement.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>PrepaTrack vérifie uniquement ses propres vidéos après une interruption afin de récupérer un couple avant/arrière sans doublon.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

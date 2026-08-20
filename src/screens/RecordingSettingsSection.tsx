@@ -10,6 +10,7 @@ export function RecordingSettingsSection({ settings, recording }: { settings: Se
   const estimatedMegabytes = nativeRecordingSupported()
     ? estimatedNativeRecordingMegabytes(7.5)
     : estimatedRecordingMegabytes(7.5)
+  const recoveryDisabled = recording.recovering || ['recording', 'requesting', 'stopping'].includes(recording.status)
   return (
     <section className="card">
       <div className="flex items-start justify-between gap-3">
@@ -64,6 +65,21 @@ export function RecordingSettingsSection({ settings, recording }: { settings: Se
             Choisir le mode micro iOS
           </button>
           <p className="mt-1 text-xs text-slate-500">Le choix est possible avant ou pendant la captation et reste mémorisé par iOS pour PrepaTrack.</p>
+          <button
+            type="button"
+            disabled={recoveryDisabled}
+            aria-busy={recording.recovering}
+            onClick={() => void recording.recoverVideos()}
+            className="pressable mt-3 w-full rounded-xl bg-ink-700 py-3 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {recording.recovering ? 'Récupération en cours…' : 'Récupérer les vidéos locales'}
+          </button>
+          {recoveryDisabled && !recording.recovering && (
+            <p className="mt-1 text-xs text-slate-500">Arrête la captation avant de lancer une récupération.</p>
+          )}
+          {recording.recoveryMessage && (
+            <p role="status" aria-live="polite" className="mt-2 text-xs text-slate-400">{recording.recoveryMessage}</p>
+          )}
           {recording.message && <p role="status" className="mt-2 text-xs text-slate-400">{recording.message}</p>}
           <div className="mt-3">
             <RecordingControlBar recording={recording} />

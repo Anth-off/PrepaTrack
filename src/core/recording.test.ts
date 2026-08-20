@@ -5,6 +5,7 @@ import {
   estimatedRecordingMegabytes,
   estimatedNativeRecordingMegabytes,
   mediaErrorMessage,
+  recordingRecoveryMessage,
   recordingStorageWarning,
   selectRecordingMime,
 } from './recording'
@@ -29,5 +30,18 @@ describe('politique d’enregistrement local', () => {
     expect(RECORDING_CHUNK_MS).toBe(30 * 60_000)
     expect(estimatedRecordingMegabytes(7.5)).toBeGreaterThan(5_000)
     expect(estimatedNativeRecordingMegabytes(7.5)).toBeGreaterThan(24_000)
+  })
+
+  it('explique le résultat de la récupération des vidéos locales', () => {
+    expect(recordingRecoveryMessage({ pending: 0, recovered: 0, retained: 0 }))
+      .toBe('Aucune vidéo locale en attente de récupération.')
+    expect(recordingRecoveryMessage({ pending: 2, recovered: 2, retained: 0 }))
+      .toBe('2 vidéos récupérées et ajoutées à Photos.')
+    expect(recordingRecoveryMessage({ pending: 0, recovered: 2, retained: 0 }))
+      .toBe('2 vidéos récupérées et ajoutées à Photos.')
+    expect(recordingRecoveryMessage({ pending: 2, recovered: 1, retained: 1 }))
+      .toBe('1 vidéo récupérée. 1 vidéo reste conservée localement pour une prochaine tentative.')
+    expect(recordingRecoveryMessage({ pending: 2, recovered: 0, retained: 2, error: 'Photos indisponible' }))
+      .toBe('2 vidéos restent conservées localement. Récupération incomplète : Photos indisponible')
   })
 })

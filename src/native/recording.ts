@@ -47,11 +47,19 @@ interface NativeRecordingState {
   captureProfile?: NativeCaptureProfile
 }
 
+export interface NativeRecordingRecoveryResult {
+  pending: number
+  recovered: number
+  retained: number
+  error?: string
+}
+
 interface NativeRecordingPlugin {
   start(options: { maxDurationSeconds: number }): Promise<{ startedAt: number; captureProfile?: NativeCaptureProfile }>
   stop(): Promise<{ saved: boolean }>
   status(): Promise<NativeRecordingState>
   test(): Promise<{ captureProfile?: NativeCaptureProfile }>
+  recover(): Promise<NativeRecordingRecoveryResult>
   showMicrophoneModes(): Promise<void>
   addListener(eventName: 'recordingFinished', listener: (event: FinishedEvent) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'recordingSegmentFinished', listener: (event: FinishedEvent) => void): Promise<PluginListenerHandle>
@@ -65,6 +73,7 @@ export const startNativeRecording = () => plugin.start({ maxDurationSeconds: 1_8
 export const stopNativeRecording = () => plugin.stop()
 export const nativeRecordingStatus = () => plugin.status()
 export const testNativeRecording = () => plugin.test()
+export const recoverNativeRecordings = () => plugin.recover()
 export const showNativeMicrophoneModes = () => plugin.showMicrophoneModes()
 export const onNativeRecordingFinished = (listener: (event: FinishedEvent) => void) =>
   plugin.addListener('recordingFinished', listener)
