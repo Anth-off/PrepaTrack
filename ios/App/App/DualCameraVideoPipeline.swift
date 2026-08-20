@@ -3,7 +3,6 @@ import CoreImage
 import CoreMedia
 import CoreVideo
 import Metal
-import MetalKit
 import UIKit
 
 /**
@@ -180,6 +179,21 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
             if !configurationCommitted { session.commitConfiguration() }
             rollbackConfiguration()
             throw error
+        }
+    }
+
+    /**
+     * Construit les deux bandeaux avant de démarrer la session et l'audio.
+     * Le plugin peut ainsi refuser immédiatement une capture si les ressources
+     * Metal ne sont pas disponibles, sans créer de segment partiel.
+     */
+    func validateOverlayResources(at date: Date) throws {
+        try configureIfNeeded()
+        try outputQueue.sync {
+            guard let frameRenderer else {
+                throw DualCameraPipelineError.renderingUnavailable
+            }
+            try frameRenderer.updateTimestamp(date)
         }
     }
 
@@ -829,11 +843,36 @@ private final class DualCameraFrameOverlayRenderer {
     }
 
     private func makeLabelTexture(cameraLabel: String, timestamp: String) throws -> MTLTexture {
-        let size = CGSize(width: 620, height: 124)
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        format.opaque = false
-        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+        let width = 620
+        let height = 124
+        let bytesPerPixel = 4
+        let bytesPerRow = width * bytesPerPixel
+        var bitmap = [UInt8](repeating: 0, count: bytesPerRow * height)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGBitmapInfo.byteOrder32Little.rawValue |
+            CGImageAlphaInfo.premultipliedFirst.rawValue
+
+        let drewLabel = bitmap.withUnsafeMutableBytes { storage -> Bool in
+            guard let baseAddress = storage.baseAddress,
+                  let context = CGContext(
+                    data: baseAddress,
+                    width: width,
+                    height: height,
+                    bitsPerComponent: 8,
+                    bytesPerRow: bytesPerRow,
+                    space: colorSpace,
+                    bitmapInfo: bitmapInfo
+                  ) else { return false }
+
+            // UIKit dessine avec une origine en haut à gauche. Le bitmap brut
+            // est ensuite retourné ligne par ligne avant son transfert vers
+            // Metal afin que texture[y = 0] désigne bien le haut du bandeau.
+            context.translateBy(x: 0, y: CGFloat(height))
+            context.scaleBy(x: 1, y: -1)
+            UIGraphicsPushContext(context)
+            defer { UIGraphicsPopContext() }
+
+            let size = CGSize(width: width, height: height)
             UIColor.black.withAlphaComponent(0.78).setFill()
             UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 18).fill()
             UIColor.white.withAlphaComponent(0.92).setStroke()
@@ -857,14 +896,56 @@ private final class DualCameraFrameOverlayRenderer {
                     .foregroundColor: UIColor.white,
                 ]
             )
+            context.flush()
+            return true
         }
-        guard let cgImage = image.cgImage else {
+
+        guard drewLabel else {
             throw DualCameraPipelineError.renderingUnavailable
         }
-        let labelTexture = try MTKTextureLoader(device: device).newTexture(
-            cgImage: cgImage,
-            options: [.SRGB: false]
+
+        // CGBitmapContext expose ses lignes du bas vers le haut alors que les
+        // coordonnées de texture Metal commencent en haut. Retourner les
+        // lignes évite un bandeau verticalement inversé, sans passer par
+        // ImageIO/MTKTextureLoader (source de « Image decoding failed »).
+        var upload = [UInt8](repeating: 0, count: bitmap.count)
+        upload.withUnsafeMutableBytes { destination in
+            bitmap.withUnsafeBytes { source in
+                guard let destinationBase = destination.baseAddress,
+                      let sourceBase = source.baseAddress else { return }
+                for sourceRow in 0..<height {
+                    let destinationRow = height - sourceRow - 1
+                    let sourceOffset = sourceRow * bytesPerRow
+                    let destinationOffset = destinationRow * bytesPerRow
+                    memcpy(
+                        destinationBase.advanced(by: destinationOffset),
+                        sourceBase.advanced(by: sourceOffset),
+                        bytesPerRow
+                    )
+                }
+            }
+        }
+
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm,
+            width: width,
+            height: height,
+            mipmapped: false
         )
+        descriptor.storageMode = .shared
+        descriptor.usage = [.shaderRead]
+        guard let labelTexture = device.makeTexture(descriptor: descriptor) else {
+            throw DualCameraPipelineError.renderingUnavailable
+        }
+        upload.withUnsafeBytes { storage in
+            guard let baseAddress = storage.baseAddress else { return }
+            labelTexture.replace(
+                region: MTLRegionMake2D(0, 0, width, height),
+                mipmapLevel: 0,
+                withBytes: baseAddress,
+                bytesPerRow: bytesPerRow
+            )
+        }
         return labelTexture
     }
 

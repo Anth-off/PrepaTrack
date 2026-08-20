@@ -275,13 +275,25 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             self.sessionQueue.async {
                 do {
+                    guard !self.recordingRequested, self.activeSegment == nil else {
+                        throw RecordingError.testUnavailableWhileRecording
+                    }
                     try self.videoPipeline.configureIfNeeded()
+                    try self.videoPipeline.validateOverlayResources(at: Date())
+                    try self.videoPipeline.startSession()
+                    defer {
+                        self.stopAudioCapture()
+                        self.videoPipeline.stopSession()
+                        try? AVAudioSession.sharedInstance().setActive(
+                            false,
+                            options: .notifyOthersOnDeactivation
+                        )
+                    }
                     let testURL = FileManager.default.temporaryDirectory
                         .appendingPathComponent("prepatrack-audio-test-\(UUID().uuidString).m4a")
                     try self.startAudioCapture(to: testURL, acceptImmediately: true)
                     Thread.sleep(forTimeInterval: 0.35)
                     self.stopAudioCapture()
-                    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
                     let size = ((try? testURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
                     try? FileManager.default.removeItem(at: testURL)
                     guard size > 1_024 else { throw RecordingError.voiceProcessingUnavailable }
@@ -302,6 +314,10 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         audioWriteError = nil
         do {
             try videoPipeline.configureIfNeeded()
+            // Valider les textures AVANT/ARRIÈRE avant d'allumer les caméras
+            // ou le micro. Une ressource de bandeau invalide ne peut ainsi
+            // plus créer une fausse capture ni un segment partiel.
+            try videoPipeline.validateOverlayResources(at: segment.startedAt)
             try videoPipeline.startSession()
             try startAudioCapture(to: segment.audioURL, acceptImmediately: true)
             try videoPipeline.startSegment(
@@ -1519,6 +1535,7 @@ private enum RecordingError: LocalizedError {
     case stabilizationUnavailable
     case voiceProcessingUnavailable
     case insufficientStorage
+    case testUnavailableWhileRecording
     var errorDescription: String? {
         switch self {
         case .deviceUnavailable: return "Caméra avant ou microphone introuvable."
@@ -1527,6 +1544,8 @@ private enum RecordingError: LocalizedError {
         case .voiceProcessingUnavailable: return "iOS n’a pas activé le traitement vocal requis pour les modes micro."
         case .insufficientStorage:
             return "Moins de 5 Go sont disponibles. L’enregistrement a été arrêté proprement pour conserver les vidéos existantes."
+        case .testUnavailableWhileRecording:
+            return "Arrête l’enregistrement en cours avant de tester les caméras et le microphone."
         }
     }
 }
