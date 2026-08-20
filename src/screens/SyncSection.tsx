@@ -149,6 +149,19 @@ function SignInForm({ sync }: Props) {
         Ton badge doit avoir été déclaré par un gestionnaire. Ton code ne protège que tes
         chiffres : ne le partage pas.
       </p>
+
+      <button
+        type="button"
+        onClick={async () => {
+          await signOut()
+          await clearSyncConfig()
+          resetClient()
+          await sync.refreshUser()
+        }}
+        className="pressable mt-3 rounded-xl py-2 text-xs font-semibold text-slate-600"
+      >
+        Changer de projet Supabase
+      </button>
     </Card>
   )
 }
