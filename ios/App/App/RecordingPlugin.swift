@@ -543,6 +543,12 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
     /** Démarre un nouveau segment sans dépendre des imports Photos précédents. */
     private func videoCaptureTimeoutError() -> RecordingError {
         let health = videoPipeline.activeSegmentHealthPayload()
+        let frontCallbacks = health["frontSampleCallbacks"] as? Int ?? 0
+        let rearCallbacks = health["rearSampleCallbacks"] as? Int ?? 0
+        let frontEnabled = health["frontConnectionEnabled"] as? Bool ?? false
+        let rearEnabled = health["rearConnectionEnabled"] as? Bool ?? false
+        let frontActive = health["frontConnectionActive"] as? Bool ?? false
+        let rearActive = health["rearConnectionActive"] as? Bool ?? false
         let synchronized = health["synchronizedCollections"] as? Int ?? 0
         let droppedFront = health["droppedFrontSamples"] as? Int ?? 0
         let droppedRear = health["droppedRearSamples"] as? Int ?? 0
@@ -552,7 +558,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         let backpressured = health["backpressuredFramePairs"] as? Int ?? 0
         let frontBytes = health["frontFileBytes"] as? Int ?? 0
         let rearBytes = health["rearFileBytes"] as? Int ?? 0
-        var details = "sync \(synchronized), chutes \(droppedFront)/\(droppedRear), rendu \(rendered), secours \(fallback), écrit \(written), attente \(backpressured), fichiers \(frontBytes)/\(rearBytes) octets"
+        var details = "connexions actives \(frontActive)/\(rearActive), activées \(frontEnabled)/\(rearEnabled), callbacks \(frontCallbacks)/\(rearCallbacks), paires \(synchronized), chutes \(droppedFront)/\(droppedRear), rendu \(rendered), secours \(fallback), écrit \(written), attente \(backpressured), fichiers \(frontBytes)/\(rearBytes) octets"
         if let failure = health["writerFailure"] as? String { details += ", erreur : \(failure)" }
         NSLog("[PrepaTrack Recording] Confirmation vidéo expirée : %@", details)
         return .videoCaptureTimedOut(details)

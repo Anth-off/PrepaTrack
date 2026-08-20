@@ -8,14 +8,14 @@ import UIKit
 /**
  * Capture simultanément les caméras avant et arrière dans deux fichiers
  * indépendants en 720p/30. Les deux fichiers utilisent exactement les mêmes
- * timestamps issus d'AVCaptureDataOutputSynchronizer.
+ * timestamps appariés depuis l'horloge commune de la session MultiCam.
  *
  * Chaque image reçoit un bandeau permanent, placé dans le carré central que
  * Photos conserve pour ses miniatures. Il contient le rôle de la caméra et la
  * date/heure de début du segment, ce qui permet d'identifier immédiatement les
  * deux angles sans ouvrir les vidéos.
  */
-final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDelegate {
+final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     private let session = AVCaptureMultiCamSession()
     private let outputQueue = DispatchQueue(
         label: "com.n0thytvoff.prepatrack.recording.video",
@@ -24,7 +24,13 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
     private let frontOutput = AVCaptureVideoDataOutput()
     private let backOutput = AVCaptureVideoDataOutput()
     private var frameRenderer: DualCameraFrameOverlayRenderer?
-    private var synchronizer: AVCaptureDataOutputSynchronizer?
+    private var pendingFrontSamples: [CMSampleBuffer] = []
+    private var pendingRearSamples: [CMSampleBuffer] = []
+    private let maximumPendingSamplesPerCamera = 6
+    // À 30 i/s, 50 ms tolèrent un décalage d'environ une image sans associer
+    // deux instants visiblement différents.
+    private let maximumFramePairDeltaSeconds: TimeInterval = 0.05
+    private var lastPairedPresentationTime: CMTime?
 
     private var configured = false
     private var profile: DualCameraCaptureProfile?
@@ -47,6 +53,8 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
     private var healthFailureReported = false
     private let frameStallTimeoutSeconds: TimeInterval = 8
     private var synchronizedCollections = 0
+    private var frontSampleCallbacks = 0
+    private var rearSampleCallbacks = 0
     private var droppedFrontSamples = 0
     private var droppedRearSamples = 0
     private var renderedFramePairs = 0
@@ -139,6 +147,8 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
             }
             session.addOutputWithNoConnections(frontOutput)
             session.addOutputWithNoConnections(backOutput)
+            frontOutput.setSampleBufferDelegate(self, queue: outputQueue)
+            backOutput.setSampleBufferDelegate(self, queue: outputQueue)
 
             guard let frontPort = frontInput.ports(
                 for: .video,
@@ -176,9 +186,6 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
                 throw DualCameraPipelineError.systemPressureExceeded
             }
 
-            let synchronizer = AVCaptureDataOutputSynchronizer(dataOutputs: [frontOutput, backOutput])
-            synchronizer.setDelegate(self, queue: outputQueue)
-            self.synchronizer = synchronizer
             profile = DualCameraCaptureProfile(
                 frontCamera: frontDevice.localizedName,
                 backCamera: backDevice.localizedName,
@@ -219,6 +226,11 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
         try configureIfNeeded()
         if !session.isRunning { session.startRunning() }
         guard session.isRunning else { throw DualCameraPipelineError.sessionFailed }
+        guard waitForActiveConnection(frontConnection),
+              waitForActiveConnection(backConnection) else {
+            session.stopRunning()
+            throw DualCameraPipelineError.connectionUnavailable
+        }
         guard waitForActiveStabilization(frontConnection),
               waitForActiveStabilization(backConnection) else {
             session.stopRunning()
@@ -228,6 +240,11 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
 
     func stopSession() {
         if session.isRunning { session.stopRunning() }
+        outputQueue.sync {
+            pendingFrontSamples.removeAll(keepingCapacity: false)
+            pendingRearSamples.removeAll(keepingCapacity: false)
+            lastPairedPresentationTime = nil
+        }
     }
 
     func startSegment(
@@ -274,6 +291,12 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
                     "captureConfirmed": false,
                     "framePairsWritten": 0,
                     "synchronizedCollections": synchronizedCollections,
+                    "frontSampleCallbacks": frontSampleCallbacks,
+                    "rearSampleCallbacks": rearSampleCallbacks,
+                    "frontConnectionEnabled": frontConnection?.isEnabled ?? false,
+                    "rearConnectionEnabled": backConnection?.isEnabled ?? false,
+                    "frontConnectionActive": frontConnection?.isActive ?? false,
+                    "rearConnectionActive": backConnection?.isActive ?? false,
                     "droppedFrontSamples": droppedFrontSamples,
                     "droppedRearSamples": droppedRearSamples,
                     "renderedFramePairs": renderedFramePairs,
@@ -283,6 +306,12 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
             }
             var payload = writer.healthPayload()
             payload["synchronizedCollections"] = synchronizedCollections
+            payload["frontSampleCallbacks"] = frontSampleCallbacks
+            payload["rearSampleCallbacks"] = rearSampleCallbacks
+            payload["frontConnectionEnabled"] = frontConnection?.isEnabled ?? false
+            payload["rearConnectionEnabled"] = backConnection?.isEnabled ?? false
+            payload["frontConnectionActive"] = frontConnection?.isActive ?? false
+            payload["rearConnectionActive"] = backConnection?.isActive ?? false
             payload["droppedFrontSamples"] = droppedFrontSamples
             payload["droppedRearSamples"] = droppedRearSamples
             payload["renderedFramePairs"] = renderedFramePairs
@@ -336,6 +365,9 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
             self.segmentWriter = nil
             self.durationLimitReported = false
             self.resetRenderingFailureState()
+            self.pendingFrontSamples.removeAll(keepingCapacity: true)
+            self.pendingRearSamples.removeAll(keepingCapacity: true)
+            self.lastPairedPresentationTime = nil
             self.disarmHealthWatchdog()
             previous.finish(completion: completion)
         }
@@ -361,24 +393,124 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
             "systemPressureCost": Double(profile.systemPressureCost),
             "timestampOverlay": true,
             "thumbnailSafeBanner": true,
+            "frameDelivery": "independentDelegates",
         ]
     }
 
-    func dataOutputSynchronizer(
-        _ synchronizer: AVCaptureDataOutputSynchronizer,
-        didOutput synchronizedDataCollection: AVCaptureSynchronizedDataCollection
+    func captureOutput(
+        _ output: AVCaptureOutput,
+        didOutput sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
     ) {
-        guard let frontData = synchronizedDataCollection.synchronizedData(for: frontOutput)
-                as? AVCaptureSynchronizedSampleBufferData,
-              let backData = synchronizedDataCollection.synchronizedData(for: backOutput)
-                as? AVCaptureSynchronizedSampleBufferData else { return }
+        if output === frontOutput {
+            frontSampleCallbacks += 1
+            pendingFrontSamples.append(sampleBuffer)
+            while pendingFrontSamples.count > maximumPendingSamplesPerCamera {
+                pendingFrontSamples.removeFirst()
+                droppedFrontSamples += 1
+            }
+        } else if output === backOutput {
+            rearSampleCallbacks += 1
+            pendingRearSamples.append(sampleBuffer)
+            while pendingRearSamples.count > maximumPendingSamplesPerCamera {
+                pendingRearSamples.removeFirst()
+                droppedRearSamples += 1
+            }
+        } else {
+            return
+        }
+        processPendingFramePair()
+    }
+
+    func captureOutput(
+        _ output: AVCaptureOutput,
+        didDrop sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
+    ) {
+        if output === frontOutput {
+            droppedFrontSamples += 1
+        } else if output === backOutput {
+            droppedRearSamples += 1
+        }
+    }
+
+    private func processPendingFramePair() {
+        guard !pendingFrontSamples.isEmpty, !pendingRearSamples.isEmpty else { return }
+        var bestFrontIndex = 0
+        var bestRearIndex = 0
+        var bestDelta = TimeInterval.greatestFiniteMagnitude
+        for (frontIndex, frontSample) in pendingFrontSamples.enumerated() {
+            let frontSeconds = CMSampleBufferGetPresentationTimeStamp(frontSample).seconds
+            guard frontSeconds.isFinite else { continue }
+            for (rearIndex, rearSample) in pendingRearSamples.enumerated() {
+                let rearSeconds = CMSampleBufferGetPresentationTimeStamp(rearSample).seconds
+                guard rearSeconds.isFinite else { continue }
+                let delta = abs(frontSeconds - rearSeconds)
+                if delta < bestDelta {
+                    bestDelta = delta
+                    bestFrontIndex = frontIndex
+                    bestRearIndex = rearIndex
+                }
+            }
+        }
+
+        guard bestDelta <= maximumFramePairDeltaSeconds else {
+            pruneUnmatchableSamples()
+            return
+        }
+        if bestFrontIndex > 0 {
+            pendingFrontSamples.removeFirst(bestFrontIndex)
+            droppedFrontSamples += bestFrontIndex
+        }
+        if bestRearIndex > 0 {
+            pendingRearSamples.removeFirst(bestRearIndex)
+            droppedRearSamples += bestRearIndex
+        }
+        let frontSample = pendingFrontSamples.removeFirst()
+        let backSample = pendingRearSamples.removeFirst()
+        let frontTime = CMSampleBufferGetPresentationTimeStamp(frontSample)
+        let rearTime = CMSampleBufferGetPresentationTimeStamp(backSample)
+        let presentationTime = CMTimeCompare(frontTime, rearTime) >= 0 ? frontTime : rearTime
+        if let lastPairedPresentationTime,
+           CMTimeCompare(presentationTime, lastPairedPresentationTime) <= 0 {
+            droppedFrontSamples += 1
+            droppedRearSamples += 1
+            return
+        }
+        lastPairedPresentationTime = presentationTime
         synchronizedCollections += 1
-        if frontData.sampleBufferWasDropped { droppedFrontSamples += 1 }
-        if backData.sampleBufferWasDropped { droppedRearSamples += 1 }
-        guard !frontData.sampleBufferWasDropped,
-              !backData.sampleBufferWasDropped else { return }
-        let frontSample = frontData.sampleBuffer
-        let backSample = backData.sampleBuffer
+        processFramePair(
+            frontSample: frontSample,
+            backSample: backSample,
+            presentationTime: presentationTime
+        )
+    }
+
+    private func pruneUnmatchableSamples() {
+        guard let oldestFront = pendingFrontSamples.first,
+              let newestFront = pendingFrontSamples.last,
+              let oldestRear = pendingRearSamples.first,
+              let newestRear = pendingRearSamples.last else { return }
+        let oldestFrontSeconds = CMSampleBufferGetPresentationTimeStamp(oldestFront).seconds
+        let newestFrontSeconds = CMSampleBufferGetPresentationTimeStamp(newestFront).seconds
+        let oldestRearSeconds = CMSampleBufferGetPresentationTimeStamp(oldestRear).seconds
+        let newestRearSeconds = CMSampleBufferGetPresentationTimeStamp(newestRear).seconds
+        if oldestFrontSeconds.isFinite, newestRearSeconds.isFinite,
+           oldestFrontSeconds < newestRearSeconds - maximumFramePairDeltaSeconds {
+            pendingFrontSamples.removeFirst()
+            droppedFrontSamples += 1
+        } else if oldestRearSeconds.isFinite, newestFrontSeconds.isFinite,
+                  oldestRearSeconds < newestFrontSeconds - maximumFramePairDeltaSeconds {
+            pendingRearSamples.removeFirst()
+            droppedRearSamples += 1
+        }
+    }
+
+    private func processFramePair(
+        frontSample: CMSampleBuffer,
+        backSample: CMSampleBuffer,
+        presentationTime: CMTime
+    ) {
         guard CMSampleBufferDataIsReady(frontSample),
               CMSampleBufferDataIsReady(backSample),
               let frontBuffer = CMSampleBufferGetImageBuffer(frontSample),
@@ -388,7 +520,6 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
 
         // Un timestamp commun garantit que les deux fichiers restent alignés,
         // même si les horloges matérielles des capteurs diffèrent légèrement.
-        let presentationTime = CMSampleBufferGetPresentationTimeStamp(frontSample)
         let duration = normalizedDuration(CMSampleBufferGetDuration(frontSample))
         let samplesToWrite: (front: CMSampleBuffer, rear: CMSampleBuffer)
         if let renderedFrames = frameRenderer.render(front: frontBuffer, rear: backBuffer),
@@ -543,7 +674,12 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
     }
 
     private func resetSegmentDiagnostics() {
+        pendingFrontSamples.removeAll(keepingCapacity: true)
+        pendingRearSamples.removeAll(keepingCapacity: true)
+        lastPairedPresentationTime = nil
         synchronizedCollections = 0
+        frontSampleCallbacks = 0
+        rearSampleCallbacks = 0
         droppedFrontSamples = 0
         droppedRearSamples = 0
         renderedFramePairs = 0
@@ -565,6 +701,15 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
             Thread.sleep(forTimeInterval: 0.05)
         }
         return connection.activeVideoStabilizationMode != .off
+    }
+
+    private func waitForActiveConnection(_ connection: AVCaptureConnection?) -> Bool {
+        guard let connection, connection.isEnabled else { return false }
+        for _ in 0..<20 {
+            if connection.isActive { return true }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return connection.isActive
     }
 
     private func configureDevice(_ device: AVCaptureDevice, profile: CameraFormatProfile) throws {
@@ -649,6 +794,11 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
     }
 
     private func rollbackConfiguration() {
+        frontOutput.setSampleBufferDelegate(nil, queue: nil)
+        backOutput.setSampleBufferDelegate(nil, queue: nil)
+        pendingFrontSamples.removeAll(keepingCapacity: false)
+        pendingRearSamples.removeAll(keepingCapacity: false)
+        lastPairedPresentationTime = nil
         guard !session.inputs.isEmpty || !session.outputs.isEmpty else { return }
         session.beginConfiguration()
         for output in session.outputs { session.removeOutput(output) }
@@ -656,7 +806,6 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
         session.commitConfiguration()
         frontConnection = nil
         backConnection = nil
-        synchronizer = nil
         profile = nil
         configured = false
     }
@@ -1433,6 +1582,7 @@ enum DualCameraPipelineError: LocalizedError {
     case hardwareBudgetExceeded
     case systemPressureExceeded
     case sessionFailed
+    case connectionUnavailable
     case segmentAlreadyActive
     case noActiveSegment
     case identicalOutputURLs
@@ -1458,6 +1608,8 @@ enum DualCameraPipelineError: LocalizedError {
             return "L’iPhone est trop sollicité pour enregistrer durablement les deux caméras."
         case .sessionFailed:
             return "Les deux caméras n’ont pas pu démarrer."
+        case .connectionUnavailable:
+            return "iOS n’a pas activé les connexions des deux caméras."
         case .segmentAlreadyActive:
             return "Un segment vidéo est déjà actif."
         case .noActiveSegment:
