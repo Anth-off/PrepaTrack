@@ -16,7 +16,7 @@ interface ResumeFailedEvent { error?: string; retrying?: boolean }
 
 export interface NativeCaptureProfile {
   camera: string
-  cameraLayout?: 'frontFullBackPiP'
+  cameraLayout?: 'frontFullBackPiP' | 'separateFrontBack'
   width: number
   height: number
   framesPerSecond: number

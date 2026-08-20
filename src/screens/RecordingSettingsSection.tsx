@@ -47,7 +47,7 @@ export function RecordingSettingsSection({ settings, recording }: { settings: Se
             </select>
           </label>
           <p className="mt-2 text-xs text-slate-500">
-            Qualité équilibrée 720p à 30 i/s : environ {estimatedMegabytes} Mo pour 7 h 30, en fichiers de 30 minutes maximum qui s’enchaînent automatiquement. Sur iPhone, la caméra avant reste principale et la caméra arrière est incrustée ; la date et l’heure du début du segment sont gravées dans l’image pour rester visibles dans Photos. Le son est encodé en AAC 48 kHz et laisse iOS appliquer le mode choisi : Automatique, Standard, Isolement de la voix ou Large spectre. Chaque fichier reste dans le stockage durable jusqu’à confirmation de son import dans Photos, puis il est récupéré automatiquement après une interruption. Les vidéos sont exclues de Supabase et des sauvegardes JSON.
+            Qualité équilibrée 720p à 30 i/s : environ {estimatedMegabytes} Mo pour 7 h 30. Chaque tranche de 30 minutes crée deux vidéos séparées et plein cadre, une AVANT et une ARRIÈRE, puis la tranche suivante démarre automatiquement. Un bandeau discret avec l’angle, la date et l’heure est gravé dans la zone visible des miniatures Photos. Le son est encodé en AAC 48 kHz sur les deux fichiers et laisse iOS appliquer le mode choisi : Automatique, Standard, Isolement de la voix ou Large spectre. Les sources restent dans le stockage durable jusqu’à confirmation de l’import des deux vidéos dans Photos, puis elles sont récupérées automatiquement après une interruption. Les vidéos sont exclues de Supabase et des sauvegardes JSON.
           </p>
           <button
             type="button"

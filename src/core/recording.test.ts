@@ -28,6 +28,6 @@ describe('politique d’enregistrement local', () => {
     expect(estimatedRecordingMegabytes(7.5)).toBeGreaterThan(1_000)
     expect(RECORDING_CHUNK_MS).toBe(30 * 60_000)
     expect(estimatedRecordingMegabytes(7.5)).toBeGreaterThan(5_000)
-    expect(estimatedNativeRecordingMegabytes(7.5)).toBeGreaterThan(12_000)
+    expect(estimatedNativeRecordingMegabytes(7.5)).toBeGreaterThan(24_000)
   })
 })

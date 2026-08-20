@@ -7,12 +7,14 @@ import MetalKit
 import UIKit
 
 /**
- * Capture simultanément les caméras avant et arrière dans un flux 720p/30.
+ * Capture simultanément les caméras avant et arrière dans deux fichiers
+ * indépendants en 720p/30. Les deux fichiers utilisent exactement les mêmes
+ * timestamps issus d'AVCaptureDataOutputSynchronizer.
  *
- * La caméra avant reste l'image principale afin de préserver le cadrage des
- * versions précédentes. La caméra arrière est incrustée. Le bandeau temporel
- * est rendu dans la même passe Metal que le PiP : il est donc présent dans
- * toutes les images et dans toute miniature choisie par Photos.
+ * Chaque image reçoit un bandeau permanent, placé dans le carré central que
+ * Photos conserve pour ses miniatures. Il contient le rôle de la caméra et la
+ * date/heure de début du segment, ce qui permet d'identifier immédiatement les
+ * deux angles sans ouvrir les vidéos.
  */
 final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDelegate {
     private let session = AVCaptureMultiCamSession()
@@ -22,18 +24,21 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
     )
     private let frontOutput = AVCaptureVideoDataOutput()
     private let backOutput = AVCaptureVideoDataOutput()
-    private var mixer: DualCameraFrameMixer?
+    private var frameRenderer: DualCameraFrameOverlayRenderer?
     private var synchronizer: AVCaptureDataOutputSynchronizer?
 
     private var configured = false
     private var profile: DualCameraCaptureProfile?
     private var frontConnection: AVCaptureConnection?
     private var backConnection: AVCaptureConnection?
-    private var writer: FragmentedVideoWriter?
+    private var segmentWriter: DualCameraSegmentWriter?
     private var durationLimitReported = false
+    private var consecutiveRenderingFailures = 0
+    private var renderingFailureReported = false
     private var sessionObservers: [NSObjectProtocol] = []
 
     var onDurationLimitReached: ((UUID) -> Void)?
+    var onRenderingFailed: ((Error) -> Void)?
     var onSessionInterrupted: (() -> Void)?
     var onSessionInterruptionEnded: (() -> Void)?
 
@@ -50,6 +55,16 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
             object: session,
             queue: nil
         ) { [weak self] _ in self?.onSessionInterruptionEnded?() })
+        sessionObservers.append(center.addObserver(
+            forName: .AVCaptureSessionRuntimeError,
+            object: session,
+            queue: nil
+        ) { [weak self] _ in
+            // Ne jamais laisser l'audio continuer seul si AVFoundation arrête
+            // la session vidéo. Le plugin ferme les sources durablement puis
+            // retente une nouvelle tranche.
+            self?.onRenderingFailed?(DualCameraPipelineError.sessionFailed)
+        })
     }
 
     deinit {
@@ -59,7 +74,7 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
     var isSessionRunning: Bool { session.isRunning }
 
     var isRecording: Bool {
-        outputQueue.sync { writer != nil }
+        outputQueue.sync { segmentWriter != nil }
     }
 
     func configureIfNeeded() throws {
@@ -67,7 +82,7 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
         guard AVCaptureMultiCamSession.isMultiCamSupported else {
             throw DualCameraPipelineError.multiCamUnavailable
         }
-        mixer = try DualCameraFrameMixer()
+        frameRenderer = try DualCameraFrameOverlayRenderer()
 
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.builtInWideAngleCamera],
@@ -172,7 +187,8 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
         try configureIfNeeded()
         if !session.isRunning { session.startRunning() }
         guard session.isRunning else { throw DualCameraPipelineError.sessionFailed }
-        guard waitForActiveStabilization(frontConnection) else {
+        guard waitForActiveStabilization(frontConnection),
+              waitForActiveStabilization(backConnection) else {
             session.stopRunning()
             throw DualCameraPipelineError.stabilizationUnavailable
         }
@@ -183,21 +199,26 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
     }
 
     func startSegment(
-        to url: URL,
+        frontURL: URL,
+        rearURL: URL,
         id: UUID,
         startedAt: Date,
         maxDurationSeconds: TimeInterval
     ) throws {
         try outputQueue.sync {
-            guard writer == nil else { throw DualCameraPipelineError.segmentAlreadyActive }
-            guard let mixer else { throw DualCameraPipelineError.renderingUnavailable }
-            mixer.updateTimestamp(startedAt)
-            writer = try FragmentedVideoWriter(
+            guard segmentWriter == nil else { throw DualCameraPipelineError.segmentAlreadyActive }
+            guard let frameRenderer else {
+                throw DualCameraPipelineError.renderingUnavailable
+            }
+            try frameRenderer.updateTimestamp(startedAt)
+            segmentWriter = try DualCameraSegmentWriter(
                 id: id,
-                url: url,
+                frontURL: frontURL,
+                rearURL: rearURL,
                 maxDurationSeconds: maxDurationSeconds
             )
             durationLimitReported = false
+            resetRenderingFailureState()
         }
     }
 
@@ -206,33 +227,43 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
      * reçoit donc l'image suivante sans attendre la finalisation du précédent.
      */
     func rotateSegment(
-        to url: URL,
+        frontURL: URL,
+        rearURL: URL,
         id: UUID,
         startedAt: Date,
         maxDurationSeconds: TimeInterval,
         didSwitch: () -> Void,
-        completion: @escaping (Result<URL, Error>) -> Void
+        completion: @escaping (Result<DualCameraSegmentFiles, Error>) -> Void
     ) throws {
         try outputQueue.sync {
-            guard let previous = writer else { throw DualCameraPipelineError.noActiveSegment }
-            guard let mixer else { throw DualCameraPipelineError.renderingUnavailable }
-            let next = try FragmentedVideoWriter(id: id, url: url, maxDurationSeconds: maxDurationSeconds)
-            mixer.updateTimestamp(startedAt)
-            writer = next
+            guard let previous = segmentWriter else { throw DualCameraPipelineError.noActiveSegment }
+            guard let frameRenderer else {
+                throw DualCameraPipelineError.renderingUnavailable
+            }
+            let next = try DualCameraSegmentWriter(
+                id: id,
+                frontURL: frontURL,
+                rearURL: rearURL,
+                maxDurationSeconds: maxDurationSeconds
+            )
+            try frameRenderer.updateTimestamp(startedAt)
+            segmentWriter = next
             durationLimitReported = false
+            resetRenderingFailureState()
             didSwitch()
             previous.finish(completion: completion)
         }
     }
 
-    func stopSegment(completion: @escaping (Result<URL, Error>) -> Void) {
+    func stopSegment(completion: @escaping (Result<DualCameraSegmentFiles, Error>) -> Void) {
         outputQueue.async {
-            guard let previous = self.writer else {
+            guard let previous = self.segmentWriter else {
                 completion(.failure(DualCameraPipelineError.noActiveSegment))
                 return
             }
-            self.writer = nil
+            self.segmentWriter = nil
             self.durationLimitReported = false
+            self.resetRenderingFailureState()
             previous.finish(completion: completion)
         }
     }
@@ -241,7 +272,8 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
         guard let profile else { return [:] }
         return [
             "camera": "\(profile.frontCamera) + \(profile.backCamera)",
-            "cameraLayout": "frontFullBackPiP",
+            "cameraLayout": "separateFrontBack",
+            "videoFileCountPerSegment": 2,
             "width": profile.width,
             "height": profile.height,
             "framesPerSecond": profile.framesPerSecond,
@@ -255,6 +287,7 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
             "hardwareCost": Double(profile.hardwareCost),
             "systemPressureCost": Double(profile.systemPressureCost),
             "timestampOverlay": true,
+            "thumbnailSafeBanner": true,
         ]
     }
 
@@ -274,20 +307,36 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
               CMSampleBufferDataIsReady(backSample),
               let frontBuffer = CMSampleBufferGetImageBuffer(frontSample),
               let backBuffer = CMSampleBufferGetImageBuffer(backSample),
-              let mixer,
-              let writer else { return }
+              let frameRenderer,
+              let writer = segmentWriter else { return }
 
-        guard let mixed = mixer.mix(fullScreen: frontBuffer, pictureInPicture: backBuffer),
-              let formatDescription = mixer.outputFormatDescription,
-              let mixedSample = makeSampleBuffer(
-                  pixelBuffer: mixed,
-                  formatDescription: formatDescription,
-                  presentationTime: CMSampleBufferGetPresentationTimeStamp(frontSample),
-                  duration: CMSampleBufferGetDuration(frontSample)
-              ) else { return }
+        // Un timestamp commun garantit que les deux fichiers restent alignés,
+        // même si les horloges matérielles des capteurs diffèrent légèrement.
+        let presentationTime = CMSampleBufferGetPresentationTimeStamp(frontSample)
+        let duration = normalizedDuration(CMSampleBufferGetDuration(frontSample))
+        guard let renderedFrames = frameRenderer.render(front: frontBuffer, rear: backBuffer),
+              let renderedFrontSample = makeSampleBuffer(
+                  pixelBuffer: renderedFrames.front.pixelBuffer,
+                  formatDescription: renderedFrames.front.formatDescription,
+                  presentationTime: presentationTime,
+                  duration: duration
+              ),
+              let renderedRearSample = makeSampleBuffer(
+                  pixelBuffer: renderedFrames.rear.pixelBuffer,
+                  formatDescription: renderedFrames.rear.formatDescription,
+                  presentationTime: presentationTime,
+                  duration: duration
+              ) else {
+            recordRenderingFailure()
+            return
+        }
+        resetRenderingFailureState()
 
         do {
-            if try writer.append(mixedSample), !durationLimitReported {
+            if try writer.append(
+                front: renderedFrontSample,
+                rear: renderedRearSample
+            ), !durationLimitReported {
                 durationLimitReported = true
                 onDurationLimitReached?(writer.id)
             }
@@ -297,6 +346,27 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
                 onDurationLimitReached?(writer.id)
             }
         }
+    }
+
+    private func normalizedDuration(_ duration: CMTime) -> CMTime {
+        guard duration.isValid, duration.isNumeric, duration.seconds > 0 else {
+            return CMTime(value: 1, timescale: 30)
+        }
+        return duration
+    }
+
+    private func recordRenderingFailure() {
+        consecutiveRenderingFailures += 1
+        guard consecutiveRenderingFailures >= 30, !renderingFailureReported else { return }
+        renderingFailureReported = true
+        onRenderingFailed?(
+            DualCameraPipelineError.consecutiveRenderingFailures(consecutiveRenderingFailures)
+        )
+    }
+
+    private func resetRenderingFailureState() {
+        consecutiveRenderingFailures = 0
+        renderingFailureReported = false
     }
 
     private func configureOutput(_ output: AVCaptureVideoDataOutput) {
@@ -459,6 +529,106 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
     }
 }
 
+struct DualCameraSegmentFiles {
+    let frontURL: URL
+    let rearURL: URL
+}
+
+/**
+ * Possède les deux writers d'un même segment. Les samples reçus ici ont le
+ * même PTS; la limite de durée et la finalisation sont donc communes.
+ */
+private final class DualCameraSegmentWriter {
+    let id: UUID
+    private let files: DualCameraSegmentFiles
+    private let frontWriter: FragmentedVideoWriter
+    private let rearWriter: FragmentedVideoWriter
+
+    init(
+        id: UUID,
+        frontURL: URL,
+        rearURL: URL,
+        maxDurationSeconds: TimeInterval
+    ) throws {
+        guard frontURL.standardizedFileURL != rearURL.standardizedFileURL else {
+            throw DualCameraPipelineError.identicalOutputURLs
+        }
+        guard maxDurationSeconds.isFinite, maxDurationSeconds > 0 else {
+            throw DualCameraPipelineError.invalidSegmentDuration
+        }
+        self.id = id
+        files = DualCameraSegmentFiles(frontURL: frontURL, rearURL: rearURL)
+        frontWriter = try FragmentedVideoWriter(
+            id: id,
+            url: frontURL,
+            maxDurationSeconds: maxDurationSeconds
+        )
+        rearWriter = try FragmentedVideoWriter(
+            id: id,
+            url: rearURL,
+            maxDurationSeconds: maxDurationSeconds
+        )
+    }
+
+    /** Retourne true dès que les deux fichiers doivent être remplacés. */
+    func append(front: CMSampleBuffer, rear: CMSampleBuffer) throws -> Bool {
+        try frontWriter.prepareIfNeeded(for: front)
+        try rearWriter.prepareIfNeeded(for: rear)
+        let frontTimestamp = CMSampleBufferGetPresentationTimeStamp(front)
+        let rearTimestamp = CMSampleBufferGetPresentationTimeStamp(rear)
+        if frontWriter.hasReachedDurationLimit(at: frontTimestamp) ||
+            rearWriter.hasReachedDurationLimit(at: rearTimestamp) {
+            return true
+        }
+
+        // Si un encodeur subit momentanément de la contre-pression, les deux
+        // images sont ignorées ensemble pour ne jamais décaler les angles.
+        guard frontWriter.isReadyForMoreMediaData,
+              rearWriter.isReadyForMoreMediaData else { return false }
+        try frontWriter.appendPrepared(front)
+        try rearWriter.appendPrepared(rear)
+        return false
+    }
+
+    func finish(completion: @escaping (Result<DualCameraSegmentFiles, Error>) -> Void) {
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var firstError: Error?
+
+        func finish(
+            _ writer: FragmentedVideoWriter,
+            expectedURL: URL
+        ) {
+            group.enter()
+            writer.finish { result in
+                if case .failure(let error) = result {
+                    lock.lock()
+                    if firstError == nil { firstError = error }
+                    lock.unlock()
+                } else if !FileManager.default.fileExists(atPath: expectedURL.path) {
+                    lock.lock()
+                    if firstError == nil { firstError = DualCameraPipelineError.writerFailed }
+                    lock.unlock()
+                }
+                group.leave()
+            }
+        }
+
+        finish(frontWriter, expectedURL: files.frontURL)
+        finish(rearWriter, expectedURL: files.rearURL)
+        group.notify(queue: .global(qos: .utility)) {
+            lock.lock()
+            let error = firstError
+            lock.unlock()
+            if let error {
+                completion(.failure(error))
+            } else {
+                completion(.success(self.files))
+            }
+        }
+    }
+}
+
 private final class FragmentedVideoWriter {
     let id: UUID
     private let url: URL
@@ -478,28 +648,35 @@ private final class FragmentedVideoWriter {
         }
     }
 
-    /** Retourne true quand la limite du segment est atteinte. */
-    func append(_ sampleBuffer: CMSampleBuffer) throws -> Bool {
-        guard accepting else { return true }
+    func prepareIfNeeded(for sampleBuffer: CMSampleBuffer) throws {
+        guard accepting else { throw DualCameraPipelineError.writerFailed }
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        if let firstTimestamp,
-           CMTimeSubtract(timestamp, firstTimestamp).seconds >= maxDurationSeconds {
-            return true
-        }
         if assetWriter == nil { try prepareWriter(for: sampleBuffer, firstTimestamp: timestamp) }
+    }
+
+    func hasReachedDurationLimit(at timestamp: CMTime) -> Bool {
+        guard let firstTimestamp else { return false }
+        return CMTimeSubtract(timestamp, firstTimestamp).seconds >= maxDurationSeconds
+    }
+
+    var isReadyForMoreMediaData: Bool {
+        accepting && assetWriter?.status == .writing && videoInput?.isReadyForMoreMediaData == true
+    }
+
+    func appendPrepared(_ sampleBuffer: CMSampleBuffer) throws {
+        guard accepting else { throw DualCameraPipelineError.writerFailed }
+        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         guard let assetWriter, let videoInput else {
             throw DualCameraPipelineError.writerFailed
         }
         guard assetWriter.status == .writing else {
             throw assetWriter.error ?? DualCameraPipelineError.writerFailed
         }
-        if videoInput.isReadyForMoreMediaData {
-            guard videoInput.append(sampleBuffer) else {
-                throw assetWriter.error ?? DualCameraPipelineError.writerFailed
-            }
-            lastTimestamp = timestamp
+        guard videoInput.isReadyForMoreMediaData,
+              videoInput.append(sampleBuffer) else {
+            throw assetWriter.error ?? DualCameraPipelineError.writerFailed
         }
-        return false
+        lastTimestamp = timestamp
     }
 
     func finish(completion: @escaping (Result<URL, Error>) -> Void) {
@@ -559,20 +736,20 @@ private final class FragmentedVideoWriter {
     }
 }
 
-private final class DualCameraFrameMixer {
+private final class DualCameraFrameOverlayRenderer {
     private let device: MTLDevice
     private var textureCache: CVMetalTextureCache?
     private var commandQueue: MTLCommandQueue?
     private var pipeline: MTLComputePipelineState?
-    private var outputPool: CVPixelBufferPool?
-    private(set) var outputFormatDescription: CMFormatDescription?
-    private var preparedDimensions = CMVideoDimensions(width: 0, height: 0)
-    private var labelTexture: MTLTexture?
+    private var frontOutputState = CameraRenderOutputState()
+    private var rearOutputState = CameraRenderOutputState()
+    private var frontLabelTexture: MTLTexture?
+    private var rearLabelTexture: MTLTexture?
 
     init() throws {
         guard let device = MTLCreateSystemDefaultDevice(),
               let library = device.makeDefaultLibrary(),
-              let function = library.makeFunction(name: "prepaTrackDualCameraMixer"),
+              let function = library.makeFunction(name: "prepaTrackCameraOverlay"),
               let commandQueue = device.makeCommandQueue() else {
             throw DualCameraPipelineError.renderingUnavailable
         }
@@ -585,86 +762,158 @@ private final class DualCameraFrameMixer {
         textureCache = cache
     }
 
-    func updateTimestamp(_ date: Date) {
+    func updateTimestamp(_ date: Date) throws {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "fr_FR")
         formatter.timeZone = .current
         formatter.dateFormat = "dd/MM/yyyy  HH:mm:ss"
-        let text = formatter.string(from: date)
-        let size = CGSize(width: 520, height: 72)
+        let timestamp = formatter.string(from: date)
+        let frontLabel = try makeLabelTexture(cameraLabel: "AVANT", timestamp: timestamp)
+        let rearLabel = try makeLabelTexture(cameraLabel: "ARRIÈRE", timestamp: timestamp)
+        frontLabelTexture = frontLabel
+        rearLabelTexture = rearLabel
+    }
+
+    /**
+     * Rend les deux angles avec une seule file Metal et un seul command buffer.
+     * Le CPU attend donc une fois par paire synchronisée, pas une fois par caméra.
+     */
+    func render(front: CVPixelBuffer, rear: CVPixelBuffer) -> RenderedCameraFrames? {
+        guard prepareIfNeeded(with: front, state: &frontOutputState),
+              prepareIfNeeded(with: rear, state: &rearOutputState),
+              let frontPool = frontOutputState.outputPool,
+              let rearPool = rearOutputState.outputPool,
+              let frontOutputTexture = makeTexture(from: allocateBuffer(pool: frontPool)),
+              let rearOutputTexture = makeTexture(from: allocateBuffer(pool: rearPool)),
+              let frontInputTexture = makeTexture(from: front),
+              let rearInputTexture = makeTexture(from: rear),
+              let frontLabelTexture,
+              let rearLabelTexture,
+              let frontFormatDescription = frontOutputState.outputFormatDescription,
+              let rearFormatDescription = rearOutputState.outputFormatDescription,
+              let commandQueue,
+              let pipeline,
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeComputeCommandEncoder() else { return nil }
+
+        encoder.setComputePipelineState(pipeline)
+        encode(
+            input: frontInputTexture.texture,
+            label: frontLabelTexture,
+            output: frontOutputTexture.texture,
+            with: encoder,
+            pipeline: pipeline
+        )
+        encode(
+            input: rearInputTexture.texture,
+            label: rearLabelTexture,
+            output: rearOutputTexture.texture,
+            with: encoder,
+            pipeline: pipeline
+        )
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        guard commandBuffer.status == .completed else { return nil }
+
+        return RenderedCameraFrames(
+            front: RenderedCameraFrame(
+                pixelBuffer: frontOutputTexture.pixelBuffer,
+                formatDescription: frontFormatDescription
+            ),
+            rear: RenderedCameraFrame(
+                pixelBuffer: rearOutputTexture.pixelBuffer,
+                formatDescription: rearFormatDescription
+            )
+        )
+    }
+
+    private func makeLabelTexture(cameraLabel: String, timestamp: String) throws -> MTLTexture {
+        let size = CGSize(width: 620, height: 124)
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = false
         let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
-            UIColor.black.withAlphaComponent(0.72).setFill()
-            UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 16).fill()
-            (text as NSString).draw(
-                in: CGRect(x: 18, y: 15, width: size.width - 36, height: size.height - 24),
+            UIColor.black.withAlphaComponent(0.78).setFill()
+            UIBezierPath(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 18).fill()
+            UIColor.white.withAlphaComponent(0.92).setStroke()
+            let border = UIBezierPath(
+                roundedRect: CGRect(x: 2, y: 2, width: size.width - 4, height: size.height - 4),
+                cornerRadius: 16
+            )
+            border.lineWidth = 3
+            border.stroke()
+            (cameraLabel as NSString).draw(
+                in: CGRect(x: 20, y: 13, width: 180, height: 46),
+                withAttributes: [
+                    .font: UIFont.systemFont(ofSize: 34, weight: .black),
+                    .foregroundColor: UIColor.white,
+                ]
+            )
+            (timestamp as NSString).draw(
+                in: CGRect(x: 20, y: 66, width: size.width - 40, height: 42),
                 withAttributes: [
                     .font: UIFont.monospacedDigitSystemFont(ofSize: 30, weight: .bold),
                     .foregroundColor: UIColor.white,
                 ]
             )
         }
-        if let cgImage = image.cgImage {
-            labelTexture = try? MTKTextureLoader(device: device).newTexture(
-                cgImage: cgImage,
-                options: [.SRGB: false]
-            )
+        guard let cgImage = image.cgImage else {
+            throw DualCameraPipelineError.renderingUnavailable
         }
+        let labelTexture = try MTKTextureLoader(device: device).newTexture(
+            cgImage: cgImage,
+            options: [.SRGB: false]
+        )
+        return labelTexture
     }
 
-    func mix(fullScreen: CVPixelBuffer, pictureInPicture: CVPixelBuffer?) -> CVPixelBuffer? {
-        guard prepareIfNeeded(with: fullScreen),
-              let outputPool,
-              let outputTexture = makeTexture(from: allocateBuffer(pool: outputPool)),
-              let fullTexture = makeTexture(from: fullScreen),
-              let pipTexture = makeTexture(from: pictureInPicture ?? fullScreen),
-              let labelTexture,
-              let commandQueue,
-              let pipeline,
-              let commandBuffer = commandQueue.makeCommandBuffer(),
-              let encoder = commandBuffer.makeComputeCommandEncoder() else { return nil }
-
-        let outputBuffer = outputTexture.pixelBuffer
-        let width = Float(outputTexture.texture.width)
-        let height = Float(outputTexture.texture.height)
-        let pipWidth = width * 0.34
-        let pipHeight = height * 0.34
-        var parameters = MixerParameters(
-            pipPosition: SIMD2(width - pipWidth - 20, height - pipHeight - 20),
-            pipSize: SIMD2(pipWidth, pipHeight),
-            labelPosition: SIMD2(20, 20),
-            labelSize: SIMD2(min(Float(labelTexture.width), width - 40), Float(labelTexture.height)),
-            pipBorderWidth: 4
+    private func encode(
+        input: MTLTexture,
+        label: MTLTexture,
+        output: MTLTexture,
+        with encoder: MTLComputeCommandEncoder,
+        pipeline: MTLComputePipelineState
+    ) {
+        let width = Float(output.width)
+        let height = Float(output.height)
+        let centralSquareSide = min(width, height)
+        let centralSquareOrigin = SIMD2(
+            (width - centralSquareSide) / 2,
+            (height - centralSquareSide) / 2
+        )
+        let labelWidth = min(Float(label.width), centralSquareSide - 40)
+        let labelHeight = labelWidth * Float(label.height) / Float(label.width)
+        var parameters = OverlayParameters(
+            labelPosition: SIMD2(
+                centralSquareOrigin.x + (centralSquareSide - labelWidth) / 2,
+                centralSquareOrigin.y + 24
+            ),
+            labelSize: SIMD2(labelWidth, labelHeight)
         )
 
-        encoder.setComputePipelineState(pipeline)
-        encoder.setTexture(fullTexture.texture, index: 0)
-        encoder.setTexture(pipTexture.texture, index: 1)
-        encoder.setTexture(labelTexture, index: 2)
-        encoder.setTexture(outputTexture.texture, index: 3)
-        encoder.setBytes(&parameters, length: MemoryLayout<MixerParameters>.size, index: 0)
+        encoder.setTexture(input, index: 0)
+        encoder.setTexture(label, index: 1)
+        encoder.setTexture(output, index: 2)
+        encoder.setBytes(&parameters, length: MemoryLayout<OverlayParameters>.size, index: 0)
         let threadWidth = pipeline.threadExecutionWidth
         let threadHeight = max(1, pipeline.maxTotalThreadsPerThreadgroup / threadWidth)
         encoder.dispatchThreads(
             MTLSize(width: Int(width), height: Int(height), depth: 1),
             threadsPerThreadgroup: MTLSize(width: threadWidth, height: threadHeight, depth: 1)
         )
-        encoder.endEncoding()
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-        guard commandBuffer.status == .completed else { return nil }
-        return outputBuffer
     }
 
-    private func prepareIfNeeded(with pixelBuffer: CVPixelBuffer) -> Bool {
+    private func prepareIfNeeded(
+        with pixelBuffer: CVPixelBuffer,
+        state: inout CameraRenderOutputState
+    ) -> Bool {
         let dimensions = CMVideoDimensions(
             width: Int32(CVPixelBufferGetWidth(pixelBuffer)),
             height: Int32(CVPixelBufferGetHeight(pixelBuffer))
         )
-        if outputPool != nil, dimensions.width == preparedDimensions.width,
-           dimensions.height == preparedDimensions.height { return true }
+        if state.outputPool != nil, dimensions.width == state.preparedDimensions.width,
+           dimensions.height == state.preparedDimensions.height { return true }
         var pool: CVPixelBufferPool?
         let attributes: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
@@ -687,9 +936,9 @@ private final class DualCameraFrameMixer {
             imageBuffer: sample,
             formatDescriptionOut: &description
         ) == noErr else { return false }
-        outputPool = pool
-        outputFormatDescription = description
-        preparedDimensions = dimensions
+        state.outputPool = pool
+        state.outputFormatDescription = description
+        state.preparedDimensions = dimensions
         return true
     }
 
@@ -731,12 +980,25 @@ private struct MetalPixelBufferTexture {
     let texture: MTLTexture
 }
 
-private struct MixerParameters {
-    var pipPosition: SIMD2<Float>
-    var pipSize: SIMD2<Float>
+private struct CameraRenderOutputState {
+    var outputPool: CVPixelBufferPool?
+    var outputFormatDescription: CMFormatDescription?
+    var preparedDimensions = CMVideoDimensions(width: 0, height: 0)
+}
+
+private struct RenderedCameraFrame {
+    let pixelBuffer: CVPixelBuffer
+    let formatDescription: CMFormatDescription
+}
+
+private struct RenderedCameraFrames {
+    let front: RenderedCameraFrame
+    let rear: RenderedCameraFrame
+}
+
+private struct OverlayParameters {
     var labelPosition: SIMD2<Float>
     var labelSize: SIMD2<Float>
-    var pipBorderWidth: Float
 }
 
 private struct CameraFormatProfile {
@@ -769,9 +1031,12 @@ enum DualCameraPipelineError: LocalizedError {
     case sessionFailed
     case segmentAlreadyActive
     case noActiveSegment
+    case identicalOutputURLs
+    case invalidSegmentDuration
     case emptySegment
     case writerFailed
     case renderingUnavailable
+    case consecutiveRenderingFailures(Int)
     case stabilizationUnavailable
 
     var errorDescription: String? {
@@ -792,12 +1057,18 @@ enum DualCameraPipelineError: LocalizedError {
             return "Un segment vidéo est déjà actif."
         case .noActiveSegment:
             return "Aucun segment vidéo actif."
+        case .identicalOutputURLs:
+            return "Les vidéos avant et arrière doivent utiliser deux fichiers distincts."
+        case .invalidSegmentDuration:
+            return "La durée maximale du segment vidéo est invalide."
         case .emptySegment:
             return "Le segment vidéo ne contient aucune image."
         case .writerFailed:
             return "L’encodage du segment vidéo a échoué."
         case .renderingUnavailable:
             return "Le moteur graphique nécessaire aux deux caméras est indisponible."
+        case .consecutiveRenderingFailures(let count):
+            return "Le rendu vidéo des deux caméras a échoué \(count) fois de suite."
         case .stabilizationUnavailable:
             return "iOS n’a pas activé la stabilisation de la caméra avant en mode deux caméras."
         }

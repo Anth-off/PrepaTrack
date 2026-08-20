@@ -4,8 +4,8 @@ export const RECORDING_VIDEO_BITS_PER_SECOND = 1_500_000
 export const RECORDING_AUDIO_BITS_PER_SECOND = 64_000
 export const RECORDING_BITS_PER_SECOND =
   RECORDING_VIDEO_BITS_PER_SECOND + RECORDING_AUDIO_BITS_PER_SECOND
-/** H.264 natif 3,5 Mb/s + marge AAC/métadonnées du flux avant/arrière composité. */
-export const NATIVE_RECORDING_BITS_PER_SECOND = 3_700_000
+/** Deux flux H.264 natifs 3,5 Mb/s + une piste AAC partagée. */
+export const NATIVE_RECORDING_BITS_PER_SECOND = 7_200_000
 export const MIN_FREE_RECORDING_BYTES = 150 * 1024 * 1024
 
 const MIME_CANDIDATES = [

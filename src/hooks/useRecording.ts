@@ -79,9 +79,11 @@ const captureProfileMessage = (profile: NativeCaptureProfile, recording = false)
   const microphone = profile.activeMicrophoneMode
     ? `, micro ${microphoneModeLabel(profile.activeMicrophoneMode)} (${profile.audioChannels ?? 1} ${profile.audioChannels === 1 ? 'canal' : 'canaux'}, traitement vocal ${profile.voiceProcessingEnabled ? 'actif' : 'inactif'})`
     : ''
-  const cameras = profile.cameraLayout === 'frontFullBackPiP'
-    ? `caméras avant + arrière (avant principale, arrière incrustée${profile.timestampOverlay ? ', date/heure incrustées' : ''})`
-    : 'caméra avant'
+  const cameras = profile.cameraLayout === 'separateFrontBack'
+    ? `caméras avant + arrière (deux vidéos séparées${profile.timestampOverlay ? ', angle/date/heure incrustés' : ''})`
+    : profile.cameraLayout === 'frontFullBackPiP'
+      ? `caméras avant + arrière (avant principale, arrière incrustée${profile.timestampOverlay ? ', date/heure incrustées' : ''})`
+      : 'caméra avant'
   const rear = profile.backActiveStabilization
     ? `, arrière ${stabilizationLabel(profile.backActiveStabilization)}`
     : ''
@@ -202,7 +204,7 @@ export function useRecording(
         const result = await stopNativeRecording()
         setStartedAt(undefined)
         setStatus(enabled ? (reason === 'interrupted' ? 'interrupted' : 'idle') : 'disabled')
-        if (result.saved) setMessage('Vidéo enregistrée dans Photos.')
+        if (result.saved) setMessage('Vidéos avant et arrière enregistrées dans Photos.')
       } catch (error) {
         setStatus('error')
         setMessage(mediaErrorMessage(error))
@@ -325,7 +327,7 @@ export function useRecording(
           : 'Vidéo conservée localement. Reprise automatique au déverrouillage…')
       } else if (event.saved) {
         setStatus(enabled ? 'idle' : 'disabled')
-        setMessage('Vidéo enregistrée dans Photos.')
+        setMessage('Vidéos avant et arrière enregistrées dans Photos.')
       } else {
         setStatus('error')
         setMessage(event.error ?? 'La vidéo n’a pas pu être ajoutée à Photos.')
@@ -350,7 +352,7 @@ export function useRecording(
       }
       const continuation = event.continuing === false ? '' : ' L’enregistrement continue.'
       setMessage(event.saved
-        ? `Segment${time ? ` de ${time}` : ''} enregistré dans Photos.${continuation}`
+        ? `Vidéos avant/arrière${time ? ` de ${time}` : ''} enregistrées dans Photos.${continuation}`
         : `Segment${time ? ` de ${time}` : ''} conservé localement pour récupération.${continuation}`)
     }).then((listener) => { segmentHandle = listener })
     void onNativeRecordingResumed((event) => {

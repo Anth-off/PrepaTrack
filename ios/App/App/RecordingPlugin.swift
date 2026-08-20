@@ -46,10 +46,32 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
     private var terminalRetained = false
     private var terminalError: String?
     private var terminalStartedAt: Date?
+    // Deux vidéos 720p/30, leurs exports audio+vidéo et la copie PhotoKit
+    // peuvent coexister brièvement. Cette réserve évite une corruption ENOSPC.
+    private let minimumFreeBytesForNewSegment: Int64 = 5_000_000_000
 
     public override func load() {
         videoPipeline.onDurationLimitReached = { [weak self] segmentID in
             self?.sessionQueue.async { self?.rotateActiveSegment(expectedID: segmentID) }
+        }
+        videoPipeline.onRenderingFailed = { [weak self] error in
+            self?.sessionQueue.async {
+                guard let self,
+                      self.recordingRequested,
+                      !self.suspendedForInterruption,
+                      self.activeSegment != nil else { return }
+                // Une panne durable du rendu ne doit jamais laisser tourner
+                // l'audio en donnant l'impression que les deux vidéos sont
+                // encore capturées. Fermer le segment, conserver ses sources,
+                // puis repartir dans un nouveau fichier avec un backoff.
+                self.suspendedForInterruption = true
+                self.finishActiveSegment(
+                    terminal: false,
+                    interrupted: true,
+                    forcedError: error.localizedDescription
+                )
+                self.scheduleResumeRetry()
+            }
         }
         videoPipeline.onSessionInterrupted = { [weak self] in
             self?.sessionQueue.async {
@@ -275,6 +297,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
 
     /** Démarre un nouveau segment sans dépendre des imports Photos précédents. */
     private func startCapture() throws -> Date {
+        try ensureRecordingSpaceAvailable()
         let segment = makeSegment(startedAt: Date())
         audioWriteError = nil
         do {
@@ -282,7 +305,8 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
             try videoPipeline.startSession()
             try startAudioCapture(to: segment.audioURL, acceptImmediately: true)
             try videoPipeline.startSegment(
-                to: segment.videoURL,
+                frontURL: segment.frontVideoURL,
+                rearURL: segment.rearVideoURL,
                 id: segment.id,
                 startedAt: segment.startedAt,
                 maxDurationSeconds: segmentDurationSeconds
@@ -291,7 +315,8 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
             stopAudioCapture()
             videoPipeline.stopSession()
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            try? FileManager.default.removeItem(at: segment.videoURL)
+            try? FileManager.default.removeItem(at: segment.frontVideoURL)
+            try? FileManager.default.removeItem(at: segment.rearVideoURL)
             try? FileManager.default.removeItem(at: segment.audioURL)
             throw error
         }
@@ -312,13 +337,28 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
               expectedID == nil || expectedID == previous.id else { return }
         rotationInProgress = true
         cancelSegmentTimer()
+        do {
+            try ensureRecordingSpaceAvailable()
+        } catch {
+            rotationInProgress = false
+            recordingRequested = false
+            suspendedForInterruption = false
+            beginTerminalStop(startedAt: previous.startedAt)
+            finishActiveSegment(
+                terminal: true,
+                interrupted: false,
+                forcedError: error.localizedDescription
+            )
+            return
+        }
         var previousAudioError: String?
         let next = makeSegment(startedAt: Date())
         registerFinalization(previous)
         do {
             let nextAudioFile = try makeAudioFile(at: next.audioURL)
             try videoPipeline.rotateSegment(
-                to: next.videoURL,
+                frontURL: next.frontVideoURL,
+                rearURL: next.rearVideoURL,
                 id: next.id,
                 startedAt: next.startedAt,
                 maxDurationSeconds: segmentDurationSeconds,
@@ -387,7 +427,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
 
     private func finalizeSegment(
         _ segment: NativeRecordingSegment,
-        videoResult: Result<URL, Error>,
+        videoResult: Result<DualCameraSegmentFiles, Error>,
         audioError: String?,
         terminal: Bool,
         interrupted: Bool
@@ -402,27 +442,44 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                 interrupted: interrupted,
                 cleanupURLs: []
             )
-        case .success(let videoURL):
-            prepareFinalRecording(videoURL: videoURL, audioURL: segment.audioURL) { [weak self] finalURL, merged, mergeError in
+        case .success(let videos):
+            prepareDualFinalRecordings(videos: videos, audioURL: segment.audioURL) { [weak self] front, rear in
                 guard let self else { return }
-                guard merged else {
+                guard front.merged, rear.merged else {
+                    let details = [front.error, rear.error, audioError]
+                        .compactMap { $0 }
+                        .joined(separator: " ")
                     self.completeSegmentFinalization(
                         segment,
                         saved: false,
-                        error: mergeError ?? audioError ?? "La fusion audio/vidéo a échoué; les sources ont été conservées.",
+                        error: details.isEmpty
+                            ? "La finalisation d’au moins une caméra a échoué; toutes les sources ont été conservées."
+                            : details,
                         terminal: terminal,
                         interrupted: interrupted,
                         cleanupURLs: []
                     )
                     return
                 }
-                self.saveToPhotos(finalURL, capturedAt: segment.startedAt) { saved, photoError in
-                    var cleanup = [videoURL, segment.audioURL]
-                    if finalURL != videoURL { cleanup.append(finalURL) }
+                self.savePairToPhotos(
+                    front: front.finalURL,
+                    rear: rear.finalURL,
+                    capturedAt: segment.startedAt
+                ) { saved, photoError in
+                    var cleanup = [
+                        videos.frontURL,
+                        videos.rearURL,
+                        segment.audioURL,
+                    ]
+                    if front.finalURL != videos.frontURL { cleanup.append(front.finalURL) }
+                    if rear.finalURL != videos.rearURL { cleanup.append(rear.finalURL) }
+                    if let journal = self.photoImportJournalURL(for: front.finalURL) {
+                        cleanup.append(journal)
+                    }
                     self.completeSegmentFinalization(
                         segment,
                         saved: saved,
-                        error: photoError ?? mergeError ?? audioError,
+                        error: photoError ?? front.error ?? rear.error ?? audioError,
                         terminal: terminal,
                         interrupted: interrupted,
                         cleanupURLs: cleanup
@@ -441,7 +498,15 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         cleanupURLs: [URL]
     ) {
         if saved {
-            for url in Set(cleanupURLs) { try? FileManager.default.removeItem(at: url) }
+            let unique = Set(cleanupURLs)
+            // Le journal est le verrou anti-doublon : il doit être supprimé
+            // seulement après toutes les sources et sorties finales.
+            for url in unique where !url.lastPathComponent.hasSuffix(".photo-import.json") {
+                try? FileManager.default.removeItem(at: url)
+            }
+            for url in unique where url.lastPathComponent.hasSuffix(".photo-import.json") {
+                try? FileManager.default.removeItem(at: url)
+            }
         }
         sessionQueue.async {
             self.finalizingSegmentIDs.remove(segment.id)
@@ -537,7 +602,8 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         return NativeRecordingSegment(
             id: UUID(),
             startedAt: startedAt,
-            videoURL: recordingsDirectory.appendingPathComponent("\(baseName).video.mov"),
+            frontVideoURL: recordingsDirectory.appendingPathComponent("\(baseName).front.video.mov"),
+            rearVideoURL: recordingsDirectory.appendingPathComponent("\(baseName).rear.video.mov"),
             audioURL: recordingsDirectory.appendingPathComponent("\(baseName).audio.m4a")
         )
     }
@@ -555,6 +621,16 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
     private func cancelSegmentTimer() {
         segmentTimer?.cancel()
         segmentTimer = nil
+    }
+
+    private func ensureRecordingSpaceAvailable() throws {
+        let values = try recordingsDirectory.resourceValues(forKeys: [
+            .volumeAvailableCapacityForImportantUsageKey,
+        ])
+        if let available = values.volumeAvailableCapacityForImportantUsage,
+           available < minimumFreeBytesForNewSegment {
+            throw RecordingError.insufficientStorage
+        }
     }
 
     /**
@@ -611,10 +687,106 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         completion: @escaping (Bool, String?) -> Void
     ) {
         PHPhotoLibrary.shared().performChanges({
-            let request = PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
-            request?.creationDate = capturedAt
+            // Contrairement à la factory optionnelle, cette requête existe
+            // toujours. Une transaction PhotoKit vide ne peut donc jamais être
+            // interprétée comme un succès puis provoquer la suppression de la
+            // seule source récupérable.
+            let request = PHAssetCreationRequest.forAsset()
+            request.creationDate = capturedAt
+            request.addResource(with: .video, fileURL: url, options: nil)
         }) { saved, error in
             completion(saved, error?.localizedDescription)
+        }
+    }
+
+    /**
+     * Ajoute les deux angles dans une seule transaction PhotoKit. Ainsi, un
+     * segment ne peut pas être annoncé comme sauvegardé avec seulement l'une
+     * des deux caméras.
+     */
+    private func savePairToPhotos(
+        front: URL,
+        rear: URL,
+        capturedAt: Date,
+        completion: @escaping (Bool, String?) -> Void
+    ) {
+        guard let journalURL = photoImportJournalURL(for: front) else {
+            completion(false, "Impossible d'identifier durablement le couple de vidéos; les sources ont été conservées.")
+            return
+        }
+        do {
+            try writePhotoImportJournal(
+                PhotoImportJournal(
+                    state: "preparing",
+                    createdAt: Date(),
+                    frontLocalIdentifier: nil,
+                    rearLocalIdentifier: nil
+                ),
+                to: journalURL
+            )
+        } catch {
+            completion(false, "Le journal de sauvegarde Photos n'a pas pu être écrit; les sources ont été conservées.")
+            return
+        }
+
+        PHPhotoLibrary.shared().performChanges({
+            let frontRequest = PHAssetCreationRequest.forAsset()
+            frontRequest.creationDate = capturedAt
+            frontRequest.addResource(with: .video, fileURL: front, options: nil)
+            let rearRequest = PHAssetCreationRequest.forAsset()
+            rearRequest.creationDate = capturedAt.addingTimeInterval(0.001)
+            rearRequest.addResource(with: .video, fileURL: rear, options: nil)
+            let journal = PhotoImportJournal(
+                state: "importing",
+                createdAt: Date(),
+                frontLocalIdentifier: frontRequest.placeholderForCreatedAsset?.localIdentifier,
+                rearLocalIdentifier: rearRequest.placeholderForCreatedAsset?.localIdentifier
+            )
+            try? self.writePhotoImportJournal(journal, to: journalURL)
+        }) { saved, error in
+            if !saved { try? FileManager.default.removeItem(at: journalURL) }
+            completion(saved, error?.localizedDescription)
+        }
+    }
+
+    /** Prépare en parallèle les deux vidéos qui partagent la même piste audio. */
+    private func prepareDualFinalRecordings(
+        videos: DualCameraSegmentFiles,
+        audioURL: URL,
+        completion: @escaping (PreparedCameraRecording, PreparedCameraRecording) -> Void
+    ) {
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var front: PreparedCameraRecording?
+        var rear: PreparedCameraRecording?
+
+        group.enter()
+        prepareFinalRecording(videoURL: videos.frontURL, audioURL: audioURL) { url, merged, error in
+            lock.lock()
+            front = PreparedCameraRecording(finalURL: url, merged: merged, error: error)
+            lock.unlock()
+            group.leave()
+        }
+        group.enter()
+        prepareFinalRecording(videoURL: videos.rearURL, audioURL: audioURL) { url, merged, error in
+            lock.lock()
+            rear = PreparedCameraRecording(finalURL: url, merged: merged, error: error)
+            lock.unlock()
+            group.leave()
+        }
+        group.notify(queue: sessionQueue) {
+            completion(
+                front ?? PreparedCameraRecording(
+                    finalURL: videos.frontURL,
+                    merged: false,
+                    error: "La vidéo avant n'a pas pu être finalisée."
+                ),
+                rear ?? PreparedCameraRecording(
+                    finalURL: videos.rearURL,
+                    merged: false,
+                    error: "La vidéo arrière n'a pas pu être finalisée."
+                )
+            )
         }
     }
 
@@ -648,7 +820,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         let rawVideos = durable.filter { $0.lastPathComponent.hasSuffix(".video.mov") }
         let mergingVideos = durable.filter { $0.lastPathComponent.hasSuffix(".merging.mov") }
-        guard !finalVideos.isEmpty || !rawVideos.isEmpty || !temporary.isEmpty else { return }
+        guard !finalVideos.isEmpty || !rawVideos.isEmpty || !mergingVideos.isEmpty || !temporary.isEmpty else { return }
 
         let importFiles = { [weak self] in
             guard let self else { return }
@@ -673,14 +845,23 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
             }
 
             Task {
+                let dualBases = Set(
+                    (finalVideos + rawVideos + mergingVideos)
+                        .compactMap { self.dualCameraBaseName(for: $0) }
+                )
+                for base in dualBases.sorted() {
+                    await self.recoverDualCameraPair(baseName: base, notify: notify)
+                }
+
                 var validFinalNames = Set<String>()
-                for url in finalVideos {
+                for url in finalVideos where !self.isDualCameraVideo(url) {
                     let base = url.deletingPathExtension().lastPathComponent
                     let raw = url.deletingLastPathComponent().appendingPathComponent("\(base).video.mov")
-                    let audio = url.deletingLastPathComponent().appendingPathComponent("\(base).audio.m4a")
+                    let audio = self.sharedAudioURL(forVideo: url)
                     if await self.isValidMergedRecording(url) {
                         validFinalNames.insert(base)
-                        importVideo(url, [url, raw, audio], nil)
+                        let cleanup = self.isDualCameraVideo(url) ? [url, raw] : [url, raw, audio]
+                        importVideo(url, cleanup, nil)
                     } else if manager.fileExists(atPath: raw.path) {
                         // Un ancien export interrompu ne doit jamais masquer les
                         // sources valides ni bloquer toutes les reprises suivantes.
@@ -689,18 +870,18 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                         notify(false, "Une vidéo finale incomplète a été conservée pour diagnostic.", self.captureDate(from: url))
                     }
                 }
-                for partial in mergingVideos {
+                for partial in mergingVideos where !self.isDualCameraVideo(partial) {
                     let base = partial.lastPathComponent.replacingOccurrences(of: ".merging.mov", with: "")
                     let raw = partial.deletingLastPathComponent().appendingPathComponent("\(base).video.mov")
                     if manager.fileExists(atPath: raw.path) { try? manager.removeItem(at: partial) }
                 }
-                for videoURL in rawVideos {
+                for videoURL in rawVideos where !self.isDualCameraVideo(videoURL) {
                     let videoStem = videoURL.deletingPathExtension().lastPathComponent
                     let base = videoStem.hasSuffix(".video")
                         ? String(videoStem.dropLast(".video".count))
                         : videoStem
                     guard !validFinalNames.contains(base) else { continue }
-                    let audioURL = videoURL.deletingLastPathComponent().appendingPathComponent("\(base).audio.m4a")
+                    let audioURL = self.sharedAudioURL(forVideo: videoURL)
                     self.prepareFinalRecording(videoURL: videoURL, audioURL: audioURL) { finalURL, merged, mergeError in
                         guard merged else {
                             Task {
@@ -722,7 +903,10 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                             }
                             return
                         }
-                        importVideo(finalURL, [videoURL, audioURL, finalURL], mergeError)
+                        let cleanup = self.isDualCameraVideo(videoURL)
+                            ? [videoURL, finalURL]
+                            : [videoURL, audioURL, finalURL]
+                        importVideo(finalURL, cleanup, mergeError)
                     }
                 }
                 for url in temporary { importVideo(url, [url], nil) }
@@ -738,6 +922,228 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         // En cas de refus, les fichiers restent intacts pour une prochaine
         // ouverture après réactivation de l'autorisation dans Réglages iOS.
+    }
+
+    private func isDualCameraVideo(_ url: URL) -> Bool {
+        let name = url.lastPathComponent
+        return name.contains(".front.") || name.contains(".rear.")
+    }
+
+    private func dualCameraBaseName(for url: URL) -> String? {
+        let name = url.lastPathComponent
+        for suffix in [
+            ".front.video.mov",
+            ".rear.video.mov",
+            ".front.merging.mov",
+            ".rear.merging.mov",
+            ".front.mov",
+            ".rear.mov",
+        ] where name.hasSuffix(suffix) {
+            return String(name.dropLast(suffix.count))
+        }
+        return nil
+    }
+
+    /**
+     * Récupère un segment double caméra comme une unité atomique. Les sources
+     * et la piste audio partagée ne sont supprimées qu'après l'ajout confirmé
+     * des deux angles dans Photos.
+     */
+    private func recoverDualCameraPair(
+        baseName: String,
+        notify: @escaping (Bool, String?, Date?) -> Void
+    ) async {
+        let directory = recordingsDirectory
+        let frontRaw = directory.appendingPathComponent("\(baseName).front.video.mov")
+        let rearRaw = directory.appendingPathComponent("\(baseName).rear.video.mov")
+        let frontFinal = directory.appendingPathComponent("\(baseName).front.mov")
+        let rearFinal = directory.appendingPathComponent("\(baseName).rear.mov")
+        let frontMerging = directory.appendingPathComponent("\(baseName).front.merging.mov")
+        let rearMerging = directory.appendingPathComponent("\(baseName).rear.merging.mov")
+        let audio = directory.appendingPathComponent("\(baseName).audio.m4a")
+        let manager = FileManager.default
+        let capturedAt = captureDate(from: frontRaw)
+        let journalURL = directory.appendingPathComponent("\(baseName).photo-import.json")
+
+        if manager.fileExists(atPath: journalURL.path) {
+            if let journal = readPhotoImportJournal(from: journalURL),
+               photoImportIsConfirmed(journal) {
+                for url in [
+                    frontRaw,
+                    rearRaw,
+                    frontFinal,
+                    rearFinal,
+                    frontMerging,
+                    rearMerging,
+                    audio,
+                    journalURL,
+                ] {
+                    try? manager.removeItem(at: url)
+                }
+                notify(true, "Les deux vidéos déjà ajoutées à Photos ont été confirmées après l'interruption.", capturedAt)
+            } else {
+                notify(
+                    false,
+                    "L'import Photos précédent a été interrompu dans un état ambigu. Les sources sont conservées sans créer de doublon.",
+                    capturedAt
+                )
+            }
+            return
+        }
+
+        if manager.fileExists(atPath: frontRaw.path) { try? manager.removeItem(at: frontMerging) }
+        if manager.fileExists(atPath: rearRaw.path) { try? manager.removeItem(at: rearMerging) }
+
+        let front = await recoverPreparedCamera(finalURL: frontFinal, rawURL: frontRaw, audioURL: audio)
+        let rear = await recoverPreparedCamera(finalURL: rearFinal, rawURL: rearRaw, audioURL: audio)
+        var saved = false
+        var error: String?
+        var savedURLs: [URL] = []
+        let readableAudio = await hasReadableAudioRecording(audio)
+        let readableFront = await hasReadableVideoRecording(frontRaw)
+        let readableRear = await hasReadableVideoRecording(rearRaw)
+
+        if front.merged, rear.merged {
+            let result = await savePairToPhotosAsync(
+                front: front.finalURL,
+                rear: rear.finalURL,
+                capturedAt: capturedAt ?? Date()
+            )
+            saved = result.0
+            error = result.1
+            savedURLs = [front.finalURL, rear.finalURL]
+        } else if !readableAudio, readableFront, readableRear {
+            let result = await savePairToPhotosAsync(
+                front: frontRaw,
+                rear: rearRaw,
+                capturedAt: capturedAt ?? Date()
+            )
+            saved = result.0
+            error = result.1 ?? "La piste audio était irrécupérable; les deux vidéos ont été sauvées sans son."
+            savedURLs = [frontRaw, rearRaw]
+        } else {
+            error = [front.error, rear.error]
+                .compactMap { $0 }
+                .joined(separator: " ")
+            if error?.isEmpty != false {
+                error = "Le couple avant/arrière est incomplet; toutes les sources ont été conservées."
+            }
+        }
+
+        if saved {
+            let cleanup = [
+                frontRaw,
+                rearRaw,
+                frontFinal,
+                rearFinal,
+                frontMerging,
+                rearMerging,
+                audio,
+                journalURL,
+            ] + savedURLs
+            let unique = Set(cleanup)
+            for url in unique where !url.lastPathComponent.hasSuffix(".photo-import.json") {
+                try? manager.removeItem(at: url)
+            }
+            try? manager.removeItem(at: journalURL)
+        }
+        notify(saved, error, capturedAt)
+    }
+
+    private func recoverPreparedCamera(
+        finalURL: URL,
+        rawURL: URL,
+        audioURL: URL
+    ) async -> PreparedCameraRecording {
+        if await isValidMergedRecording(finalURL) {
+            return PreparedCameraRecording(finalURL: finalURL, merged: true, error: nil)
+        }
+        guard FileManager.default.fileExists(atPath: rawURL.path) else {
+            return PreparedCameraRecording(
+                finalURL: finalURL,
+                merged: false,
+                error: "Une des deux vidéos brutes est absente."
+            )
+        }
+        return await withCheckedContinuation { continuation in
+            prepareFinalRecording(videoURL: rawURL, audioURL: audioURL) { url, merged, error in
+                continuation.resume(returning: PreparedCameraRecording(
+                    finalURL: url,
+                    merged: merged,
+                    error: error
+                ))
+            }
+        }
+    }
+
+    private func savePairToPhotosAsync(
+        front: URL,
+        rear: URL,
+        capturedAt: Date
+    ) async -> (Bool, String?) {
+        await withCheckedContinuation { continuation in
+            savePairToPhotos(front: front, rear: rear, capturedAt: capturedAt) { saved, error in
+                continuation.resume(returning: (saved, error))
+            }
+        }
+    }
+
+    private func hasReadableVideoRecording(_ url: URL) async -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        let asset = AVURLAsset(url: url)
+        do {
+            let duration = try await asset.load(.duration)
+            let tracks = try await asset.loadTracks(withMediaType: .video)
+            return duration.isValid && duration.seconds > 0 && !tracks.isEmpty
+        } catch {
+            return false
+        }
+    }
+
+    /** Les deux angles d'un segment partagent exactement le même fichier AAC. */
+    private func sharedAudioURL(forVideo url: URL) -> URL {
+        var base = url.lastPathComponent
+        for suffix in [".front.video.mov", ".rear.video.mov", ".front.mov", ".rear.mov"] {
+            if base.hasSuffix(suffix) {
+                base = String(base.dropLast(suffix.count))
+                return url.deletingLastPathComponent().appendingPathComponent("\(base).audio.m4a")
+            }
+        }
+        let stem = url.deletingPathExtension().lastPathComponent
+        let legacyBase = stem.hasSuffix(".video")
+            ? String(stem.dropLast(".video".count))
+            : stem
+        return url.deletingLastPathComponent().appendingPathComponent("\(legacyBase).audio.m4a")
+    }
+
+    private func photoImportJournalURL(for videoURL: URL) -> URL? {
+        guard let base = dualCameraBaseName(for: videoURL) else { return nil }
+        return videoURL.deletingLastPathComponent().appendingPathComponent("\(base).photo-import.json")
+    }
+
+    private func writePhotoImportJournal(_ journal: PhotoImportJournal, to url: URL) throws {
+        let data = try JSONEncoder().encode(journal)
+        try data.write(to: url, options: .atomic)
+        try? FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUnlessOpen],
+            ofItemAtPath: url.path
+        )
+    }
+
+    private func readPhotoImportJournal(from url: URL) -> PhotoImportJournal? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(PhotoImportJournal.self, from: data)
+    }
+
+    private func photoImportIsConfirmed(_ journal: PhotoImportJournal) -> Bool {
+        guard let front = journal.frontLocalIdentifier,
+              let rear = journal.rearLocalIdentifier else { return false }
+        let authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard authorization == .authorized || authorization == .limited else { return false }
+        return PHAsset.fetchAssets(
+            withLocalIdentifiers: [front, rear],
+            options: nil
+        ).count == 2
     }
 
     private func captureDate(from url: URL) -> Date? {
@@ -963,14 +1369,9 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                     completion(videoURL, false, "La piste audio ou vidéo est vide; la vidéo source a été conservée.")
                     return
                 }
-                guard abs(videoDuration.seconds - audioDuration.seconds) <= 3 else {
-                    completion(
-                        videoURL,
-                        false,
-                        "Les durées audio et vidéo diffèrent de plus de 3 s; les sources ont été conservées."
-                    )
-                    return
-                }
+                let durationWarning = abs(videoDuration.seconds - audioDuration.seconds) > 3
+                    ? "La piste audio était plus courte que la vidéo; la fin reste silencieuse mais la vidéo complète a été sauvegardée."
+                    : nil
 
                 let composition = AVMutableComposition()
                 guard let targetVideo = composition.addMutableTrack(
@@ -997,6 +1398,16 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                     of: sourceAudio,
                     at: .zero
                 )
+                if CMTimeCompare(audioRangeDuration, videoDuration) < 0 {
+                    // Une interruption brutale peut fermer l'audio avant le
+                    // writer vidéo. Prolonger la piste par du silence conserve
+                    // toutes les images et évite une récupération bloquée à
+                    // chaque lancement.
+                    targetAudio.insertEmptyTimeRange(CMTimeRange(
+                        start: audioRangeDuration,
+                        duration: CMTimeSubtract(videoDuration, audioRangeDuration)
+                    ))
+                }
 
                 guard let export = AVAssetExportSession(
                     asset: composition,
@@ -1028,7 +1439,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                                     try FileManager.default.removeItem(at: finalURL)
                                 }
                                 try FileManager.default.moveItem(at: mergingURL, to: finalURL)
-                                completion(finalURL, true, nil)
+                                completion(finalURL, true, durationWarning)
                             } catch {
                                 completion(videoURL, false, error.localizedDescription)
                             }
@@ -1107,12 +1518,15 @@ private enum RecordingError: LocalizedError {
     case configurationFailed
     case stabilizationUnavailable
     case voiceProcessingUnavailable
+    case insufficientStorage
     var errorDescription: String? {
         switch self {
         case .deviceUnavailable: return "Caméra avant ou microphone introuvable."
         case .configurationFailed: return "Impossible de configurer la capture vidéo."
         case .stabilizationUnavailable: return "iOS n’a pas activé la stabilisation vidéo sur ce profil."
         case .voiceProcessingUnavailable: return "iOS n’a pas activé le traitement vocal requis pour les modes micro."
+        case .insufficientStorage:
+            return "Moins de 5 Go sont disponibles. L’enregistrement a été arrêté proprement pour conserver les vidéos existantes."
         }
     }
 }
@@ -1120,6 +1534,20 @@ private enum RecordingError: LocalizedError {
 private struct NativeRecordingSegment {
     let id: UUID
     let startedAt: Date
-    let videoURL: URL
+    let frontVideoURL: URL
+    let rearVideoURL: URL
     let audioURL: URL
+}
+
+private struct PreparedCameraRecording {
+    let finalURL: URL
+    let merged: Bool
+    let error: String?
+}
+
+private struct PhotoImportJournal: Codable {
+    let state: String
+    let createdAt: Date
+    let frontLocalIdentifier: String?
+    let rearLocalIdentifier: String?
 }
