@@ -19,7 +19,7 @@ export function RecordingControl({ recording }: { recording: Control }) {
                 ? 'Enregistrement interrompu'
                 : recording.status === 'error'
                   ? 'Enregistrement indisponible'
-                  : 'Caméra avant + micro'}
+                  : '2 caméras + micro'}
         </div>
         {recording.message && <div className="truncate text-[0.65rem] text-slate-500">{recording.message}</div>}
       </div>

@@ -1,9 +1,11 @@
-/** Un enregistrement dure au maximum une heure dans un fichier unique. */
-export const RECORDING_CHUNK_MS = 60 * 60_000
+/** Un enregistrement dure au maximum trente minutes dans un fichier unique. */
+export const RECORDING_CHUNK_MS = 30 * 60_000
 export const RECORDING_VIDEO_BITS_PER_SECOND = 1_500_000
 export const RECORDING_AUDIO_BITS_PER_SECOND = 64_000
 export const RECORDING_BITS_PER_SECOND =
   RECORDING_VIDEO_BITS_PER_SECOND + RECORDING_AUDIO_BITS_PER_SECOND
+/** H.264 natif 3,5 Mb/s + marge AAC/métadonnées du flux avant/arrière composité. */
+export const NATIVE_RECORDING_BITS_PER_SECOND = 3_700_000
 export const MIN_FREE_RECORDING_BYTES = 150 * 1024 * 1024
 
 const MIME_CANDIDATES = [
@@ -39,4 +41,8 @@ export function mediaErrorMessage(error: unknown): string {
 
 export function estimatedRecordingMegabytes(hours: number): number {
   return Math.round((RECORDING_BITS_PER_SECOND * hours * 3600) / 8 / 1_000_000)
+}
+
+export function estimatedNativeRecordingMegabytes(hours: number): number {
+  return Math.round((NATIVE_RECORDING_BITS_PER_SECOND * hours * 3600) / 8 / 1_000_000)
 }

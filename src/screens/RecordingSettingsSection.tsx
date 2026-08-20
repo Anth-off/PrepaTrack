@@ -1,17 +1,21 @@
-import { estimatedRecordingMegabytes } from '../core/recording'
+import { estimatedNativeRecordingMegabytes, estimatedRecordingMegabytes } from '../core/recording'
 import type { Settings } from '../core/types'
 import type { RecordingControl } from '../hooks/useRecording'
 import { saveSettings } from '../db/db'
 import { RecordingControl as RecordingControlBar } from '../components/RecordingControl'
+import { nativeRecordingSupported } from '../native/recording'
 
 export function RecordingSettingsSection({ settings, recording }: { settings: Settings; recording: RecordingControl }) {
   const config = settings.recording
+  const estimatedMegabytes = nativeRecordingSupported()
+    ? estimatedNativeRecordingMegabytes(7.5)
+    : estimatedRecordingMegabytes(7.5)
   return (
     <section className="card">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Enregistrement de la vacation</h3>
-          <p className="mt-1 text-sm text-slate-500">Caméra avant et microphone, uniquement lorsque l’app reste visible.</p>
+          <p className="mt-1 text-sm text-slate-500">Caméras avant/arrière et microphone, avec indicateur iOS visible.</p>
         </div>
         <button
           type="button"
@@ -43,7 +47,7 @@ export function RecordingSettingsSection({ settings, recording }: { settings: Se
             </select>
           </label>
           <p className="mt-2 text-xs text-slate-500">
-            Qualité équilibrée 720p à 30 i/s : environ {estimatedRecordingMegabytes(7.5)} Mo pour 7 h 30, en fichiers d’une heure maximum. Sur iPhone, PrepaTrack verrouille le format avant stabilisé offrant le champ de vision le plus large, puis vérifie le mode réellement appliqué par iOS. Le son est encodé en AAC 48 kHz et laisse iOS appliquer le mode choisi : Automatique, Standard, Isolement de la voix ou Large spectre. Chaque fichier reste dans le stockage durable jusqu’à ce que Photos confirme son import, puis il est récupéré automatiquement après une interruption. Les vidéos sont exclues de Supabase et des sauvegardes JSON.
+            Qualité équilibrée 720p à 30 i/s : environ {estimatedMegabytes} Mo pour 7 h 30, en fichiers de 30 minutes maximum qui s’enchaînent automatiquement. Sur iPhone, la caméra avant reste principale et la caméra arrière est incrustée ; la date et l’heure du début du segment sont gravées dans l’image pour rester visibles dans Photos. Le son est encodé en AAC 48 kHz et laisse iOS appliquer le mode choisi : Automatique, Standard, Isolement de la voix ou Large spectre. Chaque fichier reste dans le stockage durable jusqu’à confirmation de son import dans Photos, puis il est récupéré automatiquement après une interruption. Les vidéos sont exclues de Supabase et des sauvegardes JSON.
           </p>
           <button
             type="button"

@@ -19,6 +19,7 @@ import {
   nativeRecordingSupported,
   nativeRecordingStatus,
   onNativeRecordingFinished,
+  onNativeRecordingSegmentFinished,
   onNativeRecordingResumed,
   onNativeRecordingResumeFailed,
   startNativeRecording,
@@ -78,7 +79,13 @@ const captureProfileMessage = (profile: NativeCaptureProfile, recording = false)
   const microphone = profile.activeMicrophoneMode
     ? `, micro ${microphoneModeLabel(profile.activeMicrophoneMode)} (${profile.audioChannels ?? 1} ${profile.audioChannels === 1 ? 'canal' : 'canaux'}, traitement vocal ${profile.voiceProcessingEnabled ? 'actif' : 'inactif'})`
     : ''
-  return `Profil caméra : ${profile.width}×${profile.height} à ${profile.framesPerSecond} i/s, champ ${Math.round(profile.fieldOfView)}°, zoom ${profile.zoomFactor.toFixed(1)}×, stabilisation ${stabilizationLabel(mode)}${state}${microphone}.`
+  const cameras = profile.cameraLayout === 'frontFullBackPiP'
+    ? `caméras avant + arrière (avant principale, arrière incrustée${profile.timestampOverlay ? ', date/heure incrustées' : ''})`
+    : 'caméra avant'
+  const rear = profile.backActiveStabilization
+    ? `, arrière ${stabilizationLabel(profile.backActiveStabilization)}`
+    : ''
+  return `Profil ${cameras} : ${profile.width}×${profile.height} à ${profile.framesPerSecond} i/s, champ avant ${Math.round(profile.fieldOfView)}°, stabilisation avant ${stabilizationLabel(mode)}${state}${rear}${microphone}.`
 }
 
 /**
@@ -142,6 +149,7 @@ export function useRecording(
       const endedAt = Date.now()
       const blob = new Blob(parts, { type: recorder.mimeType || mimeType || 'video/webm' })
       const rotate = continueRef.current && dayRef.current === dayId && stream.active
+      const endReason = reasonRef.current
       // Démarre le fichier suivant avant l'écriture du précédent dans
       // IndexedDB. Sur iPhone, attendre cette écriture créait un raccord noir.
       if (rotate) startChunkRef.current(stream, dayId)
@@ -155,7 +163,7 @@ export function useRecording(
             duration: endedAt - chunkStartedAt,
             size: blob.size,
             mimeType: blob.type,
-            status: reasonRef.current,
+            status: endReason,
             blob,
           })
         } catch {
@@ -275,8 +283,8 @@ export function useRecording(
       if (native) {
         const result = await testNativeRecording()
         setMessage(result.captureProfile
-          ? `Caméra avant, microphone et Photos disponibles. ${captureProfileMessage(result.captureProfile)}`
-          : 'Caméra avant, microphone et Photos disponibles.')
+          ? `Caméras avant/arrière, microphone et Photos disponibles. ${captureProfileMessage(result.captureProfile)}`
+          : 'Caméras avant/arrière, microphone et Photos disponibles.')
         return true
       }
       const stream = await navigator.mediaDevices.getUserMedia(CONSTRAINTS)
@@ -305,6 +313,7 @@ export function useRecording(
   useEffect(() => {
     if (!native) return
     let finishedHandle: Awaited<ReturnType<typeof onNativeRecordingFinished>> | undefined
+    let segmentHandle: Awaited<ReturnType<typeof onNativeRecordingSegmentFinished>> | undefined
     let resumedHandle: Awaited<ReturnType<typeof onNativeRecordingResumed>> | undefined
     let failedHandle: Awaited<ReturnType<typeof onNativeRecordingResumeFailed>> | undefined
     void onNativeRecordingFinished((event) => {
@@ -322,18 +331,45 @@ export function useRecording(
         setMessage(event.error ?? 'La vidéo n’a pas pu être ajoutée à Photos.')
       }
     }).then((listener) => { finishedHandle = listener })
+    void onNativeRecordingSegmentFinished((event) => {
+      const time = event.startedAt
+        ? new Date(event.startedAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+        : undefined
+      if (event.recovered) {
+        setMessage(event.saved
+          ? `Vidéo${time ? ` de ${time}` : ''} récupérée et ajoutée à Photos.`
+          : `Vidéo${time ? ` de ${time}` : ''} conservée localement : la récupération sera retentée.`)
+        return
+      }
+      if (event.interrupted && event.willResume) {
+        setStatus('requesting')
+        setMessage(event.saved
+          ? 'Segment ajouté à Photos. Reprise automatique en attente…'
+          : 'Segment conservé localement. Reprise automatique en attente…')
+        return
+      }
+      const continuation = event.continuing === false ? '' : ' L’enregistrement continue.'
+      setMessage(event.saved
+        ? `Segment${time ? ` de ${time}` : ''} enregistré dans Photos.${continuation}`
+        : `Segment${time ? ` de ${time}` : ''} conservé localement pour récupération.${continuation}`)
+    }).then((listener) => { segmentHandle = listener })
     void onNativeRecordingResumed((event) => {
       setStartedAt(event.startedAt)
       setStatus('recording')
-      setMessage('Enregistrement repris automatiquement après le déverrouillage.')
+      setMessage(event.rotated
+        ? 'Nouveau fichier de 30 minutes démarré automatiquement.'
+        : 'Enregistrement repris automatiquement après le déverrouillage.')
     }).then((listener) => { resumedHandle = listener })
     void onNativeRecordingResumeFailed((event) => {
       setStartedAt(undefined)
-      setStatus('error')
-      setMessage(event.error ?? 'La caméra n’a pas pu reprendre après le déverrouillage.')
+      setStatus(event.retrying ? 'requesting' : 'error')
+      setMessage(event.retrying
+        ? `Reprise temporairement impossible${event.error ? ` : ${event.error}` : ''}. Nouvelle tentative automatique…`
+        : (event.error ?? 'La caméra n’a pas pu reprendre après le déverrouillage.'))
     }).then((listener) => { failedHandle = listener })
     return () => {
       void finishedHandle?.remove()
+      void segmentHandle?.remove()
       void resumedHandle?.remove()
       void failedHandle?.remove()
     }
@@ -353,15 +389,20 @@ export function useRecording(
       const reconcile = () => {
         if (document.visibilityState !== 'visible') return
         void nativeRecordingStatus().then((value) => {
-          if (value.recording) {
+          if (value.capturing) {
             setStartedAt(value.startedAt)
             setStatus('recording')
+          } else if (value.recording && value.suspended) {
+            setStartedAt(undefined)
+            setStatus('requesting')
+            setMessage('Reprise automatique de l’enregistrement en attente…')
           } else {
             setStartedAt(undefined)
             setStatus(enabled ? 'idle' : 'disabled')
           }
         })
       }
+      reconcile()
       document.addEventListener('visibilitychange', reconcile)
       return () => document.removeEventListener('visibilitychange', reconcile)
     }

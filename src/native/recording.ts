@@ -5,20 +5,31 @@ interface FinishedEvent {
   error?: string
   interrupted?: boolean
   willResume?: boolean
+  retained?: boolean
+  startedAt?: number
+  recovered?: boolean
+  continuing?: boolean
 }
 
-interface ResumedEvent { startedAt: number }
-interface ResumeFailedEvent { error?: string }
+interface ResumedEvent { startedAt: number; rotated?: boolean }
+interface ResumeFailedEvent { error?: string; retrying?: boolean }
 
 export interface NativeCaptureProfile {
   camera: string
+  cameraLayout?: 'frontFullBackPiP'
   width: number
   height: number
   framesPerSecond: number
   fieldOfView: number
+  backFieldOfView?: number
   zoomFactor: number
   requestedStabilization: string
   activeStabilization: string
+  backRequestedStabilization?: string
+  backActiveStabilization?: string
+  hardwareCost?: number
+  systemPressureCost?: number
+  timestampOverlay?: boolean
   preferredMicrophoneMode?: string
   activeMicrophoneMode?: string
   audioChannels?: number
@@ -30,6 +41,8 @@ export interface NativeCaptureProfile {
 
 interface NativeRecordingState {
   recording: boolean
+  capturing?: boolean
+  suspended?: boolean
   startedAt?: number
   captureProfile?: NativeCaptureProfile
 }
@@ -41,19 +54,22 @@ interface NativeRecordingPlugin {
   test(): Promise<{ captureProfile?: NativeCaptureProfile }>
   showMicrophoneModes(): Promise<void>
   addListener(eventName: 'recordingFinished', listener: (event: FinishedEvent) => void): Promise<PluginListenerHandle>
+  addListener(eventName: 'recordingSegmentFinished', listener: (event: FinishedEvent) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'recordingResumed', listener: (event: ResumedEvent) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'recordingResumeFailed', listener: (event: ResumeFailedEvent) => void): Promise<PluginListenerHandle>
 }
 
 const plugin = registerPlugin<NativeRecordingPlugin>('NativeRecording')
 export const nativeRecordingSupported = () => Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'ios'
-export const startNativeRecording = () => plugin.start({ maxDurationSeconds: 3_600 })
+export const startNativeRecording = () => plugin.start({ maxDurationSeconds: 1_800 })
 export const stopNativeRecording = () => plugin.stop()
 export const nativeRecordingStatus = () => plugin.status()
 export const testNativeRecording = () => plugin.test()
 export const showNativeMicrophoneModes = () => plugin.showMicrophoneModes()
 export const onNativeRecordingFinished = (listener: (event: FinishedEvent) => void) =>
   plugin.addListener('recordingFinished', listener)
+export const onNativeRecordingSegmentFinished = (listener: (event: FinishedEvent) => void) =>
+  plugin.addListener('recordingSegmentFinished', listener)
 export const onNativeRecordingResumed = (listener: (event: ResumedEvent) => void) =>
   plugin.addListener('recordingResumed', listener)
 export const onNativeRecordingResumeFailed = (listener: (event: ResumeFailedEvent) => void) =>
