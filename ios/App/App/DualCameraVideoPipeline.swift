@@ -904,28 +904,6 @@ private final class DualCameraFrameOverlayRenderer {
             throw DualCameraPipelineError.renderingUnavailable
         }
 
-        // CGBitmapContext expose ses lignes du bas vers le haut alors que les
-        // coordonnées de texture Metal commencent en haut. Retourner les
-        // lignes évite un bandeau verticalement inversé, sans passer par
-        // ImageIO/MTKTextureLoader (source de « Image decoding failed »).
-        var upload = [UInt8](repeating: 0, count: bitmap.count)
-        upload.withUnsafeMutableBytes { destination in
-            bitmap.withUnsafeBytes { source in
-                guard let destinationBase = destination.baseAddress,
-                      let sourceBase = source.baseAddress else { return }
-                for sourceRow in 0..<height {
-                    let destinationRow = height - sourceRow - 1
-                    let sourceOffset = sourceRow * bytesPerRow
-                    let destinationOffset = destinationRow * bytesPerRow
-                    memcpy(
-                        destinationBase.advanced(by: destinationOffset),
-                        sourceBase.advanced(by: sourceOffset),
-                        bytesPerRow
-                    )
-                }
-            }
-        }
-
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm,
             width: width,
@@ -937,7 +915,10 @@ private final class DualCameraFrameOverlayRenderer {
         guard let labelTexture = device.makeTexture(descriptor: descriptor) else {
             throw DualCameraPipelineError.renderingUnavailable
         }
-        upload.withUnsafeBytes { storage in
+        // La transformation du CGContext produit déjà un raster UIKit avec
+        // l'origine en haut à gauche. Sa première ligne correspond donc
+        // directement à y = 0 dans la texture Metal.
+        bitmap.withUnsafeBytes { storage in
             guard let baseAddress = storage.baseAddress else { return }
             labelTexture.replace(
                 region: MTLRegionMake2D(0, 0, width, height),
