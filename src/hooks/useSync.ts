@@ -8,10 +8,9 @@ import {
   type SyncOutcome,
 } from '../sync/sync'
 import { deriveSyncStatus, type SyncStatus } from '../sync/status'
-import { getCurrentProfile } from '../sync/auth'
+import { getCurrentProfile, attachLocalRows } from '../sync/auth'
 import { loadProfile, type Profile } from '../sync/profile'
 import { loadSyncConfig } from '../sync/config'
-import { claimOrphans } from '../db/repo'
 
 const AUTO_INTERVAL = 5 * 60_000
 
@@ -65,7 +64,7 @@ export function useSync(): SyncInfo {
     // anciennes vacations seraient restées sans propriétaire.
     if (current && claimedFor.current !== current.userId) {
       claimedFor.current = current.userId
-      await claimOrphans(current.userId)
+      await attachLocalRows(current.userId)
     }
 
     setProfile(current)
@@ -84,8 +83,9 @@ export function useSync(): SyncInfo {
 
   useEffect(() => {
     mounted.current = true
-    void refreshUser()
-    void sync()
+    void refreshUser().then(() => {
+      if (mounted.current) void sync()
+    })
 
     const onOnline = () => {
       setOnline(true)

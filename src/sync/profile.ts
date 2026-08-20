@@ -24,6 +24,12 @@ const META_KEY = 'profile'
 
 let cached: Profile | undefined
 let loaded = false
+/**
+ * Comptes du projet Supabase actuel (soi + l'équipe connue). Un UUID qui n'y
+ * figure pas vient d'un ancien projet : l'envoyer ferait échouer la clé
+ * étrangère vers `auth.users`.
+ */
+let knownOwnerIds = new Set<string>()
 
 export async function loadProfile(): Promise<Profile | undefined> {
   if (!loaded) {
@@ -37,6 +43,7 @@ export async function saveProfile(profile: Profile | undefined): Promise<void> {
   cached = profile
   loaded = true
   await setMeta(META_KEY, profile)
+  knownOwnerIds = profile ? new Set([profile.userId]) : new Set()
 }
 
 /**
@@ -51,6 +58,21 @@ export function currentProfile(): Profile | undefined {
 
 export function currentOwnerId(): string | undefined {
   return cached?.userId
+}
+
+export function rememberKnownOwnerIds(ids: Iterable<string>): void {
+  knownOwnerIds = new Set(ids)
+  const me = currentOwnerId()
+  if (me) knownOwnerIds.add(me)
+}
+
+export function forgetKnownOwnerIds(): void {
+  knownOwnerIds = new Set()
+}
+
+/** Ce propriétaire existe-t-il sur le projet Supabase auquel on est connecté ? */
+export function isKnownOwnerId(id: string): boolean {
+  return id === currentOwnerId() || knownOwnerIds.has(id)
 }
 
 export function isManager(): boolean {

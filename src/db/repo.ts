@@ -942,7 +942,7 @@ export async function claimOrphans(ownerId: string): Promise<number> {
           >
         )
           .filter((row) => row.ownerId === undefined)
-          .modify((row) => {
+            .modify((row) => {
             row.ownerId = ownerId
             row.updatedAt = at
             row.syncState = 'pending'
@@ -952,6 +952,53 @@ export async function claimOrphans(ownerId: string): Promise<number> {
   )
 
   return claimed
+}
+
+/**
+ * Rattache au compte les lignes dont le propriétaire n'existe pas sur ce projet.
+ *
+ * Après un changement de projet Supabase, IndexedDB garde les UUID de l'ancien
+ * `auth.users`. Les renvoyer fait échouer la clé étrangère sur toutes les
+ * tables. On ne touche pas aux comptes encore présents dans l'équipe actuelle.
+ */
+export async function adoptStaleOwners(
+  ownerId: string,
+  knownOwnerIds: ReadonlySet<string>,
+): Promise<number> {
+  let adopted = 0
+  const at = Date.now()
+  const known = new Set(knownOwnerIds)
+  known.add(ownerId)
+
+  await db.transaction(
+    'rw',
+    [db.workdays, db.orders, db.orderPallets, db.segments, db.colisEvents, db.stockShortages],
+    async () => {
+      for (const table of [
+        db.workdays,
+        db.orders,
+        db.orderPallets,
+        db.segments,
+        db.colisEvents,
+        db.stockShortages,
+      ]) {
+        adopted += await (
+          table as Table<
+            { ownerId?: string; updatedAt: number; syncState: 'pending' | 'synced' },
+            string
+          >
+        )
+          .filter((row) => row.ownerId !== undefined && !known.has(row.ownerId))
+          .modify((row) => {
+            row.ownerId = ownerId
+            row.updatedAt = at
+            row.syncState = 'pending'
+          })
+      }
+    },
+  )
+
+  return adopted
 }
 
 /**

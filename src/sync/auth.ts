@@ -1,8 +1,9 @@
-import { claimOrphans } from '../db/repo'
+import { claimOrphans, adoptStaleOwners } from '../db/repo'
 import { getClient, resetClient } from './client'
 import { loadProfile, saveProfile, type Profile, type Role } from './profile'
 import { resetCursors } from './sync'
 import { clearDurableAuthSession } from '../native/durableStorage'
+import { listKnownOwnerIds } from './team'
 
 /**
  * Connexion par numéro de badge et code personnel.
@@ -57,6 +58,13 @@ export async function getCurrentProfile(): Promise<Profile | undefined> {
   return fetchProfile(user.id)
 }
 
+/** Rattache au compte les orphelines et les lignes d'un ancien projet Supabase. */
+export async function attachLocalRows(userId: string): Promise<void> {
+  await claimOrphans(userId)
+  const known = await listKnownOwnerIds(userId)
+  await adoptStaleOwners(userId, known)
+}
+
 async function fetchProfile(userId: string): Promise<Profile | undefined> {
   const client = await getClient()
   if (!client) return undefined
@@ -104,7 +112,7 @@ export async function signIn(badge: string, pin: string): Promise<string | undef
 
   // Les vacations enregistrées avant la première connexion deviennent celles de
   // ce compte, et repartent vers le serveur sous son nom.
-  await claimOrphans(profile.userId)
+  await attachLocalRows(profile.userId)
   await resetCursors()
   return undefined
 }
@@ -147,7 +155,7 @@ export async function createAccount(badge: string, pin: string): Promise<string 
   const profile = await fetchProfile(data.user!.id)
   if (!profile) return 'Compte créé mais non rattaché. Préviens ton gestionnaire.'
 
-  await claimOrphans(profile.userId)
+  await attachLocalRows(profile.userId)
   await resetCursors()
   return undefined
 }

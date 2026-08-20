@@ -14,6 +14,7 @@ import {
   syncTables,
 } from './sync'
 import { SYNC_TABLES } from './tables'
+import { rememberKnownOwnerIds, saveProfile } from './profile'
 import type { OrderPallet, Segment, StockShortage, Workday } from '../core/types'
 
 /**
@@ -27,6 +28,7 @@ const T = new Date(2026, 6, 30, 13, 0, 0).getTime()
 beforeEach(async () => {
   await db.delete()
   await db.open()
+  await saveProfile(undefined)
 })
 
 function segment(over: Partial<Segment> = {}): Segment {
@@ -53,6 +55,43 @@ describe('synchronisation des palettes', () => {
       id: 'p1', orderId: 'o1', number: 2, storeNumber: 2,
       support: 'europe', startCount: 0, endCount: 18,
     })
+  })
+})
+
+describe('propriétaire envoyé au serveur', () => {
+  const workday = {
+    id: 'w1',
+    date: '2026-08-20',
+    status: 'open' as const,
+    startedAt: T,
+    updatedAt: T,
+    syncState: 'pending' as const,
+  }
+
+  it('remplace un UUID d’ancien projet par le compte courant', async () => {
+    await saveProfile({
+      userId: 'compte-actuel',
+      preparerId: 'p1',
+      badge: '6504109',
+      name: 'Anthony',
+      role: 'manager',
+    })
+    rememberKnownOwnerIds(['compte-actuel'])
+    const row = workdayTable.toRow({ ...workday, ownerId: 'uuid-ancien-projet' })
+    expect(row.user_id).toBe('compte-actuel')
+  })
+
+  it('conserve le propriétaire d’un collègue du projet actuel', async () => {
+    await saveProfile({
+      userId: 'compte-actuel',
+      preparerId: 'p1',
+      badge: '6504109',
+      name: 'Anthony',
+      role: 'manager',
+    })
+    rememberKnownOwnerIds(['compte-actuel', 'un-collegue'])
+    const row = workdayTable.toRow({ ...workday, ownerId: 'un-collegue' })
+    expect(row.user_id).toBe('un-collegue')
   })
 })
 

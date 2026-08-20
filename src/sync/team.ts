@@ -1,6 +1,6 @@
 import { getMeta, setMeta } from '../db/db'
 import { getClient } from './client'
-import type { Role } from './profile'
+import { rememberKnownOwnerIds, type Role } from './profile'
 
 /**
  * Gestion de l'équipe, réservée aux gestionnaires.
@@ -59,6 +59,35 @@ export async function listPreparers(): Promise<Preparer[]> {
   const team = (data ?? []).map((row) => mapRow(row as Record<string, unknown>))
   await setMeta(CACHE_KEY, team)
   return team
+}
+
+/**
+ * UUID autorisés comme `user_id` sur le projet courant.
+ *
+ * Le cache équipe d'un ancien projet est ignoré s'il ne contient pas le compte
+ * actuel — sinon on renverrait des UUID que la nouvelle base refuse.
+ */
+export async function listKnownOwnerIds(currentUserId: string): Promise<Set<string>> {
+  const known = new Set<string>([currentUserId])
+  const client = await getClient()
+  if (client) {
+    const { data, error } = await client.from('preparers').select('user_id')
+    if (!error) {
+      for (const row of data ?? []) {
+        if (row.user_id) known.add(String(row.user_id))
+      }
+      rememberKnownOwnerIds(known)
+      return known
+    }
+  }
+
+  const cached = await getMeta<Preparer[]>(CACHE_KEY, [])
+  const cachedIds = cached.map((member) => member.userId).filter((id): id is string => Boolean(id))
+  if (cachedIds.includes(currentUserId)) {
+    for (const id of cachedIds) known.add(id)
+  }
+  rememberKnownOwnerIds(known)
+  return known
 }
 
 export async function addPreparer(

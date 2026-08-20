@@ -1,4 +1,5 @@
 import { getMeta, setMeta } from '../db/db'
+import { forgetKnownOwnerIds } from './profile'
 
 export interface SyncConfig {
   url: string
@@ -29,14 +30,22 @@ export async function loadSyncConfig(): Promise<SyncConfig | undefined> {
 }
 
 export async function saveSyncConfig(config: SyncConfig): Promise<void> {
-  await setMeta(META_KEY, {
+  const previous = await loadSyncConfig()
+  const next = {
     url: config.url.trim().replace(/\/+$/, ''),
     anonKey: config.anonKey.trim(),
-  })
+  }
+  await setMeta(META_KEY, next)
+  if (previous?.url && previous.url !== next.url) {
+    await setMeta('team', undefined)
+    forgetKnownOwnerIds()
+  }
 }
 
 export async function clearSyncConfig(): Promise<void> {
   await setMeta(META_KEY, undefined)
+  await setMeta('team', undefined)
+  forgetKnownOwnerIds()
 }
 
 /** Contrôle de forme, pour attraper un copier-coller de travers tout de suite. */

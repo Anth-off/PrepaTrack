@@ -1,9 +1,9 @@
 import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { db } from '../db/db'
+import { badgeToEmail, PIN_LENGTH, validateBadge, validatePin } from './auth'
+import { adoptStaleOwners, claimOrphans, listWorkdays, listWorkdaysOf, startDay } from '../db/repo'
 import { currentOwnerId, isManager, loadProfile, ownedByCurrent, saveProfile } from './profile'
-import { badgeToEmail, validateBadge, validatePin, PIN_LENGTH } from './auth'
-import { claimOrphans, listWorkdays, listWorkdaysOf, startDay } from '../db/repo'
 
 const T = new Date(2026, 7, 3, 13, 0, 0).getTime()
 
@@ -182,6 +182,40 @@ describe('rattachement des vacations d’avant la connexion', () => {
     // effet de bord possible pour un gestionnaire.
     expect(workday?.ownerId).toBe('un-collegue')
     expect(workday?.syncState).toBe('synced')
+  })
+
+  it('rattache les lignes d’un ancien projet au compte courant', async () => {
+    await db.workdays.put({
+      id: 'ancien',
+      date: '2026-08-03',
+      status: 'closed',
+      startedAt: T,
+      endedAt: T + 1000,
+      updatedAt: T,
+      syncState: 'synced',
+      ownerId: 'uuid-ancien-projet',
+    })
+    await db.workdays.put({
+      id: 'collegue',
+      date: '2026-08-03',
+      status: 'closed',
+      startedAt: T,
+      endedAt: T + 1000,
+      updatedAt: T,
+      syncState: 'synced',
+      ownerId: 'un-collegue',
+    })
+
+    const adopted = await adoptStaleOwners('moi', new Set(['moi', 'un-collegue']))
+    expect(adopted).toBe(1)
+    expect(await db.workdays.get('ancien')).toMatchObject({
+      ownerId: 'moi',
+      syncState: 'pending',
+    })
+    expect(await db.workdays.get('collegue')).toMatchObject({
+      ownerId: 'un-collegue',
+      syncState: 'synced',
+    })
   })
 })
 

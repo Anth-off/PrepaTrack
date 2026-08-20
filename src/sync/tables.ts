@@ -10,6 +10,7 @@ import type {
   Workday,
 } from '../core/types'
 import { EMPTY_SUPPORTS } from '../core/types'
+import { currentOwnerId, isKnownOwnerId } from './profile'
 
 /**
  * Correspondance entre les tables locales (camelCase) et distantes (snake_case).
@@ -39,11 +40,15 @@ function optNum(value: unknown): number | undefined {
  * Propriétaire de la ligne. La clé est omise quand il est inconnu, pour laisser
  * jouer le `default auth.uid()` de la table : c'est le cas des lignes créées
  * avant toute connexion, qui reviennent ainsi au compte qui les envoie.
- * Elle est en revanche transmise telle quelle quand elle est connue, sans quoi
- * un gestionnaire s'approprierait les journées de l'équipe en les corrigeant.
+ * Un UUID connu (soi, ou un collègue du projet actuel) est transmis tel quel,
+ * sans quoi un gestionnaire s'approprierait les journées de l'équipe. Un UUID
+ * d'un ancien projet, lui, est remplacé par le compte courant : la base refuse
+ * sinon la clé étrangère vers `auth.users`.
  */
 function owner(item: { ownerId?: string }): Row {
-  return item.ownerId ? { user_id: item.ownerId } : {}
+  if (item.ownerId && isKnownOwnerId(item.ownerId)) return { user_id: item.ownerId }
+  const me = currentOwnerId()
+  return me ? { user_id: me } : {}
 }
 
 /** Le strict minimum dont le moteur de synchro a besoin sur une ligne. */
