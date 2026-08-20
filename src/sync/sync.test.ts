@@ -59,13 +59,13 @@ describe('synchronisation des palettes', () => {
 })
 
 describe('propriétaire envoyé au serveur', () => {
-  const workday = {
+  const workday: Workday = {
     id: 'w1',
     date: '2026-08-20',
-    status: 'open' as const,
+    status: 'open',
     startedAt: T,
     updatedAt: T,
-    syncState: 'pending' as const,
+    syncState: 'pending',
   }
 
   it('remplace un UUID d’ancien projet par le compte courant', async () => {
@@ -77,8 +77,8 @@ describe('propriétaire envoyé au serveur', () => {
       role: 'manager',
     })
     rememberKnownOwnerIds(['compte-actuel'])
-    const row = workdayTable.toRow({ ...workday, ownerId: 'uuid-ancien-projet' })
-    expect(row.user_id).toBe('compte-actuel')
+    const stale: Workday = { ...workday, ownerId: 'uuid-ancien-projet' }
+    expect(workdayTable.toRow(stale).user_id).toBe('compte-actuel')
   })
 
   it('conserve le propriétaire d’un collègue du projet actuel', async () => {
@@ -90,8 +90,8 @@ describe('propriétaire envoyé au serveur', () => {
       role: 'manager',
     })
     rememberKnownOwnerIds(['compte-actuel', 'un-collegue'])
-    const row = workdayTable.toRow({ ...workday, ownerId: 'un-collegue' })
-    expect(row.user_id).toBe('un-collegue')
+    const colleague: Workday = { ...workday, ownerId: 'un-collegue' }
+    expect(workdayTable.toRow(colleague).user_id).toBe('un-collegue')
   })
 })
 
