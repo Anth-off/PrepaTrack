@@ -479,11 +479,11 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                         rearURL: rearTestURL,
                         id: testID,
                         startedAt: Date(),
-                        maxDurationSeconds: 10
+                        maxDurationSeconds: 30
                     )
                     testSegmentActive = true
-                    guard self.videoPipeline.waitUntilSegmentHasFrames(id: testID, timeout: 8) else {
-                        throw RecordingError.videoCaptureTimedOut
+                    guard self.videoPipeline.waitUntilSegmentHasFrames(id: testID, timeout: 20) else {
+                        throw self.videoCaptureTimeoutError()
                     }
                     try self.waitUntilAudioHasData(timeout: 5)
                     self.stopAudioCapture()
@@ -494,10 +494,12 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                         stopped.signal()
                     }
                     guard stopped.wait(timeout: .now() + 10) == .success else {
-                        throw RecordingError.videoCaptureTimedOut
+                        throw RecordingError.videoCaptureTimedOut("finalisation du test expirée")
                     }
                     testSegmentActive = false
-                    guard let stopResult else { throw RecordingError.videoCaptureTimedOut }
+                    guard let stopResult else {
+                        throw RecordingError.videoCaptureTimedOut("résultat de finalisation absent")
+                    }
                     switch stopResult {
                     case .success(_):
                         break
@@ -515,17 +517,11 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                     }
                     guard validationFinished.wait(timeout: .now() + 10) == .success,
                           mediaAreReadable else {
-                        throw RecordingError.videoCaptureTimedOut
+                        throw RecordingError.videoCaptureTimedOut("fichiers finalisés illisibles")
                     }
-                    let frontSize = ((try? frontTestURL.resourceValues(
-                        forKeys: [.fileSizeKey]
-                    ).fileSize) ?? 0)
-                    let rearSize = ((try? rearTestURL.resourceValues(
-                        forKeys: [.fileSizeKey]
-                    ).fileSize) ?? 0)
-                    let audioSize = ((try? audioTestURL.resourceValues(
-                        forKeys: [.fileSizeKey]
-                    ).fileSize) ?? 0)
+                    let frontSize = self.recordingFileSize(at: frontTestURL)
+                    let rearSize = self.recordingFileSize(at: rearTestURL)
+                    let audioSize = self.recordingFileSize(at: audioTestURL)
                     guard audioSize > 10_000 else { throw RecordingError.audioCaptureTimedOut }
                     var testedProfile = self.captureProfilePayload()
                     testedProfile["captureConfirmed"] = true
@@ -545,6 +541,23 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     /** Démarre un nouveau segment sans dépendre des imports Photos précédents. */
+    private func videoCaptureTimeoutError() -> RecordingError {
+        let health = videoPipeline.activeSegmentHealthPayload()
+        let synchronized = health["synchronizedCollections"] as? Int ?? 0
+        let droppedFront = health["droppedFrontSamples"] as? Int ?? 0
+        let droppedRear = health["droppedRearSamples"] as? Int ?? 0
+        let rendered = health["renderedFramePairs"] as? Int ?? 0
+        let fallback = health["overlayFallbackFramePairs"] as? Int ?? 0
+        let written = health["framePairsWritten"] as? Int ?? 0
+        let backpressured = health["backpressuredFramePairs"] as? Int ?? 0
+        let frontBytes = health["frontFileBytes"] as? Int ?? 0
+        let rearBytes = health["rearFileBytes"] as? Int ?? 0
+        var details = "sync \(synchronized), chutes \(droppedFront)/\(droppedRear), rendu \(rendered), secours \(fallback), écrit \(written), attente \(backpressured), fichiers \(frontBytes)/\(rearBytes) octets"
+        if let failure = health["writerFailure"] as? String { details += ", erreur : \(failure)" }
+        NSLog("[PrepaTrack Recording] Confirmation vidéo expirée : %@", details)
+        return .videoCaptureTimedOut(details)
+    }
+
     private func startCapture() throws -> Date {
         try ensureRecordingSpaceAvailable()
         let segment = makeSegment(startedAt: Date())
@@ -563,8 +576,8 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                 startedAt: segment.startedAt,
                 maxDurationSeconds: segmentDurationSeconds
             )
-            guard videoPipeline.waitUntilSegmentHasFrames(id: segment.id, timeout: 8) else {
-                throw RecordingError.videoCaptureTimedOut
+            guard videoPipeline.waitUntilSegmentHasFrames(id: segment.id, timeout: 20) else {
+                throw videoCaptureTimeoutError()
             }
             try waitUntilAudioHasData(timeout: 5)
         } catch {
@@ -637,8 +650,8 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             activeSegment = next
             startedAt = next.startedAt
-            guard videoPipeline.waitUntilSegmentHasFrames(id: next.id, timeout: 8) else {
-                throw RecordingError.videoCaptureTimedOut
+            guard videoPipeline.waitUntilSegmentHasFrames(id: next.id, timeout: 20) else {
+                throw videoCaptureTimeoutError()
             }
             try waitUntilAudioHasData(timeout: 5)
             rotationInProgress = false
@@ -836,7 +849,10 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func recordingFileSize(at url: URL) -> Int {
-        (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return 0 }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return 0 }
+        return Int(min(size, UInt64(Int.max)))
     }
 
     private func beginTerminalStop(startedAt: Date?) {
@@ -2040,9 +2056,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         audioStateLock.unlock()
         if let captureURL {
-            result["audioFileBytes"] = (try? captureURL.resourceValues(
-                forKeys: [.fileSizeKey]
-            ).fileSize) ?? 0
+            result["audioFileBytes"] = recordingFileSize(at: captureURL)
         }
         return result
     }
@@ -2275,9 +2289,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         let captureURL = audioCaptureURL
         audioStateLock.unlock()
         if let error { throw RecordingError.audioWriteFailed(error) }
-        let fileBytes = captureURL.flatMap {
-            try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize
-        } ?? 0
+        let fileBytes = captureURL.map { recordingFileSize(at: $0) } ?? 0
         guard confirmed, frames > 0, fileBytes > 10_000 else {
             throw RecordingError.audioCaptureTimedOut
         }
@@ -2540,7 +2552,7 @@ private enum RecordingError: LocalizedError {
     case unsupportedAudioFormat(sampleRate: Double, channels: AVAudioChannelCount)
     case audioCaptureTimedOut
     case audioWriteFailed(String)
-    case videoCaptureTimedOut
+    case videoCaptureTimedOut(String)
     case insufficientStorage
     case testUnavailableWhileRecording
     case recoveryInProgress
@@ -2556,8 +2568,8 @@ private enum RecordingError: LocalizedError {
             return "Le microphone n'a produit aucun fichier audio confirmé. Les sources déjà écrites restent conservées."
         case .audioWriteFailed(let message):
             return "L'écriture audio a échoué (\(message)). Toutes les sources restent conservées."
-        case .videoCaptureTimedOut:
-            return "Les deux caméras n'ont pas produit de fragments vidéo confirmés. Toutes les sources restent conservées."
+        case .videoCaptureTimedOut(let details):
+            return "Les deux caméras n'ont pas produit de fragments vidéo confirmés (\(details)). Toutes les sources restent conservées."
         case .insufficientStorage:
             return "Moins de 5 Go sont disponibles. L’enregistrement a été arrêté proprement pour conserver les vidéos existantes."
         case .testUnavailableWhileRecording:

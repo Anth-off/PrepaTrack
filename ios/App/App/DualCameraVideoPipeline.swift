@@ -46,6 +46,12 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
     private var lastSuccessfulFrameUptime: TimeInterval?
     private var healthFailureReported = false
     private let frameStallTimeoutSeconds: TimeInterval = 8
+    private var synchronizedCollections = 0
+    private var droppedFrontSamples = 0
+    private var droppedRearSamples = 0
+    private var renderedFramePairs = 0
+    private var overlayFallbackFramePairs = 0
+    private var backpressuredFramePairs = 0
 
     var onDurationLimitReached: ((UUID) -> Void)?
     var onRenderingFailed: ((Error) -> Void)?
@@ -245,15 +251,16 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
             )
             durationLimitReported = false
             resetRenderingFailureState()
+            resetSegmentDiagnostics()
             armHealthWatchdog(for: id)
         }
     }
 
     /**
-     * Un démarrage n'est confirmé à JavaScript qu'après l'écriture d'un fragment
-     * récupérable dans chacun des deux fichiers. Une seule frame ne suffit pas :
-     * elle peut encore n'exister que dans les buffers de l'encodeur au moment
-     * d'une extinction brutale.
+     * Un démarrage n'est confirmé à JavaScript qu'après l'écriture effective
+     * d'un fragment QuickTime complet dans chacun des deux fichiers. Le contrôle
+     * lit directement le fichier ouvert et ne dépend ni d'un nombre de frames,
+     * ni d'une taille arbitraire, ni des métadonnées URL mises en cache.
      */
     func waitUntilSegmentHasFrames(id: UUID, timeout: TimeInterval) -> Bool {
         let writer = outputQueue.sync { segmentWriter?.id == id ? segmentWriter : nil }
@@ -261,14 +268,28 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
     }
 
     func activeSegmentHealthPayload() -> [String: Any] {
-        let writer = outputQueue.sync { segmentWriter }
-        guard let writer else {
-            return [
-                "captureConfirmed": false,
-                "framePairsWritten": 0,
-            ]
+        outputQueue.sync {
+            guard let writer = segmentWriter else {
+                return [
+                    "captureConfirmed": false,
+                    "framePairsWritten": 0,
+                    "synchronizedCollections": synchronizedCollections,
+                    "droppedFrontSamples": droppedFrontSamples,
+                    "droppedRearSamples": droppedRearSamples,
+                    "renderedFramePairs": renderedFramePairs,
+                    "overlayFallbackFramePairs": overlayFallbackFramePairs,
+                    "backpressuredFramePairs": backpressuredFramePairs,
+                ]
+            }
+            var payload = writer.healthPayload()
+            payload["synchronizedCollections"] = synchronizedCollections
+            payload["droppedFrontSamples"] = droppedFrontSamples
+            payload["droppedRearSamples"] = droppedRearSamples
+            payload["renderedFramePairs"] = renderedFramePairs
+            payload["overlayFallbackFramePairs"] = overlayFallbackFramePairs
+            payload["backpressuredFramePairs"] = backpressuredFramePairs
+            return payload
         }
-        return writer.healthPayload()
     }
 
     /**
@@ -299,6 +320,7 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
             segmentWriter = next
             durationLimitReported = false
             resetRenderingFailureState()
+            resetSegmentDiagnostics()
             armHealthWatchdog(for: id)
             didSwitch()
             previous.finish(completion: completion)
@@ -349,8 +371,11 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
         guard let frontData = synchronizedDataCollection.synchronizedData(for: frontOutput)
                 as? AVCaptureSynchronizedSampleBufferData,
               let backData = synchronizedDataCollection.synchronizedData(for: backOutput)
-                as? AVCaptureSynchronizedSampleBufferData,
-              !frontData.sampleBufferWasDropped,
+                as? AVCaptureSynchronizedSampleBufferData else { return }
+        synchronizedCollections += 1
+        if frontData.sampleBufferWasDropped { droppedFrontSamples += 1 }
+        if backData.sampleBufferWasDropped { droppedRearSamples += 1 }
+        guard !frontData.sampleBufferWasDropped,
               !backData.sampleBufferWasDropped else { return }
         let frontSample = frontData.sampleBuffer
         let backSample = backData.sampleBuffer
@@ -365,28 +390,54 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
         // même si les horloges matérielles des capteurs diffèrent légèrement.
         let presentationTime = CMSampleBufferGetPresentationTimeStamp(frontSample)
         let duration = normalizedDuration(CMSampleBufferGetDuration(frontSample))
-        guard let renderedFrames = frameRenderer.render(front: frontBuffer, rear: backBuffer),
-              let renderedFrontSample = makeSampleBuffer(
-                  pixelBuffer: renderedFrames.front.pixelBuffer,
-                  formatDescription: renderedFrames.front.formatDescription,
-                  presentationTime: presentationTime,
-                  duration: duration
-              ),
-              let renderedRearSample = makeSampleBuffer(
-                  pixelBuffer: renderedFrames.rear.pixelBuffer,
-                  formatDescription: renderedFrames.rear.formatDescription,
-                  presentationTime: presentationTime,
-                  duration: duration
-              ) else {
+        let samplesToWrite: (front: CMSampleBuffer, rear: CMSampleBuffer)
+        if let renderedFrames = frameRenderer.render(front: frontBuffer, rear: backBuffer),
+           let renderedFrontSample = makeSampleBuffer(
+               pixelBuffer: renderedFrames.front.pixelBuffer,
+               formatDescription: renderedFrames.front.formatDescription,
+               presentationTime: presentationTime,
+               duration: duration
+           ),
+           let renderedRearSample = makeSampleBuffer(
+               pixelBuffer: renderedFrames.rear.pixelBuffer,
+               formatDescription: renderedFrames.rear.formatDescription,
+               presentationTime: presentationTime,
+               duration: duration
+           ) {
+            resetRenderingFailureState()
+            renderedFramePairs += 1
+            samplesToWrite = (renderedFrontSample, renderedRearSample)
+        } else {
+            // Le bandeau est secondaire par rapport à la conservation de la
+            // vidéo. En cas de panne Metal, écrire les deux buffers caméra
+            // originaux plutôt que de perdre la paire entière. Les recréer
+            // avec le même PTS évite tout saut quand le rendu Metal revient.
             recordRenderingFailure()
-            return
+            overlayFallbackFramePairs += 1
+            if let frontFormat = CMSampleBufferGetFormatDescription(frontSample),
+               let rearFormat = CMSampleBufferGetFormatDescription(backSample),
+               let fallbackFront = makeSampleBuffer(
+                   pixelBuffer: frontBuffer,
+                   formatDescription: frontFormat,
+                   presentationTime: presentationTime,
+                   duration: duration
+               ),
+               let fallbackRear = makeSampleBuffer(
+                   pixelBuffer: backBuffer,
+                   formatDescription: rearFormat,
+                   presentationTime: presentationTime,
+                   duration: duration
+               ) {
+                samplesToWrite = (fallbackFront, fallbackRear)
+            } else {
+                samplesToWrite = (frontSample, backSample)
+            }
         }
-        resetRenderingFailureState()
 
         do {
             switch try writer.append(
-                front: renderedFrontSample,
-                rear: renderedRearSample
+                front: samplesToWrite.front,
+                rear: samplesToWrite.rear
             ) {
             case .durationReached:
                 if !durationLimitReported {
@@ -396,9 +447,10 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
             case .appended:
                 recordSuccessfulFrame(for: writer.id)
             case .backpressured:
-                break
+                backpressuredFramePairs += 1
             }
         } catch {
+            writer.recordFailure(error)
             reportWriterFailure(error)
         }
     }
@@ -480,14 +532,23 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
         consecutiveRenderingFailures += 1
         guard consecutiveRenderingFailures >= 30, !renderingFailureReported else { return }
         renderingFailureReported = true
-        onRenderingFailed?(
-            DualCameraPipelineError.consecutiveRenderingFailures(consecutiveRenderingFailures)
+        NSLog(
+            "[PrepaTrack Recording] Bandeau Metal indisponible après \(consecutiveRenderingFailures) images; capture brute conservée."
         )
     }
 
     private func resetRenderingFailureState() {
         consecutiveRenderingFailures = 0
         renderingFailureReported = false
+    }
+
+    private func resetSegmentDiagnostics() {
+        synchronizedCollections = 0
+        droppedFrontSamples = 0
+        droppedRearSamples = 0
+        renderedFramePairs = 0
+        overlayFallbackFramePairs = 0
+        backpressuredFramePairs = 0
     }
 
     private func configureOutput(_ output: AVCaptureVideoDataOutput) {
@@ -664,13 +725,13 @@ private final class DualCameraSegmentWriter {
     private let files: DualCameraSegmentFiles
     private let frontWriter: FragmentedVideoWriter
     private let rearWriter: FragmentedVideoWriter
-    private let durableCaptureSemaphore = DispatchSemaphore(value: 0)
     private let stateLock = NSLock()
-    private let requiredDurableFramePairs = 60
-    private let minimumDurableFileBytes = 64 * 1_024
     private var didConfirmDurableCapture = false
     private var framePairsWritten = 0
+    private var firstFrameTimestamp: CMTime?
+    private var confirmedDurationSeconds: TimeInterval = 0
     private var lastFrameWrittenAt: Date?
+    private var writerFailureDescription: String?
 
     init(
         id: UUID,
@@ -717,33 +778,45 @@ private final class DualCameraSegmentWriter {
         try frontWriter.appendPrepared(front)
         try rearWriter.appendPrepared(rear)
         stateLock.lock()
+        if firstFrameTimestamp == nil { firstFrameTimestamp = frontTimestamp }
         framePairsWritten += 1
         lastFrameWrittenAt = Date()
-        let shouldCheckDurability = !didConfirmDurableCapture &&
-            framePairsWritten >= requiredDurableFramePairs
+        let captureDuration = firstFrameTimestamp.map {
+            max(0, CMTimeSubtract(frontTimestamp, $0).seconds)
+        } ?? 0
+        confirmedDurationSeconds = captureDuration
         stateLock.unlock()
-        if shouldCheckDurability,
-           fileSize(at: files.frontURL) >= minimumDurableFileBytes,
-           fileSize(at: files.rearURL) >= minimumDurableFileBytes {
-            stateLock.lock()
-            let shouldSignal = !didConfirmDurableCapture
-            didConfirmDurableCapture = true
-            stateLock.unlock()
-            if shouldSignal { durableCaptureSemaphore.signal() }
-        }
         return .appended
     }
 
     func waitUntilDurableCapture(timeout: TimeInterval) -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        repeat {
+            stateLock.lock()
+            let alreadyConfirmed = didConfirmDurableCapture
+            let failed = writerFailureDescription != nil
+            stateLock.unlock()
+            if alreadyConfirmed { return true }
+            if failed { return false }
+
+            if hasCompleteMovieFragment(at: files.frontURL),
+               hasCompleteMovieFragment(at: files.rearURL),
+               synchronizeFile(at: files.frontURL),
+               synchronizeFile(at: files.rearURL) {
+                stateLock.lock()
+                didConfirmDurableCapture = true
+                stateLock.unlock()
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        } while ProcessInfo.processInfo.systemUptime < deadline
+        return false
+    }
+
+    func recordFailure(_ error: Error) {
         stateLock.lock()
-        let alreadyConfirmed = didConfirmDurableCapture
+        if writerFailureDescription == nil { writerFailureDescription = error.localizedDescription }
         stateLock.unlock()
-        if alreadyConfirmed { return true }
-        guard durableCaptureSemaphore.wait(timeout: .now() + timeout) == .success else { return false }
-        stateLock.lock()
-        let confirmed = didConfirmDurableCapture
-        stateLock.unlock()
-        return confirmed
     }
 
     func healthPayload() -> [String: Any] {
@@ -751,14 +824,19 @@ private final class DualCameraSegmentWriter {
         let frameCount = framePairsWritten
         let lastFrame = lastFrameWrittenAt
         let confirmed = didConfirmDurableCapture
+        let duration = confirmedDurationSeconds
+        let writerFailure = writerFailureDescription
         stateLock.unlock()
-        return [
+        var payload: [String: Any] = [
             "captureConfirmed": confirmed,
             "framePairsWritten": frameCount,
+            "confirmedDurationSeconds": duration,
             "lastFrameWrittenAt": lastFrame.map { $0.timeIntervalSince1970 * 1_000 } ?? 0,
             "frontFileBytes": fileSize(at: files.frontURL),
             "rearFileBytes": fileSize(at: files.rearURL),
         ]
+        if let writerFailure { payload["writerFailure"] = writerFailure }
+        return payload
     }
 
     func finish(completion: @escaping (Result<DualCameraSegmentFiles, Error>) -> Void) {
@@ -800,7 +878,91 @@ private final class DualCameraSegmentWriter {
     }
 
     private func fileSize(at url: URL) -> Int {
-        (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return 0 }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return 0 }
+        return Int(min(size, UInt64(Int.max)))
+    }
+
+    /**
+     * Vérifie la présence d'un couple top-level `moof` + `mdat` entièrement
+     * écrit. Un fMOV possédant ce couple reste récupérable après un arrêt brutal.
+     */
+    private func hasCompleteMovieFragment(at url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard let totalSize = try? handle.seekToEnd(), totalSize >= 16 else { return false }
+        do {
+            // Lire uniquement les en-têtes des boîtes top-level. Le contenu
+            // H.264 de `mdat` peut être volumineux et n'a pas besoin d'être
+            // copié en mémoire pour vérifier que la boîte est complète.
+            var offset: UInt64 = 0
+            var foundMovieFragment = false
+            while offset <= totalSize - 8 {
+                try handle.seek(toOffset: offset)
+                guard let headerData = try handle.read(upToCount: 16),
+                      headerData.count >= 8 else { return false }
+                let header = [UInt8](headerData)
+                let size32 = readUInt32(header, at: 0)
+                var headerSize: UInt64 = 8
+                var boxSize = UInt64(size32)
+                if size32 == 1 {
+                    guard header.count >= 16 else { return false }
+                    headerSize = 16
+                    boxSize = readUInt64(header, at: 8)
+                } else if size32 == 0 {
+                    // Une boîte qui s'étend jusqu'à EOF est encore susceptible
+                    // de grandir : elle ne constitue pas une preuve de fragment.
+                    return false
+                }
+                guard boxSize >= headerSize,
+                      boxSize <= totalSize - offset else { return false }
+                let isMoof = boxType(header, at: 4, equals: [0x6D, 0x6F, 0x6F, 0x66])
+                let isMdat = boxType(header, at: 4, equals: [0x6D, 0x64, 0x61, 0x74])
+                if isMoof {
+                    guard boxSize > headerSize else { return false }
+                    foundMovieFragment = true
+                }
+                if foundMovieFragment, isMdat {
+                    return boxSize > headerSize
+                }
+                offset += boxSize
+            }
+        } catch {
+            return false
+        }
+        return false
+    }
+
+    /** Force les fragments complets dans le stockage avant de confirmer l'UI. */
+    private func synchronizeFile(at url: URL) -> Bool {
+        guard let handle = try? FileHandle(forUpdating: url) else { return false }
+        defer { try? handle.close() }
+        do {
+            try handle.synchronize()
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func readUInt32(_ bytes: [UInt8], at offset: Int) -> UInt32 {
+        (UInt32(bytes[offset]) << 24) |
+            (UInt32(bytes[offset + 1]) << 16) |
+            (UInt32(bytes[offset + 2]) << 8) |
+            UInt32(bytes[offset + 3])
+    }
+
+    private func readUInt64(_ bytes: [UInt8], at offset: Int) -> UInt64 {
+        var value: UInt64 = 0
+        for index in 0..<8 { value = (value << 8) | UInt64(bytes[offset + index]) }
+        return value
+    }
+
+    private func boxType(_ bytes: [UInt8], at offset: Int, equals expected: [UInt8]) -> Bool {
+        guard offset + expected.count <= bytes.count else { return false }
+        for index in expected.indices where bytes[offset + index] != expected[index] { return false }
+        return true
     }
 }
 
@@ -1044,9 +1206,9 @@ private final class DualCameraFrameOverlayRenderer {
                     bitmapInfo: bitmapInfo
                   ) else { return false }
 
-            // UIKit dessine avec une origine en haut à gauche. Le bitmap brut
-            // est ensuite retourné ligne par ligne avant son transfert vers
-            // Metal afin que texture[y = 0] désigne bien le haut du bandeau.
+            // Transformer le contexte Core Graphics en coordonnées UIKit : la
+            // première ligne du bitmap correspond ensuite directement à y = 0
+            // dans la texture Metal.
             context.translateBy(x: 0, y: CGFloat(height))
             context.scaleBy(x: 1, y: -1)
             UIGraphicsPushContext(context)
