@@ -11,3 +11,6 @@ dev-dist/
 # Caches de compilation TypeScript : régénérés à chaque build, ils créent des
 # conflits inutiles et masquent des erreurs quand ils traînent dans un dépôt.
 *.tsbuildinfo
+
+# Copies locales de review / worktrees d’agents, jamais à envoyer au build.
+.worktrees/
