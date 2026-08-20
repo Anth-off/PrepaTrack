@@ -37,6 +37,13 @@ export interface NativeCaptureProfile {
   audioSessionCategory?: string
   audioSessionMode?: string
   audioInputRoute?: string
+  captureConfirmed?: boolean
+  audioCaptureConfirmed?: boolean
+  framePairsWritten?: number
+  audioBuffersWritten?: number
+  lastFrameWrittenAt?: number
+  frontFileBytes?: number
+  rearFileBytes?: number
 }
 
 interface NativeRecordingState {

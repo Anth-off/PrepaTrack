@@ -35,6 +35,17 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
     private var consecutiveRenderingFailures = 0
     private var renderingFailureReported = false
     private var sessionObservers: [NSObjectProtocol] = []
+    private let healthQueue = DispatchQueue(
+        label: "com.n0thytvoff.prepatrack.recording.health",
+        qos: .utility
+    )
+    private let healthLock = NSLock()
+    private var healthTimer: DispatchSourceTimer?
+    private var healthSegmentID: UUID?
+    private var healthSegmentStartedUptime: TimeInterval = 0
+    private var lastSuccessfulFrameUptime: TimeInterval?
+    private var healthFailureReported = false
+    private let frameStallTimeoutSeconds: TimeInterval = 8
 
     var onDurationLimitReached: ((UUID) -> Void)?
     var onRenderingFailed: ((Error) -> Void)?
@@ -67,6 +78,7 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
     }
 
     deinit {
+        healthTimer?.cancel()
         for observer in sessionObservers { NotificationCenter.default.removeObserver(observer) }
     }
 
@@ -233,7 +245,30 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
             )
             durationLimitReported = false
             resetRenderingFailureState()
+            armHealthWatchdog(for: id)
         }
+    }
+
+    /**
+     * Un démarrage n'est confirmé à JavaScript qu'après l'écriture d'un fragment
+     * récupérable dans chacun des deux fichiers. Une seule frame ne suffit pas :
+     * elle peut encore n'exister que dans les buffers de l'encodeur au moment
+     * d'une extinction brutale.
+     */
+    func waitUntilSegmentHasFrames(id: UUID, timeout: TimeInterval) -> Bool {
+        let writer = outputQueue.sync { segmentWriter?.id == id ? segmentWriter : nil }
+        return writer?.waitUntilDurableCapture(timeout: timeout) == true
+    }
+
+    func activeSegmentHealthPayload() -> [String: Any] {
+        let writer = outputQueue.sync { segmentWriter }
+        guard let writer else {
+            return [
+                "captureConfirmed": false,
+                "framePairsWritten": 0,
+            ]
+        }
+        return writer.healthPayload()
     }
 
     /**
@@ -264,6 +299,7 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
             segmentWriter = next
             durationLimitReported = false
             resetRenderingFailureState()
+            armHealthWatchdog(for: id)
             didSwitch()
             previous.finish(completion: completion)
         }
@@ -278,6 +314,7 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
             self.segmentWriter = nil
             self.durationLimitReported = false
             self.resetRenderingFailureState()
+            self.disarmHealthWatchdog()
             previous.finish(completion: completion)
         }
     }
@@ -347,19 +384,89 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureDataOutputSynchronizerDe
         resetRenderingFailureState()
 
         do {
-            if try writer.append(
+            switch try writer.append(
                 front: renderedFrontSample,
                 rear: renderedRearSample
-            ), !durationLimitReported {
-                durationLimitReported = true
-                onDurationLimitReached?(writer.id)
+            ) {
+            case .durationReached:
+                if !durationLimitReported {
+                    durationLimitReported = true
+                    onDurationLimitReached?(writer.id)
+                }
+            case .appended:
+                recordSuccessfulFrame(for: writer.id)
+            case .backpressured:
+                break
             }
         } catch {
-            if !durationLimitReported {
-                durationLimitReported = true
-                onDurationLimitReached?(writer.id)
+            reportWriterFailure(error)
+        }
+    }
+
+    private func armHealthWatchdog(for id: UUID) {
+        let now = ProcessInfo.processInfo.systemUptime
+        healthLock.lock()
+        healthSegmentID = id
+        healthSegmentStartedUptime = now
+        lastSuccessfulFrameUptime = nil
+        healthFailureReported = false
+        healthLock.unlock()
+
+        healthQueue.sync {
+            healthTimer?.cancel()
+            let timer = DispatchSource.makeTimerSource(queue: healthQueue)
+            timer.schedule(deadline: .now() + 2, repeating: 2, leeway: .milliseconds(250))
+            timer.setEventHandler { [weak self] in self?.checkCaptureHealth() }
+            healthTimer = timer
+            timer.resume()
+        }
+    }
+
+    private func disarmHealthWatchdog() {
+        healthQueue.sync {
+            healthTimer?.cancel()
+            healthTimer = nil
+        }
+        healthLock.lock()
+        healthSegmentID = nil
+        healthSegmentStartedUptime = 0
+        lastSuccessfulFrameUptime = nil
+        healthFailureReported = false
+        healthLock.unlock()
+    }
+
+    private func recordSuccessfulFrame(for id: UUID) {
+        healthLock.lock()
+        if healthSegmentID == id {
+            lastSuccessfulFrameUptime = ProcessInfo.processInfo.systemUptime
+        }
+        healthLock.unlock()
+    }
+
+    private func checkCaptureHealth() {
+        let now = ProcessInfo.processInfo.systemUptime
+        var stalled = false
+        healthLock.lock()
+        if healthSegmentID != nil, !healthFailureReported {
+            let reference = lastSuccessfulFrameUptime ?? healthSegmentStartedUptime
+            if reference > 0, now - reference >= frameStallTimeoutSeconds {
+                healthFailureReported = true
+                stalled = true
             }
         }
+        healthLock.unlock()
+        if stalled { onRenderingFailed?(DualCameraPipelineError.frameDeliveryTimedOut) }
+    }
+
+    private func reportWriterFailure(_ error: Error) {
+        var shouldReport = false
+        healthLock.lock()
+        if !healthFailureReported {
+            healthFailureReported = true
+            shouldReport = true
+        }
+        healthLock.unlock()
+        if shouldReport { onRenderingFailed?(error) }
     }
 
     private func normalizedDuration(_ duration: CMTime) -> CMTime {
@@ -557,6 +664,13 @@ private final class DualCameraSegmentWriter {
     private let files: DualCameraSegmentFiles
     private let frontWriter: FragmentedVideoWriter
     private let rearWriter: FragmentedVideoWriter
+    private let durableCaptureSemaphore = DispatchSemaphore(value: 0)
+    private let stateLock = NSLock()
+    private let requiredDurableFramePairs = 60
+    private let minimumDurableFileBytes = 64 * 1_024
+    private var didConfirmDurableCapture = false
+    private var framePairsWritten = 0
+    private var lastFrameWrittenAt: Date?
 
     init(
         id: UUID,
@@ -584,24 +698,67 @@ private final class DualCameraSegmentWriter {
         )
     }
 
-    /** Retourne true dès que les deux fichiers doivent être remplacés. */
-    func append(front: CMSampleBuffer, rear: CMSampleBuffer) throws -> Bool {
+    func append(front: CMSampleBuffer, rear: CMSampleBuffer) throws -> SegmentAppendResult {
         try frontWriter.prepareIfNeeded(for: front)
         try rearWriter.prepareIfNeeded(for: rear)
+        try frontWriter.validateWritingState()
+        try rearWriter.validateWritingState()
         let frontTimestamp = CMSampleBufferGetPresentationTimeStamp(front)
         let rearTimestamp = CMSampleBufferGetPresentationTimeStamp(rear)
         if frontWriter.hasReachedDurationLimit(at: frontTimestamp) ||
             rearWriter.hasReachedDurationLimit(at: rearTimestamp) {
-            return true
+            return .durationReached
         }
 
         // Si un encodeur subit momentanément de la contre-pression, les deux
         // images sont ignorées ensemble pour ne jamais décaler les angles.
         guard frontWriter.isReadyForMoreMediaData,
-              rearWriter.isReadyForMoreMediaData else { return false }
+              rearWriter.isReadyForMoreMediaData else { return .backpressured }
         try frontWriter.appendPrepared(front)
         try rearWriter.appendPrepared(rear)
-        return false
+        stateLock.lock()
+        framePairsWritten += 1
+        lastFrameWrittenAt = Date()
+        let shouldCheckDurability = !didConfirmDurableCapture &&
+            framePairsWritten >= requiredDurableFramePairs
+        stateLock.unlock()
+        if shouldCheckDurability,
+           fileSize(at: files.frontURL) >= minimumDurableFileBytes,
+           fileSize(at: files.rearURL) >= minimumDurableFileBytes {
+            stateLock.lock()
+            let shouldSignal = !didConfirmDurableCapture
+            didConfirmDurableCapture = true
+            stateLock.unlock()
+            if shouldSignal { durableCaptureSemaphore.signal() }
+        }
+        return .appended
+    }
+
+    func waitUntilDurableCapture(timeout: TimeInterval) -> Bool {
+        stateLock.lock()
+        let alreadyConfirmed = didConfirmDurableCapture
+        stateLock.unlock()
+        if alreadyConfirmed { return true }
+        guard durableCaptureSemaphore.wait(timeout: .now() + timeout) == .success else { return false }
+        stateLock.lock()
+        let confirmed = didConfirmDurableCapture
+        stateLock.unlock()
+        return confirmed
+    }
+
+    func healthPayload() -> [String: Any] {
+        stateLock.lock()
+        let frameCount = framePairsWritten
+        let lastFrame = lastFrameWrittenAt
+        let confirmed = didConfirmDurableCapture
+        stateLock.unlock()
+        return [
+            "captureConfirmed": confirmed,
+            "framePairsWritten": frameCount,
+            "lastFrameWrittenAt": lastFrame.map { $0.timeIntervalSince1970 * 1_000 } ?? 0,
+            "frontFileBytes": fileSize(at: files.frontURL),
+            "rearFileBytes": fileSize(at: files.rearURL),
+        ]
     }
 
     func finish(completion: @escaping (Result<DualCameraSegmentFiles, Error>) -> Void) {
@@ -641,6 +798,10 @@ private final class DualCameraSegmentWriter {
             }
         }
     }
+
+    private func fileSize(at url: URL) -> Int {
+        (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+    }
 }
 
 private final class FragmentedVideoWriter {
@@ -675,6 +836,13 @@ private final class FragmentedVideoWriter {
 
     var isReadyForMoreMediaData: Bool {
         accepting && assetWriter?.status == .writing && videoInput?.isReadyForMoreMediaData == true
+    }
+
+    func validateWritingState() throws {
+        guard accepting, let assetWriter else { throw DualCameraPipelineError.writerFailed }
+        guard assetWriter.status == .writing else {
+            throw assetWriter.error ?? DualCameraPipelineError.writerFailed
+        }
     }
 
     func appendPrepared(_ sampleBuffer: CMSampleBuffer) throws {
@@ -718,7 +886,9 @@ private final class FragmentedVideoWriter {
         let width = CVPixelBufferGetWidth(imageBuffer)
         let height = CVPixelBufferGetHeight(imageBuffer)
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
-        writer.movieFragmentInterval = CMTime(seconds: 5, preferredTimescale: 600)
+        // Une extinction ne peut perdre au maximum que le fragment courant.
+        // Une seconde réduit cette fenêtre sans multiplier les fichiers.
+        writer.movieFragmentInterval = CMTime(seconds: 1, preferredTimescale: 600)
         if #available(iOS 17.0, *) {
             writer.initialMovieFragmentInterval = CMTime(seconds: 1, preferredTimescale: 600)
         }
@@ -732,7 +902,7 @@ private final class FragmentedVideoWriter {
                 AVVideoCompressionPropertiesKey: [
                     AVVideoAverageBitRateKey: 3_500_000,
                     AVVideoExpectedSourceFrameRateKey: 30,
-                    AVVideoMaxKeyFrameIntervalKey: 60,
+                    AVVideoMaxKeyFrameIntervalKey: 30,
                     AVVideoAllowFrameReorderingKey: false,
                 ],
             ]
@@ -744,10 +914,20 @@ private final class FragmentedVideoWriter {
             throw writer.error ?? DualCameraPipelineError.writerFailed
         }
         writer.startSession(atSourceTime: firstTimestamp)
+        try? FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            ofItemAtPath: url.path
+        )
         assetWriter = writer
         videoInput = input
         self.firstTimestamp = firstTimestamp
     }
+}
+
+private enum SegmentAppendResult {
+    case appended
+    case backpressured
+    case durationReached
 }
 
 private final class DualCameraFrameOverlayRenderer {
@@ -1100,6 +1280,7 @@ enum DualCameraPipelineError: LocalizedError {
     case renderingUnavailable
     case consecutiveRenderingFailures(Int)
     case stabilizationUnavailable
+    case frameDeliveryTimedOut
 
     var errorDescription: String? {
         switch self {
@@ -1132,7 +1313,9 @@ enum DualCameraPipelineError: LocalizedError {
         case .consecutiveRenderingFailures(let count):
             return "Le rendu vidéo des deux caméras a échoué \(count) fois de suite."
         case .stabilizationUnavailable:
-            return "iOS n’a pas activé la stabilisation de la caméra avant en mode deux caméras."
+            return "iOS n’a pas activé la stabilisation des deux caméras."
+        case .frameDeliveryTimedOut:
+            return "Les deux caméras ne fournissent plus d’images; le segment a été fermé et sera repris automatiquement."
         }
     }
 }
