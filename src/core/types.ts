@@ -35,6 +35,13 @@ export type KnownSegmentType =
   | 'incident_label'
   | 'incident_supplies'
   | 'incident_restock_wait'
+  | 'incident_manager'
+  | 'incident_colleague'
+  | 'incident_vmax'
+  | 'incident_aisle'
+  | 'incident_search'
+  | 'incident_wms'
+  | 'incident_quality'
   // --- Pauses réglementaires ----------------------------------------------
   | 'break_10'
   | 'break_30'
@@ -216,7 +223,23 @@ export const STANDARD_INCIDENTS: readonly IncidentDef[] = [
   { key: 'incident_label', label: 'Étiquette absente / illisible', emoji: '🏷️' },
   { key: 'incident_supplies', label: 'Manque de consommables', emoji: '📦' },
   { key: 'incident_restock_wait', label: 'Attente réapprovisionnement', emoji: '📥' },
+  { key: 'incident_manager', label: 'Consigne chef', emoji: '🧑‍💼' },
+  { key: 'incident_colleague', label: 'Collègue bloque', emoji: '🧍' },
+  { key: 'incident_vmax', label: 'VMAX invalide', emoji: '🟥' },
+  { key: 'incident_wait', label: 'Attente / blocage', emoji: '⏳' },
+  { key: 'incident_aisle', label: 'Allée bloquée', emoji: '🚧' },
+  { key: 'incident_search', label: 'Recherche emplacement', emoji: '🔎' },
+  { key: 'incident_wms', label: 'Terminal / WMS', emoji: '💻' },
+  { key: 'incident_quality', label: 'Produit / qualité', emoji: '⚠️' },
 ]
+
+/** Ajoute les aléas livrés manquants sans écraser ceux créés par l'utilisateur. */
+export function mergeIncidents(stored: IncidentDef[] | undefined): IncidentDef[] {
+  const extras = (stored ?? []).filter(
+    (item) => !STANDARD_INCIDENTS.some((standard) => standard.key === item.key),
+  )
+  return [...STANDARD_INCIDENTS, ...extras]
+}
 
 export interface CartMotionSettings {
   enabled: boolean
@@ -251,8 +274,8 @@ export interface Settings {
     break: number
   }
   /**
-   * Anciennes définitions locales, conservées pour résoudre l'historique.
-   * Les nouveaux segments utilisent toujours `STANDARD_INCIDENTS`.
+   * Aléas proposés : liste livrée, plus ceux ajoutés sur cet appareil.
+   * Les clés custom restent locales et survivent aux mises à jour.
    */
   incidents: IncidentDef[]
   soundAlerts: boolean

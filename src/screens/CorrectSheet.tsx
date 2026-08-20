@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { BigButton } from '../components/BigButton'
 import { Sheet } from '../components/Sheet'
-import { INCIDENT_TYPES, segmentDef } from '../core/segments'
+import { listedIncidentTypes, segmentDef } from '../core/segments'
 import { formatShort, fromLocalInput, toLocalInput } from '../core/time'
 import type { Segment, SegmentType } from '../core/types'
 import { deleteSegment, editSegmentBounds, retypeSegment, setSegmentNote } from '../db/repo'
@@ -12,19 +12,23 @@ interface Props {
   onClose: () => void
 }
 
-const RETYPE_CHOICES: SegmentType[] = [
-  'picking',
-  'order_setup',
-  'wrapping',
-  'docking',
-  'travel',
-  'toilet',
-  'pallet_change',
-  ...INCIDENT_TYPES,
-  'break_10',
-  'break_30',
-  'idle',
-]
+function retypeChoices(current: SegmentType): SegmentType[] {
+  const choices: SegmentType[] = [
+    'picking',
+    'order_setup',
+    'wrapping',
+    'docking',
+    'travel',
+    'toilet',
+    'pallet_change',
+    ...listedIncidentTypes(),
+    'break_10',
+    'break_30',
+    'idle',
+  ]
+  if (!choices.includes(current)) choices.push(current)
+  return choices
+}
 
 /**
  * Correction a posteriori. Indispensable dès le premier jour : un clic oublié
@@ -120,8 +124,8 @@ export function CorrectSheet({ segment, onClose }: Props) {
           <div className="mb-2 text-sm font-semibold text-slate-400">
             Mauvais bouton ? Changer le type
           </div>
-          <div className="grid grid-cols-3 gap-2">
-            {RETYPE_CHOICES.map((type) => (
+          <div className="grid max-h-64 grid-cols-3 gap-2 overflow-y-auto">
+            {retypeChoices(segment.type).map((type) => (
               <button
                 key={type}
                 type="button"

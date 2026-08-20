@@ -5,6 +5,7 @@ import {
   categoryOf,
   INCIDENT_TYPES,
   isInterruption,
+  listedIncidentTypes,
   registerCustomIncidents,
   segmentDef,
 } from './segments'
@@ -41,7 +42,7 @@ describe('résolution des types de segments', () => {
     expect(segmentDef('break_30').category).toBe('break')
   })
 
-  it('propose les huit mêmes aléas canoniques sur tous les appareils', () => {
+  it('propose les aléas métier canoniques, y compris chef, collègue et VMAX', () => {
     expect(INCIDENT_TYPES).toEqual([
       'incident_material',
       'incident_bug',
@@ -51,6 +52,14 @@ describe('résolution des types de segments', () => {
       'incident_label',
       'incident_supplies',
       'incident_restock_wait',
+      'incident_manager',
+      'incident_colleague',
+      'incident_vmax',
+      'incident_wait',
+      'incident_aisle',
+      'incident_search',
+      'incident_wms',
+      'incident_quality',
     ])
     expect(INCIDENT_TYPES.map((type) => segmentDef(type).short)).toEqual([
       'Matériel',
@@ -61,6 +70,14 @@ describe('résolution des types de segments', () => {
       'Étiquette',
       'Consommables',
       'Réappro',
+      'Chef',
+      'Collègue',
+      'VMAX',
+      'Attente',
+      'Allée',
+      'Emplacement',
+      'WMS',
+      'Qualité',
     ])
   })
 
@@ -80,6 +97,7 @@ describe('résolution des types de segments', () => {
     expect(segmentDef('custom_abc').emoji).toBe('🚫')
     expect(isInterruption('custom_abc')).toBe(true)
     expect(categoryOf('custom_abc')).toBe('waste')
+    expect(listedIncidentTypes()).toContain('custom_abc')
   })
 
   it('refuse de laisser redéfinir un type livré', () => {

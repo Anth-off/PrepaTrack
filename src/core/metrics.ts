@@ -52,12 +52,17 @@ export function isOpen(seg: Segment): boolean {
   return seg.endedAt === undefined && !seg.deletedAt
 }
 
+/** Somme des appuis compteur, indépendamment du total éventuellement corrigé. */
+export function countedColis(events: ColisEvent[], orderId: string): number {
+  return events
+    .filter((event) => event.orderId === orderId && !event.deletedAt)
+    .reduce((sum, event) => sum + event.delta, 0)
+}
+
 /** Colis réellement traités sur une commande, selon l'information disponible. */
 export function orderColis(order: Order, events: ColisEvent[]): number {
   if (order.colisActual !== undefined) return order.colisActual
-  const counted = events
-    .filter((e) => e.orderId === order.id && !e.deletedAt)
-    .reduce((sum, e) => sum + e.delta, 0)
+  const counted = countedColis(events, order.id)
   if (counted > 0) return counted
   return order.status === 'done' ? order.colisPlanned : 0
 }

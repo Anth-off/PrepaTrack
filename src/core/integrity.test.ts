@@ -143,4 +143,10 @@ describe('contrôles d’intégrité locaux', () => {
     expect(has('probable_duplicate', inspect({ workday: workday(), orders: [order()], segments: [] }, events))).toBe(true)
     expect(has('shortage_mismatch', inspect({ workday: workday(), orders: [], segments: [] }, [], [shortage()]))).toBe(true)
   })
+
+  it('signale un total colis différent des appuis de picking', () => {
+    const events = [event({ id: 'e1', delta: 5 }), event({ id: 'e2', delta: 3, at: T + 1000 })]
+    expect(has('count_mismatch', inspect({ workday: workday(), orders: [order({ colisActual: 6 })], segments: [] }, events))).toBe(true)
+    expect(has('count_mismatch', inspect({ workday: workday(), orders: [order({ colisActual: 8 })], segments: [] }, events))).toBe(false)
+  })
 })

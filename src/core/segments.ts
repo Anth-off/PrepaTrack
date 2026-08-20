@@ -222,6 +222,69 @@ export const SEGMENTS: Record<KnownSegmentType, SegmentDef> = {
     color: 'bg-lime-500',
     hex: '#84cc16',
   },
+  incident_manager: {
+    label: 'Le chef me demande quelque chose',
+    short: 'Chef',
+    emoji: '🧑‍💼',
+    category: 'waste',
+    interruption: true,
+    color: 'bg-fuchsia-500',
+    hex: '#d946ef',
+  },
+  incident_colleague: {
+    label: 'Un collègue me bloque',
+    short: 'Collègue',
+    emoji: '🧍',
+    category: 'waste',
+    interruption: true,
+    color: 'bg-pink-400',
+    hex: '#f472b6',
+  },
+  incident_vmax: {
+    label: 'VMAX non valides',
+    short: 'VMAX',
+    emoji: '🟥',
+    category: 'waste',
+    interruption: true,
+    color: 'bg-red-700',
+    hex: '#b91c1c',
+  },
+  incident_aisle: {
+    label: 'Allée bloquée',
+    short: 'Allée',
+    emoji: '🚧',
+    category: 'waste',
+    interruption: true,
+    color: 'bg-yellow-500',
+    hex: '#eab308',
+  },
+  incident_search: {
+    label: 'Recherche d’emplacement',
+    short: 'Emplacement',
+    emoji: '🔎',
+    category: 'waste',
+    interruption: true,
+    color: 'bg-teal-400',
+    hex: '#2dd4bf',
+  },
+  incident_wms: {
+    label: 'Terminal, WMS ou radio en panne',
+    short: 'WMS',
+    emoji: '💻',
+    category: 'waste',
+    interruption: true,
+    color: 'bg-slate-500',
+    hex: '#64748b',
+  },
+  incident_quality: {
+    label: 'Produit abîmé ou non conforme',
+    short: 'Qualité',
+    emoji: '⚠️',
+    category: 'waste',
+    interruption: true,
+    color: 'bg-orange-500',
+    hex: '#f97316',
+  },
 
   break_10: {
     label: 'Pause 10 min',
@@ -255,6 +318,14 @@ export const INCIDENT_TYPES: SegmentType[] = [
   'incident_label',
   'incident_supplies',
   'incident_restock_wait',
+  'incident_manager',
+  'incident_colleague',
+  'incident_vmax',
+  'incident_wait',
+  'incident_aisle',
+  'incident_search',
+  'incident_wms',
+  'incident_quality',
 ]
 
 export const BREAK_TYPES: SegmentType[] = ['break_10', 'break_30']
@@ -297,6 +368,25 @@ export function registerCustomIncidents(
     }
   })
   customDefs = next
+}
+
+/** Aléas proposés à l'écran : liste livrée, plus ceux ajoutés dans les réglages. */
+export function listedIncidentTypes(): SegmentType[] {
+  const extra = Object.keys(customDefs).filter(
+    (key) => !INCIDENT_TYPES.includes(key as SegmentType),
+  )
+  return [...INCIDENT_TYPES, ...extra]
+}
+
+/** Vrai pour un aléa livré, historique, ou ajouté dans les réglages. */
+export function isIncidentType(type: SegmentType | undefined): boolean {
+  if (!type) return false
+  return (
+    INCIDENT_TYPES.includes(type) ||
+    type.startsWith('incident_') ||
+    type.startsWith('custom_') ||
+    type in customDefs
+  )
 }
 
 /** Définition de repli : un type inconnu doit rester affichable. */

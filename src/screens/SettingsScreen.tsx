@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { getSettings, saveSettings, wipeAll } from '../db/db'
-import type { Settings } from '../core/types'
+import { getSettings, saveSettings, uid, wipeAll } from '../db/db'
+import { mergeIncidents, STANDARD_INCIDENTS, type IncidentDef, type Settings } from '../core/types'
 import type { SyncInfo } from '../hooks/useSync'
 import type { CartMotionControl } from '../hooks/useCartMotion'
 import type { AppUpdateControl } from '../hooks/useAppUpdate'
 import type { RecordingControl } from '../hooks/useRecording'
 import { RecordingSettingsSection } from './RecordingSettingsSection'
-import { INCIDENT_TYPES, segmentDef } from '../core/segments'
+import { registerCustomIncidents, SEGMENTS, segmentDef } from '../core/segments'
 import { BackupSection } from './BackupSection'
 import { CartMotionSection } from './CartMotionSection'
 import { DiagnosticSection } from './DiagnosticSection'
@@ -128,7 +128,7 @@ export function SettingsScreen({
         />
       </section>
 
-      <IncidentList />
+      <IncidentList settings={settings} />
 
       <section className="card">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
@@ -188,25 +188,116 @@ export function SettingsScreen({
   )
 }
 
-/** Liste fixe et identique sur tous les appareils. */
-function IncidentList() {
+const EMOJI_CHOICES = ['⚠️', '🧑‍💼', '🧍', '🟥', '🚧', '🔎', '💻', '🧊', '🔋', '📞', '🚫', '🧯']
+
+function customIncidentKey(label: string, existing: IncidentDef[]): string {
+  const slug = label
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, 20)
+  let key = `custom_${slug || uid().slice(0, 8)}`
+  if (existing.some((item) => item.key === key) || key in SEGMENTS) {
+    key = `custom_${uid().slice(0, 10)}`
+  }
+  return key
+}
+
+/** Liste livrée, plus les aléas ajoutés sur cet appareil. */
+function IncidentList({ settings }: { settings: Settings }) {
+  const [label, setLabel] = useState('')
+  const [emoji, setEmoji] = useState('⚠️')
+  const customs = settings.incidents.filter(
+    (item) => !STANDARD_INCIDENTS.some((standard) => standard.key === item.key),
+  )
+
+  async function persist(next: IncidentDef[]) {
+    const incidents = mergeIncidents(next)
+    await saveSettings({ incidents })
+    registerCustomIncidents(incidents)
+  }
+
   return (
     <section className="card">
       <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
         Types d'aléas
       </h3>
       <p className="mb-3 mt-1 text-sm text-slate-500">
-        Ces aléas sont identiques sur l'iPhone et le PC, y compris hors ligne.
+        Ces aléas survivent aux mises à jour. Tu peux en ajouter un si le cas
+        n'est pas dans la liste.
       </p>
 
       <ul className="flex flex-col gap-2">
-        {INCIDENT_TYPES.map((type) => (
-          <li key={type} className="flex items-center gap-3 rounded-lg bg-ink-900 px-3 py-2">
-            <span className="w-8 text-center text-xl">{segmentDef(type).emoji}</span>
-            <span className="text-sm font-semibold text-slate-200">{segmentDef(type).short}</span>
+        {STANDARD_INCIDENTS.map((item) => (
+          <li key={item.key} className="flex items-center gap-3 rounded-lg bg-ink-900 px-3 py-2">
+            <span className="w-8 text-center text-xl">{segmentDef(item.key).emoji}</span>
+            <span className="text-sm font-semibold text-slate-200">{segmentDef(item.key).label}</span>
           </li>
         ))}
       </ul>
+
+      {customs.length > 0 && (
+        <ul className="mt-3 flex flex-col gap-2">
+          {customs.map((item) => (
+            <li key={item.key} className="flex items-center gap-3 rounded-lg bg-ink-900 px-3 py-2">
+              <span className="w-8 text-center text-xl">{item.emoji}</span>
+              <span className="flex-1 text-sm font-semibold text-slate-200">{item.label}</span>
+              <button
+                type="button"
+                onClick={() => void persist(settings.incidents.filter((row) => row.key !== item.key))}
+                className="pressable text-xs font-semibold text-bad"
+              >
+                Retirer
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="mt-4 flex flex-col gap-2 border-t border-ink-600 pt-3">
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+          Ajouter un aléa
+        </p>
+        <div className="flex flex-wrap gap-1">
+          {EMOJI_CHOICES.map((choice) => (
+            <button
+              key={choice}
+              type="button"
+              onClick={() => setEmoji(choice)}
+              className={`pressable h-10 w-10 rounded-lg text-lg ${
+                emoji === choice ? 'bg-accent' : 'bg-ink-700'
+              }`}
+            >
+              {choice}
+            </button>
+          ))}
+        </div>
+        <input
+          type="text"
+          value={label}
+          onChange={(event) => setLabel(event.target.value)}
+          placeholder="ex : Glace au sol"
+          className="min-h-touch rounded-xl bg-ink-700 px-3 text-slate-200"
+        />
+        <button
+          type="button"
+          disabled={!label.trim()}
+          onClick={async () => {
+            const trimmed = label.trim()
+            if (!trimmed) return
+            await persist([
+              ...settings.incidents,
+              { key: customIncidentKey(trimmed, settings.incidents), label: trimmed, emoji },
+            ])
+            setLabel('')
+          }}
+          className="pressable min-h-touch rounded-xl bg-ink-700 font-semibold text-slate-200 disabled:opacity-40"
+        >
+          Ajouter {emoji}
+        </button>
+      </div>
     </section>
   )
 }

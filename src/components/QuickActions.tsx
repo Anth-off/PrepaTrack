@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { canInterrupt, type MachineView } from '../core/machine'
-import { BREAK_TYPES, INCIDENT_TYPES, segmentDef } from '../core/segments'
+import { BREAK_TYPES, isIncidentType, listedIncidentTypes, segmentDef } from '../core/segments'
 import type { SegmentType, Settings } from '../core/types'
 
 interface Props {
@@ -53,14 +53,15 @@ export function QuickActions({
     </button>
   )
 
-  const incidentActive = INCIDENT_TYPES.includes(activeType as SegmentType)
+  const incidentTypes = listedIncidentTypes()
+  const incidentActive = isIncidentType(activeType)
   const breakActive = BREAK_TYPES.includes(activeType as SegmentType)
 
   return (
     <div className="relative">
       {menu === 'incident' && (
         <MenuPanel columns={4} onClose={() => setMenu(null)}>
-          {INCIDENT_TYPES.map((type) =>
+          {incidentTypes.map((type) =>
             cell(
               type,
               segmentDef(type).emoji,
@@ -154,7 +155,7 @@ function MenuPanel({
     <>
       <div className="fixed inset-0 z-10" onClick={onClose} />
       <div
-        className={`absolute bottom-full left-0 right-0 z-20 mb-1 grid gap-2 rounded-2xl border border-ink-600 bg-ink-800 p-2 shadow-2xl ${
+        className={`absolute bottom-full left-0 right-0 z-20 mb-1 grid max-h-[50vh] gap-2 overflow-y-auto rounded-2xl border border-ink-600 bg-ink-800 p-2 shadow-2xl ${
           columns === 4 ? 'grid-cols-4' : 'grid-cols-2'
         }`}
       >

@@ -22,16 +22,19 @@ export function PalletEditSheet({
   pallet,
   onClose,
   onSave,
+  onDelete,
 }: {
   pallet?: OrderPallet
   onClose: () => void
   onSave: (patch: Partial<OrderPallet>) => Promise<void>
+  onDelete?: () => Promise<void>
 }) {
   const [support, setSupport] = useState<SupportKind | ''>('')
   const [startCount, setStartCount] = useState('0')
   const [endCount, setEndCount] = useState('0')
   const [startedAt, setStartedAt] = useState('')
   const [endedAt, setEndedAt] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   useEffect(() => {
     if (!pallet) return
@@ -40,6 +43,7 @@ export function PalletEditSheet({
     setEndCount(String(pallet.endCount ?? pallet.startCount))
     setStartedAt(inputDate(pallet.startedAt))
     setEndedAt(inputDate(pallet.endedAt))
+    setConfirmDelete(false)
   }, [pallet])
 
   if (!pallet) return null
@@ -70,6 +74,25 @@ export function PalletEditSheet({
           })
           onClose()
         }} />
+        {onDelete && (confirmDelete ? (
+          <BigButton
+            label="Confirmer la suppression"
+            sub="La commande et la journée restent intactes"
+            tone="bad"
+            onClick={async () => {
+              await onDelete()
+              onClose()
+            }}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirmDelete(true)}
+            className="pressable rounded-xl py-3 text-sm font-semibold text-bad"
+          >
+            Supprimer cette palette
+          </button>
+        ))}
       </div>
     </Sheet>
   )

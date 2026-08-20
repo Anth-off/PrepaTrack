@@ -618,32 +618,51 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
     }
 
     /**
-     * Utilise le traitement audio prévu par Apple pour une captation vidéo,
-     * le micro dirigé vers la caméra avant et le stéréo lorsqu'il existe.
+     * Garde la musique des autres apps (Spotify, Apple Music…) pendant la
+     * captation, force le micro du téléphone, et active l'annulation d'écho
+     * pour laisser le moins de musique possible dans la vidéo.
      */
     private func configureAudioSession() throws -> Int {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .videoRecording, options: [])
+        try session.setCategory(
+            .playAndRecord,
+            mode: .videoChat,
+            options: [.mixWithOthers, .allowBluetoothA2DP, .defaultToSpeaker]
+        )
         try? session.setPreferredSampleRate(48_000)
         // Un tampon court réduit la latence d'entrée qui se manifestait par un
         // léger retard du son sur l'image après multiplexage.
         try? session.setPreferredIOBufferDuration(0.005)
         try session.setActive(true)
 
-        if let builtIn = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
-            try? session.setPreferredInput(builtIn)
-            if let front = builtIn.dataSources?.first(where: { $0.orientation == .front }) {
-                if front.supportedPolarPatterns?.contains(.stereo) == true {
-                    try? front.setPreferredPolarPattern(.stereo)
-                }
-                try? builtIn.setPreferredDataSource(front)
-            }
-        }
-        if session.inputNumberOfChannels >= 2 {
+        preferBuiltInMicrophone(session)
+
+        let stereo = session.inputNumberOfChannels >= 2 &&
+            session.preferredInput?.dataSources?.contains(where: {
+                $0.selectedPolarPattern == .stereo
+            }) == true
+        if stereo {
             try? session.setPreferredInputNumberOfChannels(2)
             try? session.setPreferredInputOrientation(.portrait)
+            return 2
         }
-        return max(1, min(2, session.inputNumberOfChannels))
+        try? session.setPreferredInputNumberOfChannels(1)
+        return 1
+    }
+
+    /** Évite le micro du casque, qui enregistrerait surtout la musique. */
+    private func preferBuiltInMicrophone(_ session: AVAudioSession) {
+        guard let builtIn = session.availableInputs?.first(where: { $0.portType == .builtInMic }) else {
+            return
+        }
+        try? session.setPreferredInput(builtIn)
+        let source = builtIn.dataSources?.first(where: { $0.orientation == .front })
+            ?? builtIn.dataSources?.first
+        guard let source else { return }
+        if source.supportedPolarPatterns?.contains(.cardioid) == true {
+            try? source.setPreferredPolarPattern(.cardioid)
+        }
+        try? builtIn.setPreferredDataSource(source)
     }
 
     /** Encode le son en AAC 48 kHz avec le débit maximal utile à 1 ou 2 canaux. */

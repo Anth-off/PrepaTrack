@@ -3,6 +3,7 @@ import type { Snapshot } from '../core/machine'
 import { computeDayMetrics, type DayMetrics } from '../core/metrics'
 import type { ColisEvent, Settings, StockShortage } from '../core/types'
 import { DEFAULT_SETTINGS } from '../core/types'
+import { registerCustomIncidents } from '../core/segments'
 import { getSettings } from '../db/db'
 import { colisEventsFor, loadSnapshotById, stockShortagesFor } from '../db/repo'
 import { useNow } from './useNow'
@@ -40,6 +41,8 @@ export function useDay(workdayId?: string): DayView {
       targetRate: 110, loading: data === undefined,
     }
   }
+
+  registerCustomIncidents(data.settings.incidents)
 
   return {
     snap: data.snap,

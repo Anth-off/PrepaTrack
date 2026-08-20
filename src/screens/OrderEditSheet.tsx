@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react'
+import { useLiveQuery } from 'dexie-react-hooks'
 import { BigButton } from '../components/BigButton'
 import { NumPad } from '../components/NumPad'
 import { Sheet } from '../components/Sheet'
 import { Stepper } from '../components/Stepper'
+import { countedColis } from '../core/metrics'
 import type { Order, OrderType, SupportKind, Supports } from '../core/types'
 import { EMPTY_SUPPORTS } from '../core/types'
-import { updateOrder } from '../db/repo'
+import { db } from '../db/db'
+import { deleteOrder, updateOrder } from '../db/repo'
 
 interface Props {
   order?: Order
@@ -40,6 +43,13 @@ export function OrderEditSheet({ order, onClose }: Props) {
   const [field, setField] = useState<'colis' | 'lines'>('colis')
   const [orderType, setOrderType] = useState<OrderType>('normale')
   const [supports, setSupports] = useState<Supports>({ ...EMPTY_SUPPORTS })
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  const events = useLiveQuery(
+    () => (order ? db.colisEvents.where('orderId').equals(order.id).toArray() : []),
+    [order?.id],
+  ) ?? []
+  const counted = order ? countedColis(events, order.id) : 0
 
   useEffect(() => {
     if (!order) return
@@ -48,6 +58,7 @@ export function OrderEditSheet({ order, onClose }: Props) {
     setOrderType(order.orderType)
     setSupports({ ...EMPTY_SUPPORTS, ...order.supports })
     setField('colis')
+    setConfirmDelete(false)
   }, [order])
 
   if (!order) return null
@@ -81,6 +92,18 @@ export function OrderEditSheet({ order, onClose }: Props) {
           />
         </div>
 
+        {counted > 0 && counted !== Number(colis || 0) && (
+          <p className="text-sm text-warn">
+            {counted} appuis de picking enregistrés. Enregistrer réaligne le
+            compteur sur {colis || '0'} colis, sans toucher au reste de la journée.
+          </p>
+        )}
+        {counted > 0 && counted === Number(colis || 0) && (
+          <p className="text-xs text-slate-500">
+            {counted} appuis de picking, alignés avec ce total.
+          </p>
+        )}
+
         <NumPad
           value={field === 'colis' ? colis : lines}
           onChange={(v) => (field === 'colis' ? setColis(v) : setLines(v))}
@@ -113,6 +136,26 @@ export function OrderEditSheet({ order, onClose }: Props) {
         </div>
 
         <BigButton label="Enregistrer" onClick={save} />
+
+        {confirmDelete ? (
+          <BigButton
+            label="Confirmer la suppression"
+            sub="La journée et les autres commandes restent intactes"
+            tone="bad"
+            onClick={async () => {
+              await deleteOrder(order.id)
+              onClose()
+            }}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirmDelete(true)}
+            className="pressable rounded-xl py-3 text-sm font-semibold text-bad"
+          >
+            Supprimer cette commande
+          </button>
+        )}
       </div>
     </Sheet>
   )

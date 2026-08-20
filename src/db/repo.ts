@@ -496,6 +496,7 @@ export async function saveOrderResult(
   order.supports = data.supports
   order.orderType = data.orderType
   await db.orders.put(stamp(order))
+  await syncOrderEventsToActual(order)
   for (const choice of data.palletSupports ?? []) {
     const pallet = await db.orderPallets.get(choice.id)
     if (!pallet || pallet.orderId !== orderId) continue
@@ -524,7 +525,96 @@ export async function saveOrderResult(
 export async function updateOrder(orderId: string, patch: Partial<Order>): Promise<void> {
   const order = await db.orders.get(orderId)
   if (!order) return
-  await db.orders.put(stamp({ ...order, ...patch, id: order.id }))
+  const next = stamp({ ...order, ...patch, id: order.id })
+  await db.orders.put(next)
+  if (patch.colisActual !== undefined) {
+    await syncOrderEventsToActual(next)
+    await reconcilePalletCounts(next)
+  }
+}
+
+/**
+ * Aligne les appuis compteur sur le total corrigé. Sans cela, une commande
+ * affichait 6 colis alors que 8 appuis restaient en base.
+ */
+async function syncOrderEventsToActual(order: Order): Promise<void> {
+  if (order.colisActual === undefined) return
+  const target = Math.max(0, Math.trunc(order.colisActual))
+  const events = (await db.colisEvents.where('orderId').equals(order.id).toArray())
+    .filter((event) => !event.deletedAt)
+  const current = events.reduce((sum, event) => sum + event.delta, 0)
+  const diff = target - current
+  if (diff === 0) return
+  await db.colisEvents.put(stamp({
+    id: uid(),
+    workdayId: order.workdayId,
+    orderId: order.id,
+    palletId: order.activePalletId,
+    at: Date.now(),
+    delta: diff,
+    updatedAt: 0,
+    syncState: 'pending',
+  }))
+}
+
+export async function deleteOrder(orderId: string): Promise<void> {
+  const order = await db.orders.get(orderId)
+  if (!order) return
+  const at = Date.now()
+  const workday = await db.workdays.get(order.workdayId)
+  const live = (await db.segments.where('workdayId').equals(order.workdayId).toArray()).find(
+    (row) => !row.deletedAt && row.endedAt === undefined,
+  )
+  const wasLive = Boolean(
+    workday?.status === 'open' &&
+      live &&
+      (live.orderId === orderId || (live.stack ?? []).some((ref) => ref.orderId === orderId)),
+  )
+  order.deletedAt = at
+  await db.orders.put(stamp(order))
+  const [pallets, events, shortages] = await Promise.all([
+    db.orderPallets.where('orderId').equals(orderId).toArray(),
+    db.colisEvents.where('orderId').equals(orderId).toArray(),
+    db.stockShortages.where('orderId').equals(orderId).toArray(),
+  ])
+  for (const pallet of pallets) {
+    pallet.deletedAt = at
+    await db.orderPallets.put(stamp(pallet))
+  }
+  for (const event of events) {
+    event.deletedAt = at
+    await db.colisEvents.put(stamp(event))
+  }
+  for (const shortage of shortages) {
+    shortage.deletedAt = at
+    await db.stockShortages.put(stamp(shortage))
+  }
+  const segments = await db.segments.where('orderId').equals(orderId).toArray()
+  for (const segment of segments) {
+    if (segment.deletedAt) continue
+    segment.orderId = undefined
+    segment.palletId = undefined
+    if (segment.stack?.length) {
+      segment.stack = segment.stack.map((ref) =>
+        ref.orderId === orderId ? { ...ref, orderId: undefined } : ref,
+      )
+    }
+    await db.segments.put(stamp(segment))
+  }
+  if (wasLive) {
+    const active = (await db.segments.where('workdayId').equals(order.workdayId).toArray()).find(
+      (row) => !row.deletedAt && row.endedAt === undefined,
+    )
+    if (active) {
+      active.endedAt = Math.max(at, active.startedAt)
+      active.orderId = undefined
+      active.palletId = undefined
+      active.stack = undefined
+      await db.segments.put(stamp(active))
+      await db.segments.put(newSegment(order.workdayId, 'idle', active.endedAt))
+    }
+  }
+  await reconcileWorkdayBounds(order.workdayId)
 }
 
 /** Corrige les informations d'une palette sans modifier la timeline globale. */
@@ -559,6 +649,28 @@ export async function updateOrderPallet(
       await db.orders.put(stamp(order))
     }
   }
+  await reconcileWorkdayBounds(pallet.workdayId)
+}
+
+export async function deleteOrderPallet(palletId: string): Promise<void> {
+  const pallet = await db.orderPallets.get(palletId)
+  if (!pallet) return
+  pallet.deletedAt = Date.now()
+  await db.orderPallets.put(stamp(pallet))
+  const order = await db.orders.get(pallet.orderId)
+  if (order && !order.deletedAt) {
+    const rest = (await db.orderPallets.where('orderId').equals(order.id).toArray())
+      .filter((row) => !row.deletedAt)
+      .sort((a, b) => a.number - b.number)
+    if (order.activePalletId === palletId) order.activePalletId = rest[0]?.id
+    const supports = { ...EMPTY_SUPPORTS }
+    for (const item of rest) {
+      if (item.support) supports[item.support] += 1
+    }
+    order.supports = supports
+    await db.orders.put(stamp(order))
+  }
+  await reconcileWorkdayBounds(pallet.workdayId)
 }
 
 // --- Interruptions ---------------------------------------------------------
@@ -710,6 +822,10 @@ export async function addColis(delta: number, at: number = Date.now()): Promise<
     syncState: 'pending',
   })
   await db.colisEvents.put(event)
+  if (view.order.colisActual !== undefined) {
+    view.order.colisActual = Math.max(0, view.order.colisActual + safeDelta)
+    await db.orders.put(stamp(view.order))
+  }
 }
 
 export async function colisEventsFor(workdayId: string): Promise<ColisEvent[]> {
@@ -859,10 +975,15 @@ export async function editSegmentBounds(
     .count()
   const workday = await db.workdays.get(segment.workdayId)
   if (wasOpen && segment.endedAt !== undefined && stillOpen === 0 && workday?.status === 'open') {
-    await closeWorkdayAt(segment.workdayId, (await plausibleEndFor(segment.workdayId)) ?? segment.endedAt)
-  } else {
-    await reconcileWorkdayBounds(segment.workdayId)
+    // Une correction le jour même ne doit pas clôturer la vacation : on enchaîne
+    // sur un temps mort. Le lendemain, terminer le dernier chrono clos la journée.
+    if (dayKey(now) !== workday.date) {
+      await closeWorkdayAt(segment.workdayId, (await plausibleEndFor(segment.workdayId)) ?? segment.endedAt)
+      return
+    }
+    await db.segments.put(newSegment(workday.id, 'idle', segment.endedAt))
   }
+  await reconcileWorkdayBounds(segment.workdayId)
 }
 
 /** Supprime un segment ; le précédent absorbe sa durée pour éviter un trou. */
@@ -897,6 +1018,7 @@ export async function retypeSegment(segmentId: string, type: SegmentType): Promi
   segment.type = type
   segment.editedAt = Date.now()
   await db.segments.put(stamp(segment))
+  await reconcileWorkdayBounds(segment.workdayId)
 }
 
 export async function setSegmentNote(segmentId: string, note: string): Promise<void> {

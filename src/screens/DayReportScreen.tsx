@@ -12,6 +12,7 @@ import { ESTIMATED_MISSING_HELP, ESTIMATED_MISSING_LABEL } from '../core/metricL
 import { formatDayLabel, formatShort, hhmm } from '../core/time'
 import type { OrderPallet, StockShortage, SupportKind } from '../core/types'
 import {
+  deleteOrderPallet,
   deleteStockShortage,
   deleteWorkday,
   reconcileWorkdayBounds,
@@ -296,6 +297,9 @@ export function DayReportScreen({ workdayId, initialSegmentId, onBack }: Props) 
         pallet={editingPallet}
         onClose={() => setEditingPallet(undefined)}
         onSave={(patch) => updateOrderPallet(editingPallet!.id, patch)}
+        onDelete={async () => {
+          if (editingPallet) await deleteOrderPallet(editingPallet.id)
+        }}
       />
       <StockShortageSheet
         shortage={editingShortage}

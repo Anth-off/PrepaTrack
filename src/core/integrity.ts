@@ -1,5 +1,5 @@
 import type { Snapshot } from './machine'
-import { computeOrderMetrics, MIN_RATE_WINDOW, orderColis } from './metrics'
+import { countedColis, computeOrderMetrics, MIN_RATE_WINDOW, orderColis } from './metrics'
 import { isInterruption, segmentDef } from './segments'
 import { dayKey, MINUTE } from './time'
 import type { ColisEvent, Order, Segment, Settings, StockShortage } from './types'
@@ -17,6 +17,7 @@ export type IntegrityRule =
   | 'impossible_rate'
   | 'probable_duplicate'
   | 'shortage_mismatch'
+  | 'count_mismatch'
 
 export interface IntegrityIssue {
   id: string
@@ -99,6 +100,16 @@ export function inspectIntegrity({
     const ownEvents = liveEvents.filter((row) => row.orderId === order.id)
     const ownShortages = liveShortages.filter((row) => row.orderId === order.id)
     const prepared = orderColis(order, ownEvents)
+    const counted = countedColis(ownEvents, order.id)
+    if (order.colisActual !== undefined && counted > 0 && counted !== order.colisActual) {
+      issues.push(issue({
+        rule: 'count_mismatch', severity: 'check', entity: 'order', entityId: order.id,
+        fingerprint: fingerprint(order, ...ownEvents),
+        title: 'Total colis différent des appuis compteur',
+        detail: `${order.colisActual} colis enregistrés, ${counted} appuis de picking.`,
+        correction: 'Ouvre la commande et corrige le total : les appuis seront réalignés.',
+      }))
+    }
     const shortage = ownShortages.reduce((sum, row) => sum + row.quantity, 0)
     if (prepared + shortage !== order.colisPlanned) {
       const difference = Math.abs(order.colisPlanned - prepared - shortage)

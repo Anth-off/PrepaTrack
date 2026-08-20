@@ -1,7 +1,7 @@
 import Dexie, { type Table } from 'dexie'
 import type { ColisEvent, Order, OrderPallet, Segment, Settings, StockShortage, Workday } from '../core/types'
+import { DEFAULT_SETTINGS, mergeIncidents } from '../core/types'
 import type { RecordingChunk } from './recordings'
-import { DEFAULT_SETTINGS } from '../core/types'
 import { scheduleDurableBackup } from '../native/durableStorage'
 
 /**
@@ -80,6 +80,7 @@ export async function getSettings(): Promise<Settings> {
           ...DEFAULT_SETTINGS.recording,
           ...existing.recording,
         },
+        incidents: mergeIncidents(existing.incidents),
       }
     : DEFAULT_SETTINGS
 }
@@ -109,6 +110,7 @@ export async function saveSettings(patch: SettingsPatch): Promise<Settings> {
       ...current.recording,
       ...patch.recording,
     },
+    incidents: mergeIncidents(patch.incidents ?? current.incidents),
     id: 'settings' as const,
     updatedAt: Date.now(),
   }

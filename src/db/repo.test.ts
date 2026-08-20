@@ -5,6 +5,7 @@ import {
   addColis,
   advanceOrder,
   colisEventsFor,
+  deleteOrder,
   deleteSegment,
   editSegmentBounds,
   endBriefing,
@@ -21,6 +22,7 @@ import {
   setAutomaticTravel,
   startOrder,
   toggleOvertime,
+  updateOrder,
 } from './repo'
 import { deriveView } from '../core/machine'
 import { computeDayMetrics, computeOrderMetrics, segmentDuration } from '../core/metrics'
@@ -545,15 +547,27 @@ describe('heures supplémentaires', () => {
 })
 
 describe('corrections a posteriori', () => {
-  it('termine précisément une vacation quand son dernier chrono était resté ouvert', async () => {
+  it('ne clôture pas la vacation le jour même si on termine le dernier chrono ouvert', async () => {
     await startDay(at(0))
     const active = (await loadSnapshot()).segments.find((s) => s.endedAt === undefined)!
 
     await editSegmentBounds(active.id, { endedAt: at(15) }, at(60))
 
     const day = await db.workdays.get(active.workdayId)
-    const fixed = await db.segments.get(active.id)
-    expect(fixed?.endedAt).toBe(at(15))
+    const after = await loadSnapshot()
+    expect(after.segments.find((s) => s.id === active.id)?.endedAt).toBe(at(15))
+    expect(day?.status).toBe('open')
+    expect(after.segments.find((s) => s.endedAt === undefined)?.type).toBe('idle')
+    expect(after.segments.find((s) => s.endedAt === undefined)?.startedAt).toBe(at(15))
+  })
+
+  it('clôture la vacation oubliée quand on termine le dernier chrono le lendemain', async () => {
+    await startDay(at(0))
+    const active = (await loadSnapshot()).segments.find((s) => s.endedAt === undefined)!
+
+    await editSegmentBounds(active.id, { endedAt: at(15) }, START + 24 * 60 * MINUTE)
+
+    const day = await db.workdays.get(active.workdayId)
     expect(day?.status).toBe('closed')
     expect(day?.endedAt).toBe(at(15))
   })
@@ -611,6 +625,43 @@ describe('corrections a posteriori', () => {
     const fixed = (await loadSnapshot()).segments.find((s) => s.id === active.id)!
     expect(fixed.startedAt).toBe(at(30))
     expect(fixed.endedAt).toBeUndefined()
+  })
+
+  it('réaligne les appuis compteur quand on corrige le total de colis', async () => {
+    await startDay(at(0))
+    await endBriefing(at(10))
+    await startOrder({ colisPlanned: 20, linesCount: 5, orderType: 'normale' }, at(15))
+    await advanceOrder(at(20))
+    for (let i = 0; i < 8; i++) await addColis(1, at(21 + i))
+
+    const order = (await loadSnapshot()).orders[0]
+    await saveOrderResult(order.id, {
+      colisActual: 6,
+      supports: { ...EMPTY_SUPPORTS, europe: 1 },
+      orderType: 'normale',
+    })
+
+    const events = await colisEventsFor(order.workdayId)
+    expect(events.filter((event) => event.orderId === order.id).reduce((sum, event) => sum + event.delta, 0)).toBe(6)
+    expect((await db.orders.get(order.id))?.colisActual).toBe(6)
+  })
+
+  it('supprime une commande sans clôturer ni vider la journée', async () => {
+    await startDay(at(0))
+    await endBriefing(at(10))
+    await startOrder({ colisPlanned: 20, linesCount: 5, orderType: 'normale' }, at(15))
+    await advanceOrder(at(20))
+    await addColis(3, at(25))
+    const order = (await loadSnapshot()).orders[0]
+    await updateOrder(order.id, { colisActual: 3, linesCount: 5 })
+    await deleteOrder(order.id)
+
+    const snap = await loadSnapshot()
+    expect(snap.orders).toHaveLength(0)
+    expect(snap.workday?.status).toBe('open')
+    expect(snap.segments.length).toBeGreaterThan(0)
+    expect(snap.segments.find((segment) => segment.endedAt === undefined)?.type).toBe('idle')
+    expect((await colisEventsFor(snap.workday!.id))).toHaveLength(0)
   })
 
   it('absorbe la durée d’un segment supprimé dans le précédent', async () => {

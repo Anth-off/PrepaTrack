@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { db, getSettings, saveSettings } from './db'
+import { DEFAULT_SETTINGS } from '../core/types'
 
 beforeEach(async () => {
   await db.delete()
@@ -39,5 +40,23 @@ describe('réglages du détecteur de trajet', () => {
       stationaryEnergy: 0.3,
       threshold: 1,
     })
+  })
+})
+
+describe('aléas', () => {
+  it('ajoute les nouveaux aléas livrés sans effacer un aléa perso', async () => {
+    await db.settings.put({
+      ...DEFAULT_SETTINGS,
+      incidents: [
+        { key: 'incident_material', label: 'Matériel', emoji: '🔧' },
+        { key: 'custom_glace', label: 'Glace au sol', emoji: '🧊' },
+      ],
+      updatedAt: 1,
+    })
+
+    const settings = await getSettings()
+    expect(settings.incidents.some((item) => item.key === 'incident_manager')).toBe(true)
+    expect(settings.incidents.some((item) => item.key === 'incident_vmax')).toBe(true)
+    expect(settings.incidents.some((item) => item.key === 'custom_glace' && item.label === 'Glace au sol')).toBe(true)
   })
 })
