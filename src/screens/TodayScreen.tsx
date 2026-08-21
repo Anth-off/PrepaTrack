@@ -10,6 +10,7 @@ import { ResumeSheet } from '../components/ResumeSheet'
 import { contextualTarget } from '../core/contextualTarget'
 import { breaksTaken, primaryActionLabel } from '../core/machine'
 import { computeLive, isRateMeaningful, phaseElapsed } from '../core/metrics'
+import { dailyProductionStatus, type DailyProductionStatus } from '../core/productionPlan'
 import { segmentDef } from '../core/segments'
 import { formatShort, hhmm } from '../core/time'
 import type { OrderType, Segment, SegmentType, Supports, SupportKind } from '../core/types'
@@ -127,6 +128,13 @@ export function TodayScreen({ session, resume, onShowReport, onBeforeFinishDay, 
         ? computeLive(view.order, snap.segments, session.events, reference.rate, now)
         : sessionLive,
     [now, reference.rate, session.events, sessionLive, snap.segments, view.order],
+  )
+  const production = useMemo(
+    () =>
+      snap.workday
+        ? dailyProductionStatus(snap.workday.date, day.colis, now)
+        : undefined,
+    [day.colis, now, snap.workday],
   )
 
   // Une interruption s'affiche seule — c'est bien sa durée propre qui compte.
@@ -260,7 +268,12 @@ export function TodayScreen({ session, resume, onShowReport, onBeforeFinishDay, 
           )}
 
           {live && showCounter && (
-            <PaceGauge live={live} reference={reference} compact={!desktop} />
+            <PaceGauge
+              live={live}
+              reference={reference}
+              compact={!desktop}
+              daily={production}
+            />
           )}
         </>
       )}
@@ -454,7 +467,7 @@ export function TodayScreen({ session, resume, onShowReport, onBeforeFinishDay, 
           {quickBar && <div className="rounded-2xl border border-ink-600">{quickBar}</div>}
         </div>
 
-        <DayPanel session={session} onShowReport={onShowReport} />
+        <DayPanel session={session} production={production} onShowReport={onShowReport} />
         {sheets}
       </div>
     )
@@ -467,7 +480,9 @@ export function TodayScreen({ session, resume, onShowReport, onBeforeFinishDay, 
       {/* Pendant le prélèvement, les totaux de la journée cèdent la place : ce
           qu'on regarde à cet instant c'est l'avance/retard, et sur un téléphone
           à encoche chaque bloc gagné évite un défilement. */}
-      {!showCounter && <DayHeader session={session} onShowReport={onShowReport} />}
+      {!showCounter && (
+        <DayHeader session={session} production={production} onShowReport={onShowReport} />
+      )}
       {/* Pas de `flex-1` sur cette zone : un élément flexible ne se réduit pas
           en dessous de son contenu, et la barre d'actions qui suit déborderait
           alors de la fenêtre. C'est `mt-auto` sur les contrôles qui les pousse
@@ -488,7 +503,15 @@ export function TodayScreen({ session, resume, onShowReport, onBeforeFinishDay, 
 }
 
 /** Colonne de droite sur PC : le bilan de la vacation, mis à jour en continu. */
-function DayPanel({ session, onShowReport }: { session: Session; onShowReport: () => void }) {
+function DayPanel({
+  session,
+  production,
+  onShowReport,
+}: {
+  session: Session
+  production?: DailyProductionStatus
+  onShowReport: () => void
+}) {
   const { day, settings, view } = session
 
   if (view.phase === 'no_day' && day.ordersCount === 0) {
@@ -518,6 +541,8 @@ function DayPanel({ session, onShowReport }: { session: Session; onShowReport: (
         <Kpi label="Présence" value={formatShort(day.presence)} />
         <Kpi label="Perdu" value={formatShort(day.wasteTime)} />
       </div>
+
+      {production && <ProductionPlanCard production={production} />}
 
       <RateCards day={day} targetRate={settings.targetRate} />
       <TimeBreakdown day={day} />
@@ -549,27 +574,98 @@ function DayPanel({ session, onShowReport }: { session: Session; onShowReport: (
   )
 }
 
-function DayHeader({ session, onShowReport }: { session: Session; onShowReport: () => void }) {
+function DayHeader({
+  session,
+  production,
+  onShowReport,
+}: {
+  session: Session
+  production?: DailyProductionStatus
+  onShowReport: () => void
+}) {
   const { day, view } = session
   if (view.phase === 'no_day' && day.colis === 0) return null
   const rateShown = day.rates.day > 0 && isRateMeaningful(day.worked)
 
   return (
     <button type="button" onClick={onShowReport} className="w-full px-4 pb-3 pt-2 text-left">
-      <div className="flex items-center justify-between gap-3 rounded-2xl bg-ink-800 px-4 py-3">
-        <Stat label="Colis" value={String(day.colis)} />
-        <Stat
-          label="Cadence jour"
-          value={rateShown ? `${Math.round(day.rates.day)}` : '—'}
-          unit={rateShown ? '/h' : undefined}
-          tone={
-            rateShown ? (day.rates.day >= session.settings.targetRate ? 'ok' : 'warn') : undefined
-          }
-        />
-        <Stat label="Commandes" value={String(day.ordersCount)} />
-        <span className="text-slate-500">›</span>
+      <div className="rounded-2xl bg-ink-800 px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <Stat label="Colis" value={String(day.colis)} />
+          <Stat
+            label="Cadence jour"
+            value={rateShown ? `${Math.round(day.rates.day)}` : '—'}
+            unit={rateShown ? '/h' : undefined}
+            tone={
+              rateShown ? (day.rates.day >= session.settings.targetRate ? 'ok' : 'warn') : undefined
+            }
+          />
+          <Stat label="Commandes" value={String(day.ordersCount)} />
+          <span className="text-slate-500">›</span>
+        </div>
+        {production && (
+          <div className="mt-2 flex items-center justify-between border-t border-ink-600 pt-2 text-xs">
+            <span className="text-slate-400">
+              attendu <strong className="tabular text-slate-200">{Math.round(production.expected)}</strong>
+              {' · '}objectif {production.target}
+            </span>
+            <span className="text-slate-500">
+              {production.nextCheckpoint
+                ? `${production.nextCheckpoint.target} à ${hhmm(production.nextCheckpoint.at)}`
+                : 'fin des commandes'}
+            </span>
+          </div>
+        )}
       </div>
     </button>
+  )
+}
+
+function ProductionPlanCard({ production }: { production: DailyProductionStatus }) {
+  const delta = Math.round(production.delta)
+  const tone = delta >= 0 ? 'text-ok' : delta > -15 ? 'text-warn' : 'text-bad'
+
+  return (
+    <div className="card">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
+            Objectif production
+          </h3>
+          <p className="mt-1 text-sm text-slate-500">
+            {production.friday ? 'Planning vendredi' : 'Planning lundi–jeudi'} · commandes avant{' '}
+            {hhmm(production.ordersDueAt)}
+          </p>
+        </div>
+        <div className="text-right">
+          <div className="tabular text-2xl font-bold">
+            {production.actual}/{production.target}
+          </div>
+          <div className={`tabular text-sm font-semibold ${tone}`}>
+            attendu {Math.round(production.expected)} · {delta >= 0 ? '+' : ''}{delta}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-4 gap-2">
+        {production.checkpoints.map((checkpoint) => (
+          <div key={checkpoint.at} className="rounded-xl bg-ink-700 px-2 py-2 text-center">
+            <div className="tabular text-lg font-bold">{checkpoint.target}</div>
+            <div className="tabular text-xs text-slate-500">{hhmm(checkpoint.at)}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-3 flex flex-wrap justify-between gap-x-4 gap-y-1 text-xs text-slate-500">
+        <span>Référence chef {Math.round(production.managerTargetRate)}/h (≈110/h)</span>
+        <span>Rythme actif nécessaire {Math.round(production.operationalTargetRate)}/h</span>
+        {production.requiredRate !== undefined && production.actual < production.target && (
+          <span className="font-semibold text-slate-300">
+            À partir de maintenant : {Math.round(production.requiredRate)}/h
+          </span>
+        )}
+      </div>
+    </div>
   )
 }
 

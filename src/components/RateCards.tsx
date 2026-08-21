@@ -32,7 +32,7 @@ export function RateCards({ day, targetRate }: Props) {
       label: 'Journée',
       value: day.rates.day,
       window: day.worked,
-      hint: `sur ${formatShort(day.worked)} hors pauses`,
+      hint: `sur ${formatShort(day.worked)}, pause 30 min exclue`,
     },
   ]
 

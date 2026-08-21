@@ -215,8 +215,10 @@ export interface DayMetrics {
   date: string
   /** Somme de tous les segments : le temps de présence effectif. */
   presence: number
-  /** Présence moins les pauses réglementaires. */
+  /** Présence moins uniquement la pause obligatoire de 30 minutes. */
   worked: number
+  /** Temps exclu du KPI chef : les pauses obligatoires de 30 minutes. */
+  excludedBreaks: number
   breaks: number
   /** Temps passé sur des segments rattachés à une commande, pauses exclues. */
   orderTime: number
@@ -234,7 +236,7 @@ export interface DayMetrics {
     picking: number
     /** Colis / heures de commande, interruptions comprises, pauses exclues. */
     order: number
-    /** Colis / heures de présence hors pauses. */
+    /** Colis / heures comptées par le chef, seule la pause 30 min exclue. */
     day: number
   }
   /** Colis qu'on aurait pu faire avec le temps perdu, à la cadence cible. */
@@ -265,6 +267,7 @@ export function computeDayMetrics(
 
   let presence = 0
   let breaks = 0
+  let excludedBreaks = 0
   let orderTime = 0
   let overtime = 0
   const overtimeStart = snap.workday?.overtimeStartedAt
@@ -276,7 +279,10 @@ export function computeDayMetrics(
     countByType[seg.type] = (countByType[seg.type] ?? 0) + 1
     byCategory[cat] += d
     presence += d
-    if (cat === 'break') breaks += d
+    if (cat === 'break') {
+      breaks += d
+      if (seg.type === 'break_30') excludedBreaks += d
+    }
     else if (seg.orderId) orderTime += d
 
     if (overtimeStart !== undefined) {
@@ -297,12 +303,16 @@ export function computeDayMetrics(
 
   const colis = orders.reduce((sum, m) => sum + m.colis, 0)
   const pickingTime = byType.picking ?? 0
-  const worked = presence - breaks
+  // Pour le KPI de production officiel, les pauses facultatives de 10 min,
+  // le briefing et le nettoyage restent comptés. Seule la pause obligatoire
+  // de 30 min sort du dénominateur.
+  const worked = presence - excludedBreaks
 
   return {
     date: snap.workday?.date ?? '',
     presence,
     worked,
+    excludedBreaks,
     breaks,
     orderTime,
     pickingTime,

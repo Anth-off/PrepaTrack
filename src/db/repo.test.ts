@@ -554,9 +554,11 @@ describe('cadences', () => {
 
     expect(day.ordersCount).toBe(2)
     expect(day.colis).toBe(300)
-    expect(day.presence).toBe(day.worked + day.breaks)
     // Pauses réellement prises, dépassements compris : 11 + 32 + 11.
     expect(day.breaks).toBe(54 * MINUTE)
+    // Le KPI chef ne retire que la pause obligatoire ; les 10 min restent comptées.
+    expect(day.excludedBreaks).toBe(32 * MINUTE)
+    expect(day.presence).toBe(day.worked + day.excludedBreaks)
     expect(day.rates.day).toBeCloseTo(300 / (day.worked / 3_600_000), 4)
     // Le temps perdu se convertit en colis manquants estimés à la cadence cible.
     expect(day.lostColis).toBeCloseTo((day.wasteTime / 3_600_000) * 110, 6)
