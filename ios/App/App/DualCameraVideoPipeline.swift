@@ -7,13 +7,12 @@ import UIKit
 
 /**
  * Capture simultanément les caméras avant et arrière dans deux fichiers
- * indépendants en 720p/30. Les deux fichiers utilisent exactement les mêmes
- * timestamps appariés depuis l'horloge commune de la session MultiCam.
+ * indépendants en 720p/30. Chaque fichier conserve le timestamp de capture
+ * de son capteur depuis l'horloge commune de la session MultiCam.
  *
- * Chaque image reçoit un bandeau permanent, placé dans le carré central que
- * Photos conserve pour ses miniatures. Il contient le rôle de la caméra et la
- * date/heure de début du segment, ce qui permet d'identifier immédiatement les
- * deux angles sans ouvrir les vidéos.
+ * Le début de chaque fichier reçoit brièvement un bandeau placé dans le carré
+ * central généralement utilisé par les miniatures Photos. Il contient le rôle
+ * de la caméra et la date/heure du segment, puis disparaît de la lecture.
  */
 final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     private let session = AVCaptureMultiCamSession()
@@ -27,7 +26,8 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
     private var pendingFrontSamples: [CMSampleBuffer] = []
     private var pendingRearSamples: [CMSampleBuffer] = []
     private let maximumPendingSamplesPerCamera = 6
-    private var lastPairedPresentationTime: CMTime?
+    private var lastFrontPresentationTime: CMTime?
+    private var lastRearPresentationTime: CMTime?
     private var lastSourcePTSDeltaMilliseconds: Double = 0
     private var maximumSourcePTSDeltaMilliseconds: Double = 0
 
@@ -36,6 +36,9 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
     private var frontConnection: AVCaptureConnection?
     private var backConnection: AVCaptureConnection?
     private var segmentWriter: DualCameraSegmentWriter?
+    private let thumbnailOverlayFrameCount = 90
+    private var thumbnailOverlayFramesRemaining = 0
+    private var firstTimingAnchorNotifiedSegmentID: UUID?
     private var durationLimitReported = false
     private var consecutiveRenderingFailures = 0
     private var renderingFailureReported = false
@@ -61,6 +64,7 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
     private var backpressuredFramePairs = 0
 
     var onDurationLimitReached: ((UUID) -> Void)?
+    var onFirstVideoHostAnchors: ((UUID, TimeInterval, TimeInterval) -> Void)?
     var onRenderingFailed: ((Error) -> Void)?
     var onSessionInterrupted: (() -> Void)?
     var onSessionInterruptionEnded: (() -> Void)?
@@ -109,20 +113,74 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
         frameRenderer = try DualCameraFrameOverlayRenderer()
 
         let discovery = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInWideAngleCamera],
+            deviceTypes: [.builtInUltraWideCamera, .builtInWideAngleCamera],
             mediaType: .video,
             position: .unspecified
         )
-        guard let frontDevice = discovery.devices.first(where: { $0.position == .front }),
-              let backDevice = discovery.devices.first(where: { $0.position == .back }),
-              discovery.supportedMultiCamDeviceSets.contains(where: {
-                  $0.contains(frontDevice) && $0.contains(backDevice)
-              }),
-              let frontProfile = selectProfile(for: frontDevice, maximumStabilizationRank: 5),
-              let backProfile = selectProfile(for: backDevice, maximumStabilizationRank: 2) else {
+        guard let frontDevice = discovery.devices.first(where: {
+            $0.position == .front && $0.deviceType == .builtInWideAngleCamera
+        }) else {
+            throw DualCameraPipelineError.multiCamPairUnavailable
+        }
+        // Le 0,5× de l'app Caméra correspond au capteur physique ultra-grand-
+        // angle, pas à un zoom numérique < 1 sur le capteur principal. On le
+        // choisit donc explicitement, puis on garde le grand-angle 1× comme
+        // secours uniquement si iOS ne publie aucun couple MultiCam compatible.
+        let rearCandidates = discovery.devices
+            .filter { $0.position == .back }
+            .sorted {
+                let leftRank = $0.deviceType == .builtInUltraWideCamera ? 0 : 1
+                let rightRank = $1.deviceType == .builtInUltraWideCamera ? 0 : 1
+                return leftRank < rightRank
+            }
+        let frontProfiles = selectProfiles(
+            for: frontDevice,
+            stabilizationMode: .standard
+        )
+        var candidates: [(AVCaptureDevice, CameraFormatProfile, CameraFormatProfile)] = []
+        for backDevice in rearCandidates where discovery.supportedMultiCamDeviceSets.contains(where: {
+            $0.contains(frontDevice) && $0.contains(backDevice)
+        }) {
+            let backProfiles = selectProfiles(
+                for: backDevice,
+                stabilizationMode: .standard
+            )
+            for frontProfile in frontProfiles.prefix(2) {
+                for backProfile in backProfiles.prefix(2)
+                where frontProfile.dimensions.width == backProfile.dimensions.width &&
+                    frontProfile.dimensions.height == backProfile.dimensions.height {
+                    candidates.append((backDevice, frontProfile, backProfile))
+                }
+            }
+        }
+        guard !candidates.isEmpty else {
             throw DualCameraPipelineError.multiCamPairUnavailable
         }
 
+        var lastConfigurationError: Error = DualCameraPipelineError.configurationFailed
+        for (backDevice, frontProfile, backProfile) in candidates {
+            do {
+                try configurePair(
+                    frontDevice: frontDevice,
+                    backDevice: backDevice,
+                    frontProfile: frontProfile,
+                    backProfile: backProfile
+                )
+                return
+            } catch {
+                lastConfigurationError = error
+            }
+        }
+        throw lastConfigurationError
+    }
+
+    /** Essaie un couple complet puis restaure une session vide en cas d'échec. */
+    private func configurePair(
+        frontDevice: AVCaptureDevice,
+        backDevice: AVCaptureDevice,
+        frontProfile: CameraFormatProfile,
+        backProfile: CameraFormatProfile
+    ) throws {
         let frontInput = try AVCaptureDeviceInput(device: frontDevice)
         let backInput = try AVCaptureDeviceInput(device: backDevice)
         var configurationCommitted = false
@@ -130,21 +188,32 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
         session.usesApplicationAudioSession = false
         session.automaticallyConfiguresApplicationAudioSession = false
         do {
-            guard session.canAddInput(frontInput), session.canAddInput(backInput) else {
+            guard session.canAddInput(frontInput) else {
                 throw DualCameraPipelineError.configurationFailed
             }
             session.addInputWithNoConnections(frontInput)
+            guard session.canAddInput(backInput) else {
+                throw DualCameraPipelineError.configurationFailed
+            }
             session.addInputWithNoConnections(backInput)
+            // En MultiCam, l'override porté par l'input réserve réellement
+            // 30 i/s au lieu de conserver le coût maximal du format choisi.
+            let frameDuration = CMTime(value: 1, timescale: 30)
+            frontInput.videoMinFrameDurationOverride = frameDuration
+            backInput.videoMinFrameDurationOverride = frameDuration
 
             try configureDevice(frontDevice, profile: frontProfile)
             try configureDevice(backDevice, profile: backProfile)
 
             configureOutput(frontOutput)
             configureOutput(backOutput)
-            guard session.canAddOutput(frontOutput), session.canAddOutput(backOutput) else {
+            guard session.canAddOutput(frontOutput) else {
                 throw DualCameraPipelineError.configurationFailed
             }
             session.addOutputWithNoConnections(frontOutput)
+            guard session.canAddOutput(backOutput) else {
+                throw DualCameraPipelineError.configurationFailed
+            }
             session.addOutputWithNoConnections(backOutput)
             frontOutput.setSampleBufferDelegate(self, queue: outputQueue)
             backOutput.setSampleBufferDelegate(self, queue: outputQueue)
@@ -164,10 +233,13 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
 
             let frontConnection = AVCaptureConnection(inputPorts: [frontPort], output: frontOutput)
             let backConnection = AVCaptureConnection(inputPorts: [backPort], output: backOutput)
-            guard session.canAddConnection(frontConnection), session.canAddConnection(backConnection) else {
+            guard session.canAddConnection(frontConnection) else {
                 throw DualCameraPipelineError.configurationFailed
             }
             session.addConnection(frontConnection)
+            guard session.canAddConnection(backConnection) else {
+                throw DualCameraPipelineError.configurationFailed
+            }
             session.addConnection(backConnection)
             configureConnection(frontConnection, profile: frontProfile, mirror: true)
             configureConnection(backConnection, profile: backProfile, mirror: false)
@@ -177,17 +249,35 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
             configurationCommitted = true
 
             guard session.hardwareCost <= 1.0 else {
-                rollbackConfiguration()
                 throw DualCameraPipelineError.hardwareBudgetExceeded
             }
             guard session.systemPressureCost <= 1.0 else {
-                rollbackConfiguration()
                 throw DualCameraPipelineError.systemPressureExceeded
+            }
+
+            // Un format peut annoncer la stabilisation sans qu'iOS l'active
+            // réellement dans ce couple MultiCam. Le tester ici permet de
+            // revenir au profil suivant au lieu d'abandonner toute la capture.
+            session.startRunning()
+            let connectionsReady = waitForActiveConnection(frontConnection) &&
+                waitForActiveConnection(backConnection)
+            let stabilizationReady = connectionsReady &&
+                waitForActiveStabilization(frontConnection) &&
+                waitForActiveStabilization(backConnection)
+            session.stopRunning()
+            guard connectionsReady else {
+                throw DualCameraPipelineError.connectionUnavailable
+            }
+            guard stabilizationReady else {
+                throw DualCameraPipelineError.stabilizationUnavailable
             }
 
             profile = DualCameraCaptureProfile(
                 frontCamera: frontDevice.localizedName,
                 backCamera: backDevice.localizedName,
+                backDeviceType: backDevice.deviceType.rawValue,
+                backLens: backDevice.deviceType == .builtInUltraWideCamera ? "ultraWide" : "wide",
+                rearDisplayZoom: backDevice.deviceType == .builtInUltraWideCamera ? 0.5 : 1.0,
                 width: Int(frontProfile.dimensions.height),
                 height: Int(frontProfile.dimensions.width),
                 framesPerSecond: 30,
@@ -242,7 +332,8 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
         outputQueue.sync {
             pendingFrontSamples.removeAll(keepingCapacity: false)
             pendingRearSamples.removeAll(keepingCapacity: false)
-            lastPairedPresentationTime = nil
+            lastFrontPresentationTime = nil
+            lastRearPresentationTime = nil
         }
     }
 
@@ -265,6 +356,8 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
                 rearURL: rearURL,
                 maxDurationSeconds: maxDurationSeconds
             )
+            thumbnailOverlayFramesRemaining = thumbnailOverlayFrameCount
+            firstTimingAnchorNotifiedSegmentID = nil
             durationLimitReported = false
             resetRenderingFailureState()
             resetSegmentDiagnostics()
@@ -350,6 +443,8 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
             )
             try frameRenderer.updateTimestamp(startedAt)
             segmentWriter = next
+            thumbnailOverlayFramesRemaining = thumbnailOverlayFrameCount
+            firstTimingAnchorNotifiedSegmentID = nil
             durationLimitReported = false
             resetRenderingFailureState()
             resetSegmentDiagnostics()
@@ -366,11 +461,14 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
                 return
             }
             self.segmentWriter = nil
+            self.thumbnailOverlayFramesRemaining = 0
+            self.firstTimingAnchorNotifiedSegmentID = nil
             self.durationLimitReported = false
             self.resetRenderingFailureState()
             self.pendingFrontSamples.removeAll(keepingCapacity: true)
             self.pendingRearSamples.removeAll(keepingCapacity: true)
-            self.lastPairedPresentationTime = nil
+            self.lastFrontPresentationTime = nil
+            self.lastRearPresentationTime = nil
             self.disarmHealthWatchdog()
             previous.finish(completion: completion)
         }
@@ -380,6 +478,9 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
         guard let profile else { return [:] }
         return [
             "camera": "\(profile.frontCamera) + \(profile.backCamera)",
+            "backDeviceType": profile.backDeviceType,
+            "backLens": profile.backLens,
+            "rearDisplayZoom": profile.rearDisplayZoom,
             "cameraLayout": "separateFrontBack",
             "videoFileCountPerSegment": 2,
             "width": profile.width,
@@ -395,6 +496,7 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
             "hardwareCost": Double(profile.hardwareCost),
             "systemPressureCost": Double(profile.systemPressureCost),
             "timestampOverlay": true,
+            "timestampOverlayDurationSeconds": 3,
             "thumbnailSafeBanner": true,
             "frameDelivery": "independentDelegates",
             "framePairing": "deliveryOrder",
@@ -464,31 +566,41 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
             maximumSourcePTSDeltaMilliseconds = max(maximumSourcePTSDeltaMilliseconds, delta)
         }
 
-        let duration = normalizedDuration(CMSampleBufferGetDuration(frontSample))
-        // La timeline des fichiers suit l'horloge monotone de livraison, pas
-        // les PTS propres aux deux stabilisateurs. Elle ne peut donc ni sauter
-        // ni se bloquer lorsque leurs latences internes évoluent.
-        var presentationTime = CMTime(
-            seconds: ProcessInfo.processInfo.systemUptime,
-            preferredTimescale: 600
+        let frontDuration = normalizedDuration(CMSampleBufferGetDuration(frontSample))
+        let rearDuration = normalizedDuration(CMSampleBufferGetDuration(backSample))
+        let frontPresentationTime = monotonicPresentationTime(
+            frontTime,
+            after: lastFrontPresentationTime,
+            duration: frontDuration
         )
-        if let lastPairedPresentationTime,
-           CMTimeCompare(presentationTime, lastPairedPresentationTime) <= 0 {
-            presentationTime = CMTimeAdd(lastPairedPresentationTime, duration)
-        }
-        lastPairedPresentationTime = presentationTime
+        let rearPresentationTime = monotonicPresentationTime(
+            rearTime,
+            after: lastRearPresentationTime,
+            duration: rearDuration
+        )
+        lastFrontPresentationTime = frontPresentationTime
+        lastRearPresentationTime = rearPresentationTime
+
+        let frontHostSeconds = hostSeconds(forCapturePTS: frontTime)
+        let rearHostSeconds = hostSeconds(forCapturePTS: rearTime)
         synchronizedCollections += 1
         processFramePair(
             frontSample: frontSample,
             backSample: backSample,
-            presentationTime: presentationTime
+            frontPresentationTime: frontPresentationTime,
+            rearPresentationTime: rearPresentationTime,
+            frontHostSeconds: frontHostSeconds,
+            rearHostSeconds: rearHostSeconds
         )
     }
 
     private func processFramePair(
         frontSample: CMSampleBuffer,
         backSample: CMSampleBuffer,
-        presentationTime: CMTime
+        frontPresentationTime: CMTime,
+        rearPresentationTime: CMTime,
+        frontHostSeconds: TimeInterval?,
+        rearHostSeconds: TimeInterval?
     ) {
         guard CMSampleBufferDataIsReady(frontSample),
               CMSampleBufferDataIsReady(backSample),
@@ -497,25 +609,31 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
               let frameRenderer,
               let writer = segmentWriter else { return }
 
-        // Un timestamp commun garantit que les deux fichiers restent alignés,
-        // même si les horloges matérielles des capteurs diffèrent légèrement.
-        let duration = normalizedDuration(CMSampleBufferGetDuration(frontSample))
+        let frontDuration = normalizedDuration(CMSampleBufferGetDuration(frontSample))
+        let rearDuration = normalizedDuration(CMSampleBufferGetDuration(backSample))
         let samplesToWrite: (front: CMSampleBuffer, rear: CMSampleBuffer)
-        if let renderedFrames = frameRenderer.render(front: frontBuffer, rear: backBuffer),
+        let showOverlay = thumbnailOverlayFramesRemaining > 0
+        var didRenderOverlay = false
+        if let renderedFrames = frameRenderer.render(
+            front: frontBuffer,
+            rear: backBuffer,
+            showOverlay: showOverlay
+        ),
            let renderedFrontSample = makeSampleBuffer(
                pixelBuffer: renderedFrames.front.pixelBuffer,
                formatDescription: renderedFrames.front.formatDescription,
-               presentationTime: presentationTime,
-               duration: duration
+               presentationTime: frontPresentationTime,
+               duration: frontDuration
            ),
            let renderedRearSample = makeSampleBuffer(
                pixelBuffer: renderedFrames.rear.pixelBuffer,
                formatDescription: renderedFrames.rear.formatDescription,
-               presentationTime: presentationTime,
-               duration: duration
-           ) {
+               presentationTime: rearPresentationTime,
+               duration: rearDuration
+        ) {
             resetRenderingFailureState()
             renderedFramePairs += 1
+            didRenderOverlay = showOverlay
             samplesToWrite = (renderedFrontSample, renderedRearSample)
         } else {
             // Le bandeau est secondaire par rapport à la conservation de la
@@ -529,14 +647,14 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
                let fallbackFront = makeSampleBuffer(
                    pixelBuffer: frontBuffer,
                    formatDescription: frontFormat,
-                   presentationTime: presentationTime,
-                   duration: duration
+                    presentationTime: frontPresentationTime,
+                    duration: frontDuration
                ),
                let fallbackRear = makeSampleBuffer(
                    pixelBuffer: backBuffer,
                    formatDescription: rearFormat,
-                   presentationTime: presentationTime,
-                   duration: duration
+                    presentationTime: rearPresentationTime,
+                    duration: rearDuration
                ) {
                 samplesToWrite = (fallbackFront, fallbackRear)
             } else {
@@ -555,6 +673,19 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
                     onDurationLimitReached?(writer.id)
                 }
             case .appended:
+                if didRenderOverlay, thumbnailOverlayFramesRemaining > 0 {
+                    thumbnailOverlayFramesRemaining -= 1
+                }
+                if firstTimingAnchorNotifiedSegmentID != writer.id,
+                   let frontHostSeconds,
+                   let rearHostSeconds {
+                    firstTimingAnchorNotifiedSegmentID = writer.id
+                    onFirstVideoHostAnchors?(
+                        writer.id,
+                        frontHostSeconds,
+                        rearHostSeconds
+                    )
+                }
                 recordSuccessfulFrame(for: writer.id)
             case .backpressured:
                 backpressuredFramePairs += 1
@@ -638,6 +769,32 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
         return duration
     }
 
+    private func monotonicPresentationTime(
+        _ source: CMTime,
+        after previous: CMTime?,
+        duration: CMTime
+    ) -> CMTime {
+        let validSource = source.isValid && source.isNumeric && source.seconds.isFinite
+        guard let previous else { return validSource ? source : .zero }
+        guard validSource, CMTimeCompare(source, previous) > 0 else {
+            return CMTimeAdd(previous, duration)
+        }
+        return source
+    }
+
+    private func hostSeconds(forCapturePTS presentationTime: CMTime) -> TimeInterval? {
+        guard presentationTime.isValid,
+              presentationTime.isNumeric,
+              let captureClock = session.synchronizationClock else { return nil }
+        let hostTime = CMSyncConvertTime(
+            presentationTime,
+            from: captureClock,
+            to: CMClockGetHostTimeClock()
+        )
+        let seconds = CMTimeGetSeconds(hostTime)
+        return seconds.isFinite ? seconds : nil
+    }
+
     private func recordRenderingFailure() {
         consecutiveRenderingFailures += 1
         guard consecutiveRenderingFailures >= 30, !renderingFailureReported else { return }
@@ -655,7 +812,9 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
     private func resetSegmentDiagnostics() {
         pendingFrontSamples.removeAll(keepingCapacity: true)
         pendingRearSamples.removeAll(keepingCapacity: true)
-        lastPairedPresentationTime = nil
+        lastFrontPresentationTime = nil
+        lastRearPresentationTime = nil
+        firstTimingAnchorNotifiedSegmentID = nil
         lastSourcePTSDeltaMilliseconds = 0
         maximumSourcePTSDeltaMilliseconds = 0
         synchronizedCollections = 0
@@ -725,70 +884,57 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
         }
     }
 
-    private func selectProfile(
+    private func selectProfiles(
         for device: AVCaptureDevice,
-        maximumStabilizationRank: Int
-    ) -> CameraFormatProfile? {
+        stabilizationMode: AVCaptureVideoStabilizationMode
+    ) -> [CameraFormatProfile] {
         let all = device.formats.compactMap { format -> CameraFormatProfile? in
             let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
             guard format.isMultiCamSupported,
+                  format.isVideoStabilizationModeSupported(stabilizationMode),
                   format.videoSupportedFrameRateRanges.contains(where: {
                       $0.minFrameRate <= 30 && $0.maxFrameRate >= 30
                   }) else { return nil }
-            let stabilization = strongestStabilizationMode(
-                for: format,
-                maximumRank: maximumStabilizationRank
-            )
             return CameraFormatProfile(
                 format: format,
                 dimensions: dimensions,
                 fieldOfView: format.geometricDistortionCorrectedVideoFieldOfView,
-                stabilizationMode: stabilization
+                stabilizationMode: stabilizationMode
             )
         }
+        // PrepaTrack promet 720p : ne jamais choisir silencieusement une
+        // résolution minuscule uniquement parce que son champ est plus large.
         let preferred = all.filter {
             $0.dimensions.width == 1_280 && $0.dimensions.height == 720
         }
-        let fallback = all.filter {
-            $0.dimensions.width <= 1_920 && $0.dimensions.height <= 1_080
+        return preferred.sorted {
+            if $0.format.isVideoBinned != $1.format.isVideoBinned {
+                return $0.format.isVideoBinned && !$1.format.isVideoBinned
+            }
+            return $0.fieldOfView > $1.fieldOfView
         }
-        let candidates = preferred.isEmpty ? fallback : preferred
-        return candidates.max {
-            let lhs = stabilizationRank($0.stabilizationMode) * 10_000 + Int($0.fieldOfView)
-            let rhs = stabilizationRank($1.stabilizationMode) * 10_000 + Int($1.fieldOfView)
-            return lhs < rhs
-        }
-    }
-
-    private func strongestStabilizationMode(
-        for format: AVCaptureDevice.Format,
-        maximumRank: Int
-    ) -> AVCaptureVideoStabilizationMode {
-        if #available(iOS 18.0, *), maximumRank >= 5,
-           format.isVideoStabilizationModeSupported(.cinematicExtendedEnhanced) {
-            return .cinematicExtendedEnhanced
-        }
-        if maximumRank >= 4, format.isVideoStabilizationModeSupported(.cinematicExtended) { return .cinematicExtended }
-        if maximumRank >= 3, format.isVideoStabilizationModeSupported(.cinematic) { return .cinematic }
-        if maximumRank >= 2, format.isVideoStabilizationModeSupported(.standard) { return .standard }
-        return .auto
     }
 
     private func rollbackConfiguration() {
+        if session.isRunning { session.stopRunning() }
         frontOutput.setSampleBufferDelegate(nil, queue: nil)
         backOutput.setSampleBufferDelegate(nil, queue: nil)
-        pendingFrontSamples.removeAll(keepingCapacity: false)
-        pendingRearSamples.removeAll(keepingCapacity: false)
-        lastPairedPresentationTime = nil
+        outputQueue.sync {
+            pendingFrontSamples.removeAll(keepingCapacity: false)
+            pendingRearSamples.removeAll(keepingCapacity: false)
+            lastFrontPresentationTime = nil
+            lastRearPresentationTime = nil
+            firstTimingAnchorNotifiedSegmentID = nil
+        }
+        frontConnection = nil
+        backConnection = nil
+        profile = nil
+        configured = false
         guard !session.inputs.isEmpty || !session.outputs.isEmpty else { return }
         session.beginConfiguration()
         for output in session.outputs { session.removeOutput(output) }
         for input in session.inputs { session.removeInput(input) }
         session.commitConfiguration()
-        frontConnection = nil
-        backConnection = nil
-        profile = nil
-        configured = false
     }
 
     private func makeSampleBuffer(
@@ -816,17 +962,6 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
         return status == noErr ? sampleBuffer : nil
     }
 
-    private func stabilizationRank(_ mode: AVCaptureVideoStabilizationMode) -> Int {
-        if #available(iOS 18.0, *), mode == .cinematicExtendedEnhanced { return 5 }
-        switch mode {
-        case .cinematicExtended: return 4
-        case .cinematic: return 3
-        case .standard: return 2
-        case .auto: return 1
-        default: return 0
-        }
-    }
-
     private func stabilizationName(_ mode: AVCaptureVideoStabilizationMode) -> String {
         if #available(iOS 18.0, *), mode == .cinematicExtendedEnhanced {
             return "cinematicExtendedEnhanced"
@@ -847,8 +982,8 @@ struct DualCameraSegmentFiles {
 }
 
 /**
- * Possède les deux writers d'un même segment. Les samples reçus ici ont le
- * même PTS; la limite de durée et la finalisation sont donc communes.
+ * Possède les deux writers d'un même segment. Chaque angle garde son PTS de
+ * capture; la limite de durée et la finalisation restent communes.
  */
 private final class DualCameraSegmentWriter {
     let id: UUID
@@ -1264,7 +1399,11 @@ private final class DualCameraFrameOverlayRenderer {
      * Rend les deux angles avec une seule file Metal et un seul command buffer.
      * Le CPU attend donc une fois par paire synchronisée, pas une fois par caméra.
      */
-    func render(front: CVPixelBuffer, rear: CVPixelBuffer) -> RenderedCameraFrames? {
+    func render(
+        front: CVPixelBuffer,
+        rear: CVPixelBuffer,
+        showOverlay: Bool
+    ) -> RenderedCameraFrames? {
         guard prepareIfNeeded(with: front, state: &frontOutputState),
               prepareIfNeeded(with: rear, state: &rearOutputState),
               let frontPool = frontOutputState.outputPool,
@@ -1288,14 +1427,16 @@ private final class DualCameraFrameOverlayRenderer {
             label: frontLabelTexture,
             output: frontOutputTexture.texture,
             with: encoder,
-            pipeline: pipeline
+            pipeline: pipeline,
+            showOverlay: showOverlay
         )
         encode(
             input: rearInputTexture.texture,
             label: rearLabelTexture,
             output: rearOutputTexture.texture,
             with: encoder,
-            pipeline: pipeline
+            pipeline: pipeline,
+            showOverlay: showOverlay
         )
         encoder.endEncoding()
         commandBuffer.commit()
@@ -1407,7 +1548,8 @@ private final class DualCameraFrameOverlayRenderer {
         label: MTLTexture,
         output: MTLTexture,
         with encoder: MTLComputeCommandEncoder,
-        pipeline: MTLComputePipelineState
+        pipeline: MTLComputePipelineState,
+        showOverlay: Bool
     ) {
         let width = Float(output.width)
         let height = Float(output.height)
@@ -1423,7 +1565,7 @@ private final class DualCameraFrameOverlayRenderer {
                 centralSquareOrigin.x + (centralSquareSide - labelWidth) / 2,
                 centralSquareOrigin.y + 24
             ),
-            labelSize: SIMD2(labelWidth, labelHeight)
+            labelSize: showOverlay ? SIMD2(labelWidth, labelHeight) : .zero
         )
 
         encoder.setTexture(input, index: 0)
@@ -1545,6 +1687,9 @@ private struct CameraFormatProfile {
 private struct DualCameraCaptureProfile {
     let frontCamera: String
     let backCamera: String
+    let backDeviceType: String
+    let backLens: String
+    let rearDisplayZoom: Double
     let width: Int
     let height: Int
     let framesPerSecond: Int

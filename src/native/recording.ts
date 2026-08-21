@@ -22,6 +22,9 @@ export interface NativeCaptureProfile {
   framesPerSecond: number
   fieldOfView: number
   backFieldOfView?: number
+  backDeviceType?: string
+  backLens?: 'ultraWide' | 'wide'
+  rearDisplayZoom?: number
   zoomFactor: number
   requestedStabilization: string
   activeStabilization: string
@@ -30,6 +33,7 @@ export interface NativeCaptureProfile {
   hardwareCost?: number
   systemPressureCost?: number
   timestampOverlay?: boolean
+  timestampOverlayDurationSeconds?: number
   preferredMicrophoneMode?: string
   activeMicrophoneMode?: string
   audioChannels?: number

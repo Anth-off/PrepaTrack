@@ -85,12 +85,20 @@ const captureProfileMessage = (profile: NativeCaptureProfile, recording = false)
     ? `, micro ${microphoneModeLabel(profile.activeMicrophoneMode)} (${profile.audioChannels ?? 1} ${profile.audioChannels === 1 ? 'canal' : 'canaux'}, traitement vocal ${profile.voiceProcessingEnabled ? 'actif' : 'inactif'})`
     : ''
   const cameras = profile.cameraLayout === 'separateFrontBack'
-    ? `caméras avant + arrière (deux vidéos séparées${profile.timestampOverlay ? ', angle/date/heure incrustés' : ''})`
+    ? `caméras avant + arrière (deux vidéos séparées${profile.timestampOverlay ? `, angle/date/heure pendant les ${profile.timestampOverlayDurationSeconds ?? 3} premières secondes` : ''})`
     : profile.cameraLayout === 'frontFullBackPiP'
       ? `caméras avant + arrière (avant principale, arrière incrustée${profile.timestampOverlay ? ', date/heure incrustées' : ''})`
       : 'caméra avant'
-  const rear = profile.backActiveStabilization
-    ? `, arrière ${stabilizationLabel(profile.backActiveStabilization)}`
+  const rearMode = recording && profile.backActiveStabilization
+    ? profile.backActiveStabilization
+    : profile.backRequestedStabilization
+  const rearLens = profile.rearDisplayZoom
+    ? `, arrière ${String(profile.rearDisplayZoom).replace('.', ',')}×${profile.backFieldOfView ? ` (${Math.round(profile.backFieldOfView)}°)` : ''}`
+    : profile.backFieldOfView
+      ? `, champ arrière ${Math.round(profile.backFieldOfView)}°`
+      : ''
+  const rear = rearMode
+    ? `${rearLens}, stabilisation arrière ${stabilizationLabel(rearMode)}`
     : ''
   const durableCapture = recording
     ? profile.captureConfirmed && profile.audioCaptureConfirmed

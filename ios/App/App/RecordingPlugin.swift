@@ -41,6 +41,9 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
     private var audioCaptureStartedAt: Date?
     private var lastAudioBufferWrittenAt: Date?
     private var audioCaptureURL: URL?
+    private var audioCaptureSegmentID: UUID?
+    private var audioFirstHostSeconds: TimeInterval?
+    private let timingStore = SegmentTimingJournalStore()
     private var audioHealthTimer: DispatchSourceTimer?
     private let audioStallTimeoutSeconds: TimeInterval = 8
     private var microphoneModePreviewStop: DispatchWorkItem?
@@ -72,11 +75,18 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
     private var dualPreparationInProgress = false
     // Deux vidéos 720p/30, leurs exports audio+vidéo et la copie PhotoKit
     // peuvent coexister brièvement. Cette réserve évite une corruption ENOSPC.
-    private let minimumFreeBytesForNewSegment: Int64 = 5_000_000_000
+    private let minimumFreeBytesForNewSegment: Int64 = 8_000_000_000
 
     public override func load() {
         videoPipeline.onDurationLimitReached = { [weak self] segmentID in
             self?.sessionQueue.async { self?.rotateActiveSegment(expectedID: segmentID) }
+        }
+        videoPipeline.onFirstVideoHostAnchors = { [weak self] segmentID, front, rear in
+            self?.timingStore.recordVideoStarts(
+                segmentID: segmentID,
+                front: front,
+                rear: rear
+            )
         }
         videoPipeline.onRenderingFailed = { [weak self] error in
             self?.sessionQueue.async {
@@ -178,6 +188,11 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
             }
         }
         return mediaRemoved
+    }
+
+    private func isRecordingJournalURL(_ url: URL) -> Bool {
+        let name = url.lastPathComponent
+        return name.hasSuffix(".photo-import.json") || name.hasSuffix(".timing.json")
     }
 
     private func beginBackgroundFinalizationTaskIfNeeded() {
@@ -473,7 +488,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                             try? FileManager.default.removeItem(at: url)
                         }
                     }
-                    try self.startAudioCapture(to: audioTestURL, acceptImmediately: true)
+                    try self.startAudioCapture(to: audioTestURL)
                     try self.videoPipeline.startSegment(
                         frontURL: frontTestURL,
                         rearURL: rearTestURL,
@@ -570,13 +585,17 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         try ensureRecordingSpaceAvailable()
         let segment = makeSegment(startedAt: Date())
         do {
+            try timingStore.begin(segmentID: segment.id, url: segment.timingURL)
             try videoPipeline.configureIfNeeded()
             // Valider les textures AVANT/ARRIÈRE avant d'allumer les caméras
             // ou le micro. Une ressource de bandeau invalide ne peut ainsi
             // plus créer une fausse capture ni un segment partiel.
             try videoPipeline.validateOverlayResources(at: segment.startedAt)
             try videoPipeline.startSession()
-            try startAudioCapture(to: segment.audioURL, acceptImmediately: true)
+            try startAudioCapture(
+                to: segment.audioURL,
+                segmentID: segment.id
+            )
             try videoPipeline.startSegment(
                 frontURL: segment.frontVideoURL,
                 rearURL: segment.rearVideoURL,
@@ -637,6 +656,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         let next = makeSegment(startedAt: Date())
         registerFinalization(previous)
         do {
+            try timingStore.begin(segmentID: next.id, url: next.timingURL)
             let nextAudioFile = try makeAudioFile(at: next.audioURL)
             try videoPipeline.rotateSegment(
                 frontURL: next.frontVideoURL,
@@ -645,7 +665,10 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                 startedAt: next.startedAt,
                 maxDurationSeconds: segmentDurationSeconds,
                 didSwitch: {
-                    previousAudioError = self.swapAudioFile(with: nextAudioFile)
+                    previousAudioError = self.swapAudioFile(
+                        with: nextAudioFile,
+                        segmentID: next.id
+                    )
                 }
             ) { [weak self] result in
                 self?.finalizeSegment(
@@ -672,6 +695,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
             }
         } catch {
             rotationInProgress = false
+            removeAudioOnlyFailedSegmentIfSafe(next)
             // Une tranche suivante non confirmée ne doit jamais être annoncée.
             // Fermer proprement le writer encore actif, garder l'intention de
             // filmer et retenter dans un nouveau jeu de fichiers.
@@ -734,7 +758,15 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                 cleanupURLs: []
             )
         case .success(let videos):
-            prepareDualFinalRecordings(videos: videos, audioURL: segment.audioURL) { [weak self] front, rear in
+            let timing = timingStore.snapshot(segmentID: segment.id)
+            prepareDualFinalRecordings(
+                videos: videos,
+                audioURL: segment.audioURL,
+                timing: timing,
+                // Toute nouvelle tranche est contractuellement horodatée : une
+                // disparition du sidecar ne doit jamais réactiver le mux legacy.
+                timingSidecarExists: true
+            ) { [weak self] front, rear in
                 guard let self else { return }
                 guard front.merged, rear.merged else {
                     let details = [front.error, rear.error, audioError]
@@ -761,6 +793,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                         videos.frontURL,
                         videos.rearURL,
                         segment.audioURL,
+                        segment.timingURL,
                     ]
                     if front.finalURL != videos.frontURL { cleanup.append(front.finalURL) }
                     if rear.finalURL != videos.rearURL { cleanup.append(rear.finalURL) }
@@ -792,8 +825,8 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
             let unique = Set(cleanupURLs)
             // Le journal est le verrou anti-doublon : il doit être supprimé
             // seulement après toutes les sources et sorties finales.
-            let mediaURLs = unique.filter { !$0.lastPathComponent.hasSuffix(".photo-import.json") }
-            let journalURLs = unique.filter { $0.lastPathComponent.hasSuffix(".photo-import.json") }
+            let mediaURLs = unique.filter { !self.isRecordingJournalURL($0) }
+            let journalURLs = unique.filter { self.isRecordingJournalURL($0) }
             removeImportedMedia(Array(mediaURLs), journals: Array(journalURLs))
         }
         sessionQueue.async {
@@ -851,7 +884,12 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         let frontBytes = recordingFileSize(at: segment.frontVideoURL)
         let rearBytes = recordingFileSize(at: segment.rearVideoURL)
         guard frontBytes == 0, rearBytes == 0 else { return }
-        for url in [segment.frontVideoURL, segment.rearVideoURL, segment.audioURL] {
+        for url in [
+            segment.frontVideoURL,
+            segment.rearVideoURL,
+            segment.audioURL,
+            segment.timingURL,
+        ] {
             try? FileManager.default.removeItem(at: url)
         }
     }
@@ -861,6 +899,72 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         defer { try? handle.close() }
         guard let size = try? handle.seekToEnd() else { return 0 }
         return Int(min(size, UInt64(Int.max)))
+    }
+
+    /**
+     * Sort une piste audio non fusionnable de la file de récupération active
+     * sans la détruire. Le journal timing est déplacé en dernier et sert de
+     * marqueur de commit : tant qu'un CAF n'est pas archivé, le segment reste
+     * récupérable et aucun chemin ne peut supprimer cette piste à la racine.
+     */
+    private func preserveUnmergedAudioSources(
+        _ audioSources: [URL],
+        timingURL: URL,
+        baseName: String
+    ) -> Bool {
+        let manager = FileManager.default
+        let existingAudio = audioSources.filter { manager.fileExists(atPath: $0.path) }
+        let timingExists = manager.fileExists(atPath: timingURL.path)
+        guard timingExists || !existingAudio.isEmpty else { return true }
+
+        let archiveRoot = recordingsDirectory
+            .appendingPathComponent("PreservedAudio", isDirectory: true)
+        let archiveDirectory = archiveRoot.appendingPathComponent(
+            "\(baseName)-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        do {
+            try manager.createDirectory(
+                at: archiveDirectory,
+                withIntermediateDirectories: true
+            )
+            try? manager.setAttributes(
+                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                ofItemAtPath: archiveRoot.path
+            )
+            try? manager.setAttributes(
+                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                ofItemAtPath: archiveDirectory.path
+            )
+
+            for source in existingAudio {
+                do {
+                    try manager.moveItem(
+                        at: source,
+                        to: archiveDirectory.appendingPathComponent(source.lastPathComponent)
+                    )
+                } catch {
+                    NSLog(
+                        "[PrepaTrack Recording] Archivage piste audio conservée : %@",
+                        error.localizedDescription
+                    )
+                    return false
+                }
+            }
+            if timingExists {
+                try manager.moveItem(
+                    at: timingURL,
+                    to: archiveDirectory.appendingPathComponent(timingURL.lastPathComponent)
+                )
+            }
+            return true
+        } catch {
+            NSLog(
+                "[PrepaTrack Recording] Archivage timing/audio impossible : %@",
+                error.localizedDescription
+            )
+            return false
+        }
     }
 
     private func beginTerminalStop(startedAt: Date?) {
@@ -921,7 +1025,8 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
             startedAt: startedAt,
             frontVideoURL: recordingsDirectory.appendingPathComponent("\(baseName).front.video.mov"),
             rearVideoURL: recordingsDirectory.appendingPathComponent("\(baseName).rear.video.mov"),
-            audioURL: recordingsDirectory.appendingPathComponent("\(baseName).audio.caf")
+            audioURL: recordingsDirectory.appendingPathComponent("\(baseName).audio.caf"),
+            timingURL: recordingsDirectory.appendingPathComponent("\(baseName).timing.json")
         )
     }
 
@@ -1083,6 +1188,8 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
     private func prepareDualFinalRecordings(
         videos: DualCameraSegmentFiles,
         audioURL: URL,
+        timing: SegmentTimingJournal?,
+        timingSidecarExists: Bool,
         completion: @escaping (PreparedCameraRecording, PreparedCameraRecording) -> Void
     ) {
         sessionQueue.async {
@@ -1090,7 +1197,10 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                 guard let self else { return }
                 self.prepareFinalRecording(
                     videoURL: videos.frontURL,
-                    audioURL: audioURL
+                    audioURL: audioURL,
+                    timing: timing,
+                    timingSidecarExists: timingSidecarExists,
+                    angle: .front
                 ) { frontURL, frontMerged, frontError in
                     let front = PreparedCameraRecording(
                         finalURL: frontURL,
@@ -1099,7 +1209,10 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                     )
                     self.prepareFinalRecording(
                         videoURL: videos.rearURL,
-                        audioURL: audioURL
+                        audioURL: audioURL,
+                        timing: timing,
+                        timingSidecarExists: timingSidecarExists,
+                        angle: .rear
                     ) { rearURL, rearMerged, rearError in
                         let rear = PreparedCameraRecording(
                             finalURL: rearURL,
@@ -1289,8 +1402,9 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         let rawVideos = durable.filter { $0.lastPathComponent.hasSuffix(".video.mov") }
         let mergingVideos = durable.filter { $0.lastPathComponent.hasSuffix(".merging.mov") }
         let photoImportJournals = durable.filter { $0.lastPathComponent.hasSuffix(".photo-import.json") }
+        let timingJournals = durable.filter { $0.lastPathComponent.hasSuffix(".timing.json") }
         let dualBases = Set(
-            (finalVideos + rawVideos + mergingVideos + photoImportJournals)
+            (finalVideos + rawVideos + mergingVideos + photoImportJournals + timingJournals)
                 .compactMap { dualCameraBaseName(for: $0) }
         )
         let legacyBases = Set(
@@ -1534,6 +1648,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
             ".front.mov",
             ".rear.mov",
             ".photo-import.json",
+            ".timing.json",
         ] where name.hasSuffix(suffix) {
             return String(name.dropLast(suffix.count))
         }
@@ -1572,6 +1687,9 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
             ?? audioSources[0]
         let capturedAt = captureDate(from: frontRaw)
         let journalURL = directory.appendingPathComponent("\(baseName).photo-import.json")
+        let timingURL = directory.appendingPathComponent("\(baseName).timing.json")
+        let timingSidecarExists = manager.fileExists(atPath: timingURL.path)
+        let timing = timingSidecarExists ? timingStore.load(from: timingURL) : nil
         let outcome: (Int, Int, String?) -> DualCameraRecoveryOutcome = {
             DualCameraRecoveryOutcome(
                 recovered: $0,
@@ -1599,15 +1717,37 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                 )
             }
             if journal.state == "committed" {
-                let sources = [
+                let videoSources = [
                     frontRaw,
                     rearRaw,
                     frontFinal,
                     rearFinal,
                     frontMerging,
                     rearMerging,
-                ] + audioSources
-                removeImportedMedia(sources, journals: [journalURL])
+                ]
+                if timingSidecarExists, timing?.isComplete != true {
+                    guard preserveUnmergedAudioSources(
+                        audioSources,
+                        timingURL: timingURL,
+                        baseName: baseName
+                    ) else {
+                        return outcome(
+                            2,
+                            2,
+                            "Les deux vidéos sont déjà dans Photos, mais la piste audio locale n'a pas encore pu être archivée. Toutes les sources restent conservées."
+                        )
+                    }
+                    removeImportedMedia(videoSources, journals: [journalURL])
+                    return outcome(
+                        2,
+                        0,
+                        "Les deux vidéos sont dans Photos. La piste audio non fusionnée reste archivée localement pour une réparation ultérieure."
+                    )
+                }
+                removeImportedMedia(
+                    videoSources + audioSources,
+                    journals: [journalURL, timingURL]
+                )
                 return outcome(2, 0, nil)
             } else if journal.state == "preparing" {
                 guard allowAmbiguousRetry && fullAccess else {
@@ -1632,7 +1772,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                         frontMerging,
                         rearMerging,
                     ] + audioSources
-                    removeImportedMedia(sources, journals: [journalURL])
+                    removeImportedMedia(sources, journals: [journalURL, timingURL])
                     return outcome(2, 0, nil)
                 }
                 if importedCount == 0 && allowAmbiguousRetry {
@@ -1705,6 +1845,61 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
             }
         }
 
+        // Les anciens couples sans sidecar gardent le comportement historique.
+        // En revanche, la présence d'un sidecar nouveau prouve que l'alignement
+        // devait être horodaté : s'il est illisible ou incomplet, un mux à zéro
+        // fabriquerait sciemment une vidéo désynchronisée.
+        if timingSidecarExists, timing?.isComplete != true {
+            if allowRemux,
+               await hasReadableVideoRecording(frontRaw),
+               await hasReadableVideoRecording(rearRaw) {
+                let result = await savePairToPhotosAsync(
+                    front: frontRaw,
+                    rear: rearRaw,
+                    capturedAt: capturedAt ?? Date()
+                )
+                if result.0 {
+                    guard preserveUnmergedAudioSources(
+                        audioSources,
+                        timingURL: timingURL,
+                        baseName: baseName
+                    ) else {
+                        return outcome(
+                            2,
+                            2,
+                            "Les deux vidéos ont été sauvées dans Photos, mais la piste audio locale n'a pas encore pu être archivée. Toutes les sources restent conservées."
+                        )
+                    }
+                    // Les deux angles sont désormais protégés dans Photos, mais
+                    // un sidecar incomplet ne prouve pas que le CAF est inutile.
+                    // Conserver audio + timing permet une réparation ultérieure
+                    // au lieu de détruire définitivement une piste récupérable.
+                    removeImportedMedia(
+                        [
+                            frontRaw,
+                            rearRaw,
+                            frontFinal,
+                            rearFinal,
+                            frontMerging,
+                            rearMerging,
+                        ],
+                        journals: [journalURL]
+                    )
+                    return outcome(
+                        2,
+                        0,
+                        "Le journal de synchronisation était irrécupérable; les deux vidéos ont été sauvées sans son. La piste audio et son journal restent conservés localement pour une réparation ultérieure."
+                    )
+                }
+                return outcome(0, 2, result.1)
+            }
+            return outcome(
+                0,
+                2,
+                "Le journal de synchronisation audio/vidéo est incomplet. Les sources restent conservées; la récupération manuelle pourra sauver les deux images sans son."
+            )
+        }
+
         if !allowRemux {
             let frontPrepared = await firstValidMergedRecording(in: [frontFinal, frontMerging])
             let rearPrepared = await firstValidMergedRecording(in: [rearFinal, rearMerging])
@@ -1734,13 +1929,27 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
             guard result.0 else { return outcome(0, 2, result.1) }
             removeImportedMedia(
                 [frontRaw, rearRaw, frontFinal, rearFinal, frontMerging, rearMerging] + audioSources,
-                journals: [journalURL]
+                journals: [journalURL, timingURL]
             )
             return outcome(2, 0, nil)
         }
 
-        let front = await recoverPreparedCamera(finalURL: frontFinal, rawURL: frontRaw, audioURL: audio)
-        let rear = await recoverPreparedCamera(finalURL: rearFinal, rawURL: rearRaw, audioURL: audio)
+        let front = await recoverPreparedCamera(
+            finalURL: frontFinal,
+            rawURL: frontRaw,
+            audioURL: audio,
+            timing: timing,
+            timingSidecarExists: timingSidecarExists,
+            angle: .front
+        )
+        let rear = await recoverPreparedCamera(
+            finalURL: rearFinal,
+            rawURL: rearRaw,
+            audioURL: audio,
+            timing: timing,
+            timingSidecarExists: timingSidecarExists,
+            angle: .rear
+        )
         var saved = false
         var error: String?
         var savedURLs: [URL] = []
@@ -1784,10 +1993,11 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                 frontMerging,
                 rearMerging,
                 journalURL,
+                timingURL,
             ] + audioSources + savedURLs
             let unique = Set(cleanup)
-            let mediaURLs = unique.filter { !$0.lastPathComponent.hasSuffix(".photo-import.json") }
-            removeImportedMedia(Array(mediaURLs), journals: [journalURL])
+            let mediaURLs = unique.filter { !isRecordingJournalURL($0) }
+            removeImportedMedia(Array(mediaURLs), journals: [journalURL, timingURL])
             return outcome(2, 0, nil)
         }
 
@@ -1849,7 +2059,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         if !remainingAngleMedia.contains(where: { manager.fileExists(atPath: $0.path) }) {
             removeImportedMedia(
                 remainingAngleMedia + audioSources,
-                journals: [journalURL]
+                journals: [journalURL, timingURL]
             )
         }
         if recoveredAngles == 0, let error, !error.isEmpty {
@@ -1868,7 +2078,10 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
     private func recoverPreparedCamera(
         finalURL: URL,
         rawURL: URL,
-        audioURL: URL
+        audioURL: URL,
+        timing: SegmentTimingJournal?,
+        timingSidecarExists: Bool,
+        angle: CameraAngle
     ) async -> PreparedCameraRecording {
         if await isValidMergedRecording(finalURL) {
             return PreparedCameraRecording(finalURL: finalURL, merged: true, error: nil)
@@ -1881,7 +2094,13 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
             )
         }
         return await withCheckedContinuation { continuation in
-            prepareFinalRecording(videoURL: rawURL, audioURL: audioURL) { url, merged, error in
+            prepareFinalRecording(
+                videoURL: rawURL,
+                audioURL: audioURL,
+                timing: timing,
+                timingSidecarExists: timingSidecarExists,
+                angle: angle
+            ) { url, merged, error in
                 continuation.resume(returning: PreparedCameraRecording(
                     finalURL: url,
                     merged: merged,
@@ -2142,14 +2361,19 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
      * une extinction brutale, tandis que
      * le pipeline MultiCam conserve la vidéo stabilisée sans posséder le micro.
      */
-    private func startAudioCapture(to url: URL, acceptImmediately: Bool = false) throws {
+    private func startAudioCapture(
+        to url: URL,
+        segmentID: UUID? = nil
+    ) throws {
         stopAudioCapture()
         let (input, format) = try activateVoiceProcessingInput()
         let file = try makeAudioFile(at: url, format: format)
         audioStateLock.lock()
         audioFile = file
         audioCaptureFormat = format
-        acceptsAudioBuffers = acceptImmediately
+        acceptsAudioBuffers = true
+        audioCaptureSegmentID = segmentID
+        audioFirstHostSeconds = nil
         audioWriteError = nil
         audioReadySignal = DispatchSemaphore(value: 0)
         audioCaptureConfirmed = false
@@ -2160,8 +2384,23 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         audioCaptureURL = url
         audioStateLock.unlock()
 
-        input.installTap(onBus: 0, bufferSize: 2_048, format: format) { [weak self] buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 2_048, format: format) { [weak self, weak input] buffer, when in
             guard let self else { return }
+            let resolvedHostSeconds: TimeInterval? = {
+                if when.isHostTimeValid {
+                    let seconds = AVAudioTime.seconds(forHostTime: when.hostTime)
+                    return seconds.isFinite ? seconds : nil
+                }
+                guard when.isSampleTimeValid,
+                      let anchor = input?.lastRenderTime,
+                      anchor.isHostTimeValid,
+                      anchor.isSampleTimeValid,
+                      let extrapolated = when.extrapolateTime(fromAnchor: anchor),
+                      extrapolated.isHostTimeValid else { return nil }
+                let seconds = AVAudioTime.seconds(forHostTime: extrapolated.hostTime)
+                return seconds.isFinite ? seconds : nil
+            }()
+            var timingUpdate: (segmentID: UUID, hostSeconds: TimeInterval)?
             self.audioStateLock.lock()
             guard self.acceptsAudioBuffers, let target = self.audioFile else {
                 self.audioStateLock.unlock()
@@ -2173,8 +2412,17 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                 self.audioBuffersWritten += 1
                 self.audioFramesWritten += AVAudioFramePosition(buffer.frameLength)
                 self.lastAudioBufferWrittenAt = Date()
+                if self.audioFirstHostSeconds == nil,
+                   let hostSeconds = resolvedHostSeconds,
+                   let segmentID = self.audioCaptureSegmentID {
+                    self.audioFirstHostSeconds = hostSeconds
+                    timingUpdate = (segmentID, hostSeconds)
+                }
+                let hasRequiredTimingAnchor = self.audioCaptureSegmentID == nil
+                    || self.audioFirstHostSeconds != nil
                 if !self.audioCaptureConfirmed,
                    self.audioBuffersWritten >= self.minimumConfirmedAudioBuffers,
+                   hasRequiredTimingAnchor,
                    target.length > 0 {
                     self.audioCaptureConfirmed = true
                     readySignal = self.audioReadySignal
@@ -2183,6 +2431,15 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                 if self.audioWriteError == nil { self.audioWriteError = error.localizedDescription }
             }
             self.audioStateLock.unlock()
+            if let timingUpdate {
+                self.timingStore.recordAudioStart(
+                    segmentID: timingUpdate.segmentID,
+                    hostSeconds: timingUpdate.hostSeconds
+                )
+            }
+            // Mettre la mutation du journal en file avant de réveiller le
+            // démarrage/la rotation. Un snapshot immédiat drainera ainsi
+            // toujours l'ancre audio au lieu de voir un sidecar incomplet.
             readySignal?.signal()
         }
         audioTapInstalled = true
@@ -2233,11 +2490,13 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         return file
     }
 
-    private func swapAudioFile(with file: AVAudioFile) -> String? {
+    private func swapAudioFile(with file: AVAudioFile, segmentID: UUID) -> String? {
         audioStateLock.lock()
         let previousError = audioWriteError
         audioFile = file
         acceptsAudioBuffers = true
+        audioCaptureSegmentID = segmentID
+        audioFirstHostSeconds = nil
         audioWriteError = nil
         audioReadySignal = DispatchSemaphore(value: 0)
         audioCaptureConfirmed = false
@@ -2267,6 +2526,8 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         audioCaptureFormat = nil
         audioCaptureStartedAt = nil
         audioCaptureURL = nil
+        audioCaptureSegmentID = nil
+        audioFirstHostSeconds = nil
         audioStateLock.unlock()
         audioEngine.reset()
     }
@@ -2348,10 +2609,82 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         return audioWriteError
     }
 
+    private func alignedAudioRange(
+        videoDuration: TimeInterval,
+        audioDuration: TimeInterval,
+        videoHostStart: TimeInterval,
+        audioHostStart: TimeInterval
+    ) -> AlignedAudioRange? {
+        guard videoDuration.isFinite, videoDuration > 0,
+              audioDuration.isFinite, audioDuration > 0,
+              videoHostStart.isFinite, audioHostStart.isFinite else { return nil }
+        let measuredOffset = audioHostStart - videoHostStart
+        let rawOffset = abs(measuredOffset) <= 0.05 ? 0 : measuredOffset
+        // Un tel écart indique un journal associé au mauvais segment. Ne jamais
+        // le masquer en rognant arbitrairement plusieurs secondes de preuve.
+        guard abs(rawOffset) <= 5 else { return nil }
+        let sourceStart = max(0, -rawOffset)
+        let targetStart = max(0, rawOffset)
+        let duration = min(audioDuration - sourceStart, videoDuration - targetStart)
+        guard duration > 0 else { return nil }
+        return AlignedAudioRange(
+            sourceStart: sourceStart,
+            targetStart: targetStart,
+            duration: duration,
+            rawOffset: rawOffset
+        )
+    }
+
+    private func insertAlignedAudio(
+        sourceAudio: AVAssetTrack,
+        sourceAudioTimeRange: CMTimeRange,
+        targetAudio: AVMutableCompositionTrack,
+        videoDuration: CMTime,
+        timing: SegmentTimingJournal,
+        angle: CameraAngle
+    ) throws -> AlignedAudioRange {
+        guard let audioHostStart = timing.audioStartHostSeconds,
+              let videoHostStart = timing.videoHostStart(for: angle),
+              let placement = alignedAudioRange(
+                videoDuration: CMTimeGetSeconds(videoDuration),
+                audioDuration: CMTimeGetSeconds(sourceAudioTimeRange.duration),
+                videoHostStart: videoHostStart,
+                audioHostStart: audioHostStart
+              ) else {
+            throw RecordingError.invalidTimingAnchors
+        }
+        let scale: CMTimeScale = 48_000
+        let sourceOffset = CMTime(seconds: placement.sourceStart, preferredTimescale: scale)
+        let targetStart = CMTime(seconds: placement.targetStart, preferredTimescale: scale)
+        let insertDuration = CMTime(seconds: placement.duration, preferredTimescale: scale)
+        if CMTimeCompare(targetStart, .zero) > 0 {
+            targetAudio.insertEmptyTimeRange(CMTimeRange(start: .zero, duration: targetStart))
+        }
+        try targetAudio.insertTimeRange(
+            CMTimeRange(
+                start: CMTimeAdd(sourceAudioTimeRange.start, sourceOffset),
+                duration: insertDuration
+            ),
+            of: sourceAudio,
+            at: targetStart
+        )
+        let coveredEnd = CMTimeAdd(targetStart, insertDuration)
+        if CMTimeCompare(coveredEnd, videoDuration) < 0 {
+            targetAudio.insertEmptyTimeRange(CMTimeRange(
+                start: coveredEnd,
+                duration: CMTimeSubtract(videoDuration, coveredEnd)
+            ))
+        }
+        return placement
+    }
+
     /** Réunit sans réencodage la vidéo stabilisée et l'audio Voice Processing. */
     private func prepareFinalRecording(
         videoURL: URL,
         audioURL: URL?,
+        timing: SegmentTimingJournal? = nil,
+        timingSidecarExists: Bool = false,
+        angle: CameraAngle? = nil,
         completion: @escaping (URL, Bool, String?) -> Void
     ) {
         let stem = videoURL.deletingPathExtension().lastPathComponent
@@ -2360,6 +2693,15 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
         let mergingURL = videoURL.deletingLastPathComponent().appendingPathComponent("\(baseName).merging.mov")
 
         Task {
+            if timingSidecarExists,
+               (timing?.isComplete != true || angle == nil) {
+                completion(
+                    videoURL,
+                    false,
+                    "Le journal de synchronisation audio/vidéo est incomplet; toutes les sources ont été conservées."
+                )
+                return
+            }
             // Un export peut avoir terminé juste avant une extinction, sans que
             // son callback ait eu le temps de le promouvoir. Ne jamais l'écraser
             // s'il contient déjà les deux pistes valides.
@@ -2381,17 +2723,19 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                     return
                 }
                 let videoDuration = try await videoAsset.load(.duration)
-                let audioDuration = try await audioAsset.load(.duration)
+                let audioTimeRange = try await sourceAudio.load(.timeRange)
+                let audioDuration = audioTimeRange.duration
+                let audioTrackDurationSeconds = audioTimeRange.duration.seconds
                 guard videoDuration.isValid, videoDuration.seconds > 0,
-                      audioDuration.isValid, audioDuration.seconds > 0 else {
+                      audioDuration.isValid, audioDuration.seconds > 0,
+                      audioTrackDurationSeconds.isFinite,
+                      audioTrackDurationSeconds > 0 else {
                     completion(videoURL, false, "La piste audio ou vidéo est vide; la vidéo source a été conservée.")
                     return
                 }
-                let durationDifference = audioDuration.seconds - videoDuration.seconds
-                guard durationDifference <= 3 else {
-                    // Une piste audio nettement plus longue prouve que le writer
-                    // vidéo s'est figé. La tronquer puis supprimer les sources
-                    // ferait passer une capture partielle pour une sauvegarde.
+                let durationDifference = audioTrackDurationSeconds - videoDuration.seconds
+                if !timingSidecarExists, durationDifference > 3 {
+                    // Compatibilité des anciennes captures sans journal timing.
                     completion(
                         videoURL,
                         false,
@@ -2399,9 +2743,7 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                     )
                     return
                 }
-                let durationWarning = durationDifference < -3
-                    ? "La piste audio était plus courte que la vidéo; la fin reste silencieuse mais la vidéo complète a été sauvegardée."
-                    : nil
+                var durationWarning: String?
 
                 let composition = AVMutableComposition()
                 guard let targetVideo = composition.addMutableTrack(
@@ -2420,23 +2762,45 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
                     at: .zero
                 )
                 targetVideo.preferredTransform = try await sourceVideo.load(.preferredTransform)
-                let audioRangeDuration = CMTimeCompare(audioDuration, videoDuration) > 0
-                    ? videoDuration
-                    : audioDuration
-                try targetAudio.insertTimeRange(
-                    CMTimeRange(start: .zero, duration: audioRangeDuration),
-                    of: sourceAudio,
-                    at: .zero
-                )
-                if CMTimeCompare(audioRangeDuration, videoDuration) < 0 {
-                    // Une interruption brutale peut fermer l'audio avant le
-                    // writer vidéo. Prolonger la piste par du silence conserve
-                    // toutes les images et évite une récupération bloquée à
-                    // chaque lancement.
-                    targetAudio.insertEmptyTimeRange(CMTimeRange(
-                        start: audioRangeDuration,
-                        duration: CMTimeSubtract(videoDuration, audioRangeDuration)
-                    ))
+                if timingSidecarExists, let timing, let angle {
+                    let placement = try insertAlignedAudio(
+                        sourceAudio: sourceAudio,
+                        sourceAudioTimeRange: audioTimeRange,
+                        targetAudio: targetAudio,
+                        videoDuration: videoDuration,
+                        timing: timing,
+                        angle: angle
+                    )
+                    let audioEndOnVideoTimeline = placement.rawOffset + audioTrackDurationSeconds
+                    if audioEndOnVideoTimeline - videoDuration.seconds > 3 {
+                        completion(
+                            videoURL,
+                            false,
+                            "La vidéo s'est interrompue avant l'audio; toutes les sources ont été conservées pour récupération."
+                        )
+                        return
+                    }
+                    if videoDuration.seconds - audioEndOnVideoTimeline > 3 {
+                        durationWarning = "La piste audio était plus courte que la vidéo; la fin reste silencieuse mais la vidéo complète a été sauvegardée."
+                    }
+                } else {
+                    let audioRangeDuration = CMTimeCompare(audioDuration, videoDuration) > 0
+                        ? videoDuration
+                        : audioDuration
+                    try targetAudio.insertTimeRange(
+                        CMTimeRange(start: audioTimeRange.start, duration: audioRangeDuration),
+                        of: sourceAudio,
+                        at: .zero
+                    )
+                    if CMTimeCompare(audioRangeDuration, videoDuration) < 0 {
+                        targetAudio.insertEmptyTimeRange(CMTimeRange(
+                            start: audioRangeDuration,
+                            duration: CMTimeSubtract(videoDuration, audioRangeDuration)
+                        ))
+                        if durationDifference < -3 {
+                            durationWarning = "La piste audio était plus courte que la vidéo; la fin reste silencieuse mais la vidéo complète a été sauvegardée."
+                        }
+                    }
                 }
 
                 guard let export = AVAssetExportSession(
@@ -2561,6 +2925,7 @@ private enum RecordingError: LocalizedError {
     case audioCaptureTimedOut
     case audioWriteFailed(String)
     case videoCaptureTimedOut(String)
+    case invalidTimingAnchors
     case insufficientStorage
     case testUnavailableWhileRecording
     case recoveryInProgress
@@ -2578,8 +2943,10 @@ private enum RecordingError: LocalizedError {
             return "L'écriture audio a échoué (\(message)). Toutes les sources restent conservées."
         case .videoCaptureTimedOut(let details):
             return "Les deux caméras n'ont pas produit de fragments vidéo confirmés (\(details)). Toutes les sources restent conservées."
+        case .invalidTimingAnchors:
+            return "Les horodatages audio/vidéo sont invalides. Toutes les sources restent conservées sans fusion approximative."
         case .insufficientStorage:
-            return "Moins de 5 Go sont disponibles. L’enregistrement a été arrêté proprement pour conserver les vidéos existantes."
+            return "Moins de 8 Go sont disponibles. L’enregistrement a été arrêté proprement pour conserver les vidéos existantes."
         case .testUnavailableWhileRecording:
             return "Arrête l’enregistrement en cours avant de tester les caméras et le microphone."
         case .recoveryInProgress:
@@ -2594,6 +2961,7 @@ private struct NativeRecordingSegment {
     let frontVideoURL: URL
     let rearVideoURL: URL
     let audioURL: URL
+    let timingURL: URL
 }
 
 private struct PreparedCameraRecording {
@@ -2607,6 +2975,152 @@ private struct PhotoImportJournal: Codable {
     let createdAt: Date
     let frontLocalIdentifier: String?
     let rearLocalIdentifier: String?
+}
+
+private enum CameraAngle {
+    case front
+    case rear
+}
+
+private struct AlignedAudioRange {
+    let sourceStart: TimeInterval
+    let targetStart: TimeInterval
+    let duration: TimeInterval
+    let rawOffset: TimeInterval
+}
+
+private struct SegmentTimingJournal: Codable {
+    static let currentVersion = 1
+    let version: Int
+    let segmentID: UUID
+    var frontVideoStartHostSeconds: TimeInterval?
+    var rearVideoStartHostSeconds: TimeInterval?
+    var audioStartHostSeconds: TimeInterval?
+
+    init(segmentID: UUID) {
+        version = Self.currentVersion
+        self.segmentID = segmentID
+    }
+
+    var isComplete: Bool {
+        frontVideoStartHostSeconds?.isFinite == true
+            && rearVideoStartHostSeconds?.isFinite == true
+            && audioStartHostSeconds?.isFinite == true
+    }
+
+    func videoHostStart(for angle: CameraAngle) -> TimeInterval? {
+        switch angle {
+        case .front: return frontVideoStartHostSeconds
+        case .rear: return rearVideoStartHostSeconds
+        }
+    }
+}
+
+/**
+ * Sérialise les ancres en mémoire et sur disque. Les callbacks caméra/micro ne
+ * font aucune I/O : leurs mutations sont soumises à cette file, et `snapshot`
+ * attend automatiquement toutes les mutations déjà soumises avant le mux.
+ */
+private final class SegmentTimingJournalStore {
+    private let queue = DispatchQueue(label: "com.n0thytvoff.prepatrack.recording.timing")
+    private var journals: [UUID: SegmentTimingJournal] = [:]
+    private var urls: [UUID: URL] = [:]
+
+    func begin(segmentID: UUID, url: URL) throws {
+        try queue.sync {
+            let journal = SegmentTimingJournal(segmentID: segmentID)
+            journals[segmentID] = journal
+            urls[segmentID] = url.standardizedFileURL
+            try persist(journal, to: url)
+        }
+    }
+
+    func recordVideoStarts(segmentID: UUID, front: TimeInterval, rear: TimeInterval) {
+        queue.async { [weak self] in
+            guard let self,
+                  front.isFinite,
+                  rear.isFinite,
+                  var journal = self.journals[segmentID],
+                  let url = self.urls[segmentID] else { return }
+            if journal.frontVideoStartHostSeconds == nil {
+                journal.frontVideoStartHostSeconds = front
+            }
+            if journal.rearVideoStartHostSeconds == nil {
+                journal.rearVideoStartHostSeconds = rear
+            }
+            self.journals[segmentID] = journal
+            self.persistWithoutThrowing(journal, to: url, source: "vidéo")
+        }
+    }
+
+    func recordAudioStart(segmentID: UUID, hostSeconds: TimeInterval) {
+        queue.async { [weak self] in
+            guard let self,
+                  hostSeconds.isFinite,
+                  var journal = self.journals[segmentID],
+                  let url = self.urls[segmentID] else { return }
+            if journal.audioStartHostSeconds == nil {
+                journal.audioStartHostSeconds = hostSeconds
+            }
+            self.journals[segmentID] = journal
+            self.persistWithoutThrowing(journal, to: url, source: "audio")
+        }
+    }
+
+    func snapshot(segmentID: UUID) -> SegmentTimingJournal? {
+        queue.sync {
+            guard let journal = journals[segmentID],
+                  let url = urls[segmentID] else { return nil }
+            do {
+                // Le mux ne peut commencer qu'après confirmation que la version
+                // complète visible en mémoire est aussi durable sur disque.
+                try persist(journal, to: url)
+                return journal
+            } catch {
+                NSLog(
+                    "[PrepaTrack Recording] Journal timing final non durable : %@",
+                    error.localizedDescription
+                )
+                return nil
+            }
+        }
+    }
+
+    func load(from url: URL) -> SegmentTimingJournal? {
+        queue.sync {
+            guard let data = try? Data(contentsOf: url),
+                  let journal = try? JSONDecoder().decode(SegmentTimingJournal.self, from: data),
+                  journal.version == SegmentTimingJournal.currentVersion else { return nil }
+            journals[journal.segmentID] = journal
+            urls[journal.segmentID] = url.standardizedFileURL
+            return journal
+        }
+    }
+
+    private func persistWithoutThrowing(
+        _ journal: SegmentTimingJournal,
+        to url: URL,
+        source: String
+    ) {
+        do {
+            try persist(journal, to: url)
+        } catch {
+            NSLog(
+                "[PrepaTrack Recording] Journal timing %@ : %@",
+                source,
+                error.localizedDescription
+            )
+        }
+    }
+
+    private func persist(_ journal: SegmentTimingJournal, to url: URL) throws {
+        let data = try JSONEncoder().encode(journal)
+        try data.write(to: url, options: .atomic)
+        try? FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            ofItemAtPath: url.path
+        )
+    }
 }
 
 private struct RecordingRecoverySnapshot {
