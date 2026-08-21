@@ -26,20 +26,22 @@ export function LossTable({ lines, dayCount }: Props) {
 
       <div className="mt-3 flex justify-between gap-2 text-[0.65rem] font-semibold uppercase tracking-wide text-slate-600">
         <span>Cause et durée</span>
-        <span className="max-w-28 text-right">{ESTIMATED_MISSING_LABEL}</span>
+        <span className="text-right">Colis estimés</span>
       </div>
 
       <ul className="mt-2 flex flex-col gap-2">
         {lines.map((line) => (
-          <li key={line.type} className="flex items-baseline gap-2 text-sm">
-            <span className="shrink-0">{line.emoji}</span>
-            <span className="flex-1 truncate">
-              {line.label}
-              <span className="ml-1 text-slate-600">×{line.count}</span>
-            </span>
-            <span className="tabular shrink-0 font-semibold">{formatShort(line.time)}</span>
-            <span className="tabular w-16 shrink-0 text-right text-slate-500">
-              ≈ {Math.round(line.colisEquivalent)}
+          <li key={line.type} className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-2 text-sm">
+            <span className="row-span-2 shrink-0 pt-0.5">{line.emoji}</span>
+            <div className="flex min-w-0 items-baseline justify-between gap-2">
+              <span className="min-w-0 truncate">
+                {line.label}
+                <span className="ml-1 text-slate-600">×{line.count}</span>
+              </span>
+              <span className="tabular shrink-0 font-semibold">{formatShort(line.time)}</span>
+            </div>
+            <span className="tabular text-xs text-slate-500">
+              ≈ {Math.round(line.colisEquivalent)} {ESTIMATED_MISSING_LABEL.toLowerCase()}
             </span>
           </li>
         ))}
