@@ -27,10 +27,9 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
     private var pendingFrontSamples: [CMSampleBuffer] = []
     private var pendingRearSamples: [CMSampleBuffer] = []
     private let maximumPendingSamplesPerCamera = 6
-    // À 30 i/s, 50 ms tolèrent un décalage d'environ une image sans associer
-    // deux instants visiblement différents.
-    private let maximumFramePairDeltaSeconds: TimeInterval = 0.05
     private var lastPairedPresentationTime: CMTime?
+    private var lastSourcePTSDeltaMilliseconds: Double = 0
+    private var maximumSourcePTSDeltaMilliseconds: Double = 0
 
     private var configured = false
     private var profile: DualCameraCaptureProfile?
@@ -297,6 +296,8 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
                     "rearConnectionEnabled": backConnection?.isEnabled ?? false,
                     "frontConnectionActive": frontConnection?.isActive ?? false,
                     "rearConnectionActive": backConnection?.isActive ?? false,
+                    "lastSourcePTSDeltaMilliseconds": lastSourcePTSDeltaMilliseconds,
+                    "maximumSourcePTSDeltaMilliseconds": maximumSourcePTSDeltaMilliseconds,
                     "droppedFrontSamples": droppedFrontSamples,
                     "droppedRearSamples": droppedRearSamples,
                     "renderedFramePairs": renderedFramePairs,
@@ -312,6 +313,8 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
             payload["rearConnectionEnabled"] = backConnection?.isEnabled ?? false
             payload["frontConnectionActive"] = frontConnection?.isActive ?? false
             payload["rearConnectionActive"] = backConnection?.isActive ?? false
+            payload["lastSourcePTSDeltaMilliseconds"] = lastSourcePTSDeltaMilliseconds
+            payload["maximumSourcePTSDeltaMilliseconds"] = maximumSourcePTSDeltaMilliseconds
             payload["droppedFrontSamples"] = droppedFrontSamples
             payload["droppedRearSamples"] = droppedRearSamples
             payload["renderedFramePairs"] = renderedFramePairs
@@ -394,6 +397,7 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
             "timestampOverlay": true,
             "thumbnailSafeBanner": true,
             "frameDelivery": "independentDelegates",
+            "framePairing": "deliveryOrder",
         ]
     }
 
@@ -436,46 +440,41 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
 
     private func processPendingFramePair() {
         guard !pendingFrontSamples.isEmpty, !pendingRearSamples.isEmpty else { return }
-        var bestFrontIndex = 0
-        var bestRearIndex = 0
-        var bestDelta = TimeInterval.greatestFiniteMagnitude
-        for (frontIndex, frontSample) in pendingFrontSamples.enumerated() {
-            let frontSeconds = CMSampleBufferGetPresentationTimeStamp(frontSample).seconds
-            guard frontSeconds.isFinite else { continue }
-            for (rearIndex, rearSample) in pendingRearSamples.enumerated() {
-                let rearSeconds = CMSampleBufferGetPresentationTimeStamp(rearSample).seconds
-                guard rearSeconds.isFinite else { continue }
-                let delta = abs(frontSeconds - rearSeconds)
-                if delta < bestDelta {
-                    bestDelta = delta
-                    bestFrontIndex = frontIndex
-                    bestRearIndex = rearIndex
-                }
-            }
-        }
+        // Les stabilisations avant et arrière ont des latences internes
+        // différentes sur l'iPhone 15 Plus. Leurs PTS bruts peuvent donc être
+        // éloignés alors que les deux images viennent d'être livrées ensemble.
+        // Garder la plus récente de chaque flux évite qu'un seuil PTS rejette
+        // toutes les images, tout en ne réutilisant jamais un buffer.
+        let skippedFront = max(0, pendingFrontSamples.count - 1)
+        let skippedRear = max(0, pendingRearSamples.count - 1)
+        let frontSample = pendingFrontSamples.removeLast()
+        let backSample = pendingRearSamples.removeLast()
+        pendingFrontSamples.removeAll(keepingCapacity: true)
+        pendingRearSamples.removeAll(keepingCapacity: true)
+        droppedFrontSamples += skippedFront
+        droppedRearSamples += skippedRear
 
-        guard bestDelta <= maximumFramePairDeltaSeconds else {
-            pruneUnmatchableSamples()
-            return
-        }
-        if bestFrontIndex > 0 {
-            pendingFrontSamples.removeFirst(bestFrontIndex)
-            droppedFrontSamples += bestFrontIndex
-        }
-        if bestRearIndex > 0 {
-            pendingRearSamples.removeFirst(bestRearIndex)
-            droppedRearSamples += bestRearIndex
-        }
-        let frontSample = pendingFrontSamples.removeFirst()
-        let backSample = pendingRearSamples.removeFirst()
         let frontTime = CMSampleBufferGetPresentationTimeStamp(frontSample)
         let rearTime = CMSampleBufferGetPresentationTimeStamp(backSample)
-        let presentationTime = CMTimeCompare(frontTime, rearTime) >= 0 ? frontTime : rearTime
+        let frontSeconds = frontTime.seconds
+        let rearSeconds = rearTime.seconds
+        if frontSeconds.isFinite, rearSeconds.isFinite {
+            let delta = abs(frontSeconds - rearSeconds) * 1_000
+            lastSourcePTSDeltaMilliseconds = delta
+            maximumSourcePTSDeltaMilliseconds = max(maximumSourcePTSDeltaMilliseconds, delta)
+        }
+
+        let duration = normalizedDuration(CMSampleBufferGetDuration(frontSample))
+        // La timeline des fichiers suit l'horloge monotone de livraison, pas
+        // les PTS propres aux deux stabilisateurs. Elle ne peut donc ni sauter
+        // ni se bloquer lorsque leurs latences internes évoluent.
+        var presentationTime = CMTime(
+            seconds: ProcessInfo.processInfo.systemUptime,
+            preferredTimescale: 600
+        )
         if let lastPairedPresentationTime,
            CMTimeCompare(presentationTime, lastPairedPresentationTime) <= 0 {
-            droppedFrontSamples += 1
-            droppedRearSamples += 1
-            return
+            presentationTime = CMTimeAdd(lastPairedPresentationTime, duration)
         }
         lastPairedPresentationTime = presentationTime
         synchronizedCollections += 1
@@ -484,26 +483,6 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
             backSample: backSample,
             presentationTime: presentationTime
         )
-    }
-
-    private func pruneUnmatchableSamples() {
-        guard let oldestFront = pendingFrontSamples.first,
-              let newestFront = pendingFrontSamples.last,
-              let oldestRear = pendingRearSamples.first,
-              let newestRear = pendingRearSamples.last else { return }
-        let oldestFrontSeconds = CMSampleBufferGetPresentationTimeStamp(oldestFront).seconds
-        let newestFrontSeconds = CMSampleBufferGetPresentationTimeStamp(newestFront).seconds
-        let oldestRearSeconds = CMSampleBufferGetPresentationTimeStamp(oldestRear).seconds
-        let newestRearSeconds = CMSampleBufferGetPresentationTimeStamp(newestRear).seconds
-        if oldestFrontSeconds.isFinite, newestRearSeconds.isFinite,
-           oldestFrontSeconds < newestRearSeconds - maximumFramePairDeltaSeconds {
-            pendingFrontSamples.removeFirst()
-            droppedFrontSamples += 1
-        } else if oldestRearSeconds.isFinite, newestFrontSeconds.isFinite,
-                  oldestRearSeconds < newestFrontSeconds - maximumFramePairDeltaSeconds {
-            pendingRearSamples.removeFirst()
-            droppedRearSamples += 1
-        }
     }
 
     private func processFramePair(
@@ -677,6 +656,8 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
         pendingFrontSamples.removeAll(keepingCapacity: true)
         pendingRearSamples.removeAll(keepingCapacity: true)
         lastPairedPresentationTime = nil
+        lastSourcePTSDeltaMilliseconds = 0
+        maximumSourcePTSDeltaMilliseconds = 0
         synchronizedCollections = 0
         frontSampleCallbacks = 0
         rearSampleCallbacks = 0
