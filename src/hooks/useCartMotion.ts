@@ -8,6 +8,10 @@ import {
 } from '../core/cartMotion'
 import type { Session } from './useSession'
 import { setAutomaticTravel } from '../db/repo'
+import {
+  nativeCartMotionSupported,
+  startNativeCartMotion,
+} from '../native/cartMotion'
 
 export type CartMotionStatus =
   | 'unsupported'
@@ -51,8 +55,10 @@ const MIN_CALIBRATION_SAMPLES = 25
  * échantillon ne quitte l'appareil ; seules les durées de trajet sont stockées.
  */
 export function useCartMotion(session: Session): CartMotionControl {
-  const supported =
+  const native = nativeCartMotionSupported()
+  const webMotionSupported =
     typeof window !== 'undefined' && typeof window.DeviceMotionEvent !== 'undefined'
+  const supported = native || webMotionSupported
   const [status, setStatus] = useState<CartMotionStatus>(
     supported ? 'permission_needed' : 'unsupported',
   )
@@ -63,6 +69,7 @@ export function useCartMotion(session: Session): CartMotionControl {
   const travelGuard = useRef(new AutomaticTravelGuard())
   const calibration = useRef<CalibrationRun>()
   const transitionQueue = useRef(Promise.resolve())
+  const samplesReceived = useRef(0)
   const enabled = session.settings.cartMotion.enabled
   const threshold = session.settings.cartMotion.threshold
 
@@ -111,15 +118,16 @@ export function useCartMotion(session: Session): CartMotionControl {
     threshold,
   ])
 
-  useEffect(() => {
-    if (!supported || session.loading) return
-    const calibrating =
-      status === 'calibrating_stationary' || status === 'calibrating_moving'
-    if (!enabled && !calibrating) return
+  const calibrating =
+    status === 'calibrating_stationary' || status === 'calibrating_moving'
+  const listening = enabled || calibrating
 
-    const onMotion = (event: DeviceMotionEvent) => {
+  useEffect(() => {
+    if (!supported || session.loading || !listening) return
+
+    const onSample = (sample: CartMotionSample) => {
       permissionGranted.current = true
-      const sample = fromDeviceMotion(event)
+      samplesReceived.current += 1
       const run = calibration.current
       if (run) {
         const energy = run.meter.sample(sample)
@@ -143,9 +151,38 @@ export function useCartMotion(session: Session): CartMotionControl {
       setStatus(transition)
     }
 
-    window.addEventListener('devicemotion', onMotion)
-    return () => window.removeEventListener('devicemotion', onMotion)
-  }, [enabled, session.loading, status, supported, threshold])
+    if (!native) {
+      const onMotion = (event: DeviceMotionEvent) => onSample(fromDeviceMotion(event))
+      window.addEventListener('devicemotion', onMotion)
+      return () => window.removeEventListener('devicemotion', onMotion)
+    }
+
+    let disposed = false
+    let stop: (() => Promise<void>) | undefined
+    const initialSamples = samplesReceived.current
+    const noSampleTimer = window.setTimeout(() => {
+      if (disposed || samplesReceived.current > initialSamples) return
+      setError("Aucune mesure reçue de l'iPhone. Relance l'écoute des capteurs.")
+      setStatus('error')
+    }, 5_000)
+
+    void startNativeCartMotion(onSample)
+      .then(async (cleanup) => {
+        if (disposed) await cleanup()
+        else stop = cleanup
+      })
+      .catch(() => {
+        if (disposed) return
+        setError("Core Motion n'a pas pu démarrer sur l'iPhone.")
+        setStatus('error')
+      })
+
+    return () => {
+      disposed = true
+      window.clearTimeout(noSampleTimer)
+      void stop?.()
+    }
+  }, [enabled, listening, native, session.loading, supported, threshold])
 
   useEffect(() => {
     if (!enabled || status !== 'moving') return
@@ -159,6 +196,14 @@ export function useCartMotion(session: Session): CartMotionControl {
 
   const requestPermission = useCallback(async () => {
     if (!supported) return false
+    // Core Motion natif ne dépend pas de la permission JavaScript de WKWebView.
+    // Le premier échantillon confirme ensuite explicitement que l'écoute tourne.
+    if (native) {
+      permissionGranted.current = true
+      setStatus('ready')
+      setError(undefined)
+      return true
+    }
     try {
       const ctor = DeviceMotionEvent as MotionPermissionConstructor
       const result = ctor.requestPermission ? await ctor.requestPermission() : 'granted'
@@ -172,7 +217,7 @@ export function useCartMotion(session: Session): CartMotionControl {
       setError("iOS n'a pas autorisé l'accès aux capteurs de mouvement.")
       return false
     }
-  }, [supported])
+  }, [native, supported])
 
   const calibrate = useCallback(
     async (kind: 'stationary' | 'moving') => {

@@ -5,5 +5,6 @@ final class ViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(LiveActivityPlugin())
         bridge?.registerPluginInstance(RecordingPlugin())
         bridge?.registerPluginInstance(DurableStoragePlugin())
+        bridge?.registerPluginInstance(CartMotionPlugin())
     }
 }
