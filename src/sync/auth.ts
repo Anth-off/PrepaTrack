@@ -1,5 +1,5 @@
 import { claimOrphans } from '../db/repo'
-import { getClient, resetClient } from './client'
+import { getClient, recoverClientAuth, resetClient } from './client'
 import { loadProfile, saveProfile, type Profile, type Role } from './profile'
 import { resetCursors } from './sync'
 import { clearDurableAuthSession } from '../native/durableStorage'
@@ -45,9 +45,16 @@ export async function getCurrentProfile(): Promise<Profile | undefined> {
   const client = await getClient()
   if (!client) return loadProfile()
 
-  const { data } = await client.auth.getSession()
+  let { data } = await client.auth.getSession()
+  if (!data.session) {
+    await recoverClientAuth(client)
+    ;({ data } = await client.auth.getSession())
+  }
   const user = data.session?.user
-  if (!user) return undefined
+  // Hors ligne ou pendant une restauration iOS, l'identité locale reste la
+  // référence d'affichage et de propriété. Une panne réseau n'est pas une
+  // demande de déconnexion.
+  if (!user) return loadProfile()
 
   // Le profil local suffit hors ligne ; on ne redemande la fiche au serveur que
   // si elle manque ou si le compte a changé.
@@ -154,11 +161,13 @@ export async function createAccount(badge: string, pin: string): Promise<string 
 
 export async function signOut(): Promise<void> {
   const client = await getClient()
+  // Effacer le filet avant l'événement SIGNED_OUT empêche toute restauration
+  // automatique d'annuler une déconnexion réellement demandée.
+  await clearDurableAuthSession()
   await client?.auth.signOut()
   await saveProfile(undefined)
   // Les données locales restent intactes : se déconnecter ne doit jamais faire
   // perdre une vacation en cours.
   await resetCursors()
   resetClient()
-  await clearDurableAuthSession()
 }

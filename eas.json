@@ -1,0 +1,37 @@
+{
+  "cli": {
+    "version": ">= 22.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "distribution": "internal"
+    },
+    "production": {
+      "autoIncrement": true,
+      "node": "22.18.0",
+      "ios": {
+        "image": "latest",
+        "scheme": "App",
+        "buildConfiguration": "Release"
+      }
+    },
+    "production-testflight": {
+      "extends": "production",
+      "env": {
+        "DIRECT_TESTFLIGHT_UPLOAD": "1"
+      }
+    }
+  },
+  "submit": {
+    "production": {
+      "ios": {
+        "ascAppId": "6798417394"
+      }
+    }
+  }
+}

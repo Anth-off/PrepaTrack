@@ -91,13 +91,18 @@ function SignInForm({ sync }: Props) {
 
     setBusy(true)
     setError(undefined)
-    const failure = await action(badge, pin)
-    setBusy(false)
-    if (failure) return setError(failure)
-    // Le code n'a plus lieu d'être conservé une fois la session ouverte.
-    setPin('')
-    await sync.refreshUser()
-    await sync.sync()
+    try {
+      const failure = await action(badge, pin)
+      if (failure) return setError(failure)
+      // Le code n'a plus lieu d'être conservé une fois la session ouverte.
+      setPin('')
+      await sync.refreshUser()
+      await sync.sync()
+    } catch {
+      setError('Connexion impossible pour le moment. Tes données locales restent disponibles.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -170,6 +175,15 @@ function Connected({ sync }: Props) {
 
   return (
     <Card>
+      <div className="mt-2 flex items-center justify-between gap-3 rounded-xl bg-ink-700 px-3 py-2 text-sm">
+        <span className="flex min-w-0 items-center gap-2 font-semibold text-slate-200">
+          <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full bg-ok" />
+          <span className="truncate">Projet Supabase connecté</span>
+        </span>
+        <span className={`shrink-0 text-xs font-semibold ${sync.online ? 'text-ok' : 'text-slate-400'}`}>
+          {sync.online ? 'Réseau disponible' : 'Mode hors ligne'}
+        </span>
+      </div>
       <div className="mt-2 flex items-baseline justify-between gap-3">
         <SyncStatusBadge status={sync.status} />
         {sync.pending > 0 && (

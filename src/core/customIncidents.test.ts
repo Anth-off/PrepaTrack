@@ -9,7 +9,7 @@ import {
   segmentDef,
 } from './segments'
 import type { Snapshot } from './machine'
-import type { Segment } from './types'
+import { STANDARD_INCIDENTS, type Segment } from './types'
 
 /**
  * Un aléa personnalisé traverse toute l'application : boutons, frise, bilan,
@@ -41,27 +41,54 @@ describe('résolution des types de segments', () => {
     expect(segmentDef('break_30').category).toBe('break')
   })
 
-  it('propose les huit mêmes aléas canoniques sur tous les appareils', () => {
+  it('propose les mêmes aléas opérationnels sur tous les appareils', () => {
     expect(INCIDENT_TYPES).toEqual([
       'incident_material',
       'incident_bug',
+      'incident_colleague_blocked',
+      'incident_wait',
+      'incident_human',
       'incident_discussion',
       'incident_forklift',
-      'incident_drink',
+      'incident_support_inverted',
+      'incident_vmax_invalid',
+      'incident_wrong_support',
+      'incident_support_unavailable',
+      'incident_zone_blocked',
       'incident_label',
       'incident_supplies',
       'incident_restock_wait',
+      'incident_location_error',
+      'incident_product_damaged',
+      'incident_quality_wait',
+      'incident_safety_cleanup',
+      'incident_drink',
+      'incident_other',
     ])
     expect(INCIDENT_TYPES.map((type) => segmentDef(type).short)).toEqual([
       'Matériel',
-      'Bug',
+      'Bug / réseau',
+      'Collègues',
+      'Attente',
+      'Humain',
       'Discussion',
       'Cariste',
-      'Boire',
+      'Support inversé',
+      'VMAX invalide',
+      'Mauvais support',
+      'Support indispo',
+      'Zone bloquée',
       'Étiquette',
       'Consommables',
       'Réappro',
+      'Emplacement',
+      'Produit abîmé',
+      'Contrôle',
+      'Casse / danger',
+      'Boire',
+      'Autre',
     ])
+    expect(STANDARD_INCIDENTS.map((incident) => incident.key)).toEqual(INCIDENT_TYPES)
   })
 
   it('ne renvoie jamais undefined sur un type inconnu', () => {

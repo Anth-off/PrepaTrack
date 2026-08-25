@@ -1,9 +1,16 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { loadSyncConfig, type SyncConfig } from './config'
-import { persistDurableAuthSession } from '../native/durableStorage'
+import {
+  authSessionTokens,
+  loadDurableAuthSession,
+  persistDurableAuthSession,
+} from '../native/durableStorage'
 
 let client: SupabaseClient | undefined
 let clientKey = ''
+let authSubscription: { unsubscribe: () => void } | undefined
+let clientGeneration = 0
+let authRecovery: Promise<boolean> | undefined
 
 /**
  * Client Supabase, créé à la demande et mémorisé. Renvoie `undefined` tant que
@@ -25,6 +32,7 @@ export async function getClient(): Promise<SupabaseClient | undefined> {
 export async function buildClient(config: SyncConfig): Promise<SupabaseClient> {
   const key = `${config.url}|${config.anonKey}`
   if (client && clientKey === key) return client
+  releaseClient()
 
   const { createClient } = await import('@supabase/supabase-js')
   client = createClient(config.url, config.anonKey, {
@@ -37,18 +45,65 @@ export async function buildClient(config: SyncConfig): Promise<SupabaseClient> {
       storageKey: 'prepatrack-auth',
     },
   })
+  const generation = ++clientGeneration
   // Supabase peut renouveler son jeton à n'importe quel moment. Le miroir
   // Keychain est mis à jour dès l'événement, sans attendre la sauvegarde
   // périodique, afin qu'une extinction juste après le renouvellement ne rende
   // pas l'ancienne session inutilisable.
-  client.auth.onAuthStateChange((_event, session) => {
-    if (session) window.setTimeout(() => { void persistDurableAuthSession() }, 0)
+  const { data } = client.auth.onAuthStateChange((_event, session) => {
+    window.setTimeout(() => {
+      if (generation !== clientGeneration) return
+      // INITIAL_SESSION peut être vide si la WebView vient d'être recréée et
+      // SIGNED_OUT peut être émis après un échec réseau pendant un refresh.
+      // Aucun de ces événements ne doit détruire notre dernier jeton sain : la
+      // copie Keychain n'est effacée que par l'action explicite « Se déconnecter ».
+      if (session) void persistDurableAuthSession(JSON.stringify(session))
+    }, 0)
   })
+  authSubscription = data.subscription
   clientKey = key
   return client
 }
 
+/**
+ * Restaure silencieusement une session perdue par la WebView depuis le Keychain.
+ * En mode avion, l'échec est sans effet : la même copie sera retentée au retour
+ * du réseau au lieu de renvoyer l'utilisateur vers l'écran badge/code.
+ */
+export async function recoverClientAuth(target: SupabaseClient): Promise<boolean> {
+  const current = await target.auth.getSession()
+  if (current.data.session) return true
+  if (authRecovery) return authRecovery
+
+  authRecovery = (async () => {
+    const tokens = authSessionTokens(await loadDurableAuthSession())
+    if (!tokens) return false
+    try {
+      const { data, error } = await target.auth.setSession(tokens)
+      if (error || !data.session) return false
+      await persistDurableAuthSession(JSON.stringify(data.session))
+      return true
+    } catch {
+      return false
+    }
+  })()
+  try {
+    return await authRecovery
+  } finally {
+    authRecovery = undefined
+  }
+}
+
 export function resetClient(): void {
+  releaseClient()
+}
+
+function releaseClient(): void {
+  clientGeneration += 1
+  authSubscription?.unsubscribe()
+  authSubscription = undefined
+  client?.auth.stopAutoRefresh()
   client = undefined
   clientKey = ''
+  authRecovery = undefined
 }

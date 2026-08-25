@@ -138,9 +138,17 @@ describe('contrôles d’intégrité locaux', () => {
     expect(inspect({ workday: workday(), orders: [], segments: open }).filter((item) => item.rule === 'invalid_timeline').some((item) => item.title.includes('Plusieurs'))).toBe(true)
   })
 
-  it('détecte aussi les doublons de compteur et les ruptures orphelines', () => {
-    const events = [event(), event({ id: 'e2', at: T + 100 })]
+  it('détecte aussi les doublons exacts de compteur et les ruptures orphelines', () => {
+    const events = [event(), event({ id: 'e2' })]
     expect(has('probable_duplicate', inspect({ workday: workday(), orders: [order()], segments: [] }, events))).toBe(true)
     expect(has('shortage_mismatch', inspect({ workday: workday(), orders: [], segments: [] }, [], [shortage()]))).toBe(true)
+  })
+
+  it('ne confond pas deux appuis rapides ou deux palettes avec un doublon', () => {
+    const rapid = [event(), event({ id: 'e2', at: T + 100 })]
+    const pallets = [event({ palletId: 'p1' }), event({ id: 'e2', palletId: 'p2' })]
+    const snap = { workday: workday(), orders: [order()], segments: [] }
+    expect(has('probable_duplicate', inspect(snap, rapid))).toBe(false)
+    expect(has('probable_duplicate', inspect(snap, pallets))).toBe(false)
   })
 })

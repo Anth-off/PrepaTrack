@@ -32,12 +32,12 @@ export function RateCards({ day, targetRate }: Props) {
       label: 'Journée',
       value: day.rates.day,
       window: day.worked,
-      hint: `sur ${formatShort(day.worked)} hors pauses`,
+      hint: `sur ${formatShort(day.worked)}, pause 30 min exclue`,
     },
   ]
 
   return (
-    <div className="grid grid-cols-3 gap-2">
+    <div className="grid min-w-0 grid-cols-3 gap-2">
       {cards.map((c) => {
         const shown = c.value > 0 && isRateMeaningful(c.window)
         const ratio = targetRate > 0 ? c.value / targetRate : 0
@@ -49,14 +49,16 @@ export function RateCards({ day, targetRate }: Props) {
               ? 'text-warn'
               : 'text-bad'
         return (
-          <div key={c.key} className="card px-3 py-3">
-            <div className="text-[0.65rem] font-semibold uppercase tracking-wide text-slate-500">
+          <div key={c.key} className="card min-w-0 overflow-hidden px-2 py-3 sm:px-3">
+            <div className="truncate text-[0.6rem] font-semibold uppercase tracking-wide text-slate-500 sm:text-[0.65rem]">
               {c.label}
             </div>
             <div className={`tabular text-3xl font-bold ${tone}`}>
               {shown ? Math.round(c.value) : '—'}
             </div>
-            <div className="text-[0.65rem] leading-tight text-slate-500">{c.hint}</div>
+            <div className="break-words text-[0.6rem] leading-tight text-slate-500 sm:text-[0.65rem]">
+              {c.hint}
+            </div>
           </div>
         )
       })}

@@ -93,7 +93,6 @@ jobs:
             LIVE_ACTIVITY_PROFILE_NAME="$LIVE_ACTIVITY_PROFILE_NAME" \
             TEAM_ID="$TEAM_ID" \
             MARKETING_VERSION="$APP_VERSION" \
-            CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
             archive
       - name: Envoyer le build à App Store Connect
         env:

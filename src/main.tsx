@@ -11,11 +11,14 @@ import {
 import { recoverOrphanedWorkdays } from './db/recovery'
 
 async function start() {
-  await recoverDurableBackup()
-  await recoverOrphanedWorkdays()
+  // Chaque filet de récupération reste indépendant. Une copie native abîmée
+  // ou une ligne historique inattendue ne doit jamais produire un écran noir
+  // qui empêcherait l'utilisateur d'accéder aux données encore lisibles.
+  try { await recoverDurableBackup() } catch { /* IndexedDB reste prioritaire. */ }
+  try { await recoverOrphanedWorkdays() } catch { /* L'application doit démarrer malgré tout. */ }
   // Crée immédiatement le filet natif pour les installations existantes,
   // avant même le prochain appui utilisateur.
-  await flushDurableBackup()
+  try { await flushDurableBackup() } catch { /* Le filet périodique réessaiera. */ }
   startDurableBackupProtection()
   createRoot(document.getElementById('root')!).render(
     <StrictMode>

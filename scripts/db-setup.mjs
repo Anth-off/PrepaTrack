@@ -40,8 +40,14 @@ function fail(message, hint) {
   process.exit(1)
 }
 
-const env = { ...readEnvLocal(), ...process.env }
-const url = env.SUPABASE_DB_URL
+// Ne copie pas tout l'environnement du processus dans un objet applicatif :
+// il peut contenir d'autres secrets sans rapport avec cette commande.
+const localEnv = readEnvLocal()
+const url = process.env.SUPABASE_DB_URL ?? localEnv.SUPABASE_DB_URL
+const caCertPath = process.env.SUPABASE_CA_CERT ?? localEnv.SUPABASE_CA_CERT
+const insecureDatabase = process.env.SUPABASE_DB_INSECURE ?? localEnv.SUPABASE_DB_INSECURE
+const managerBadge = process.env.MANAGER_BADGE ?? localEnv.MANAGER_BADGE
+const managerName = process.env.MANAGER_NAME ?? localEnv.MANAGER_NAME
 
 if (!url) {
   fail(
@@ -75,7 +81,7 @@ const schemas = SCHEMA_FILES.map((name) => {
  */
 function loadCa() {
   const candidates = [
-    env.SUPABASE_CA_CERT,
+    caCertPath,
     join(root, 'supabase', 'prod-ca-2021.crt'),
     join(root, 'prod-ca-2021.crt'),
   ].filter(Boolean)
@@ -85,7 +91,7 @@ function loadCa() {
     const pem = readFileSync(path, 'utf8')
     if (pem.includes('BEGIN CERTIFICATE')) return { path, pem }
     fail(
-      `Le fichier ${path} n'est pas un certificat.`,
+      "Le fichier de certificat configuré n'est pas un certificat valide.",
       "Il a sans doute été enregistré depuis une page web. Retélécharge-le depuis\nle tableau de bord Supabase : Project Settings → Database → SSL Configuration.",
     )
   }
@@ -93,7 +99,7 @@ function loadCa() {
 }
 
 const ca = loadCa()
-const insecure = env.SUPABASE_DB_INSECURE === '1'
+const insecure = insecureDatabase === '1'
 
 if (!ca && !insecure) {
   fail(
@@ -146,7 +152,7 @@ try {
     fail(
       'Certificat TLS refusé.',
       ca
-        ? `Le certificat fourni (${ca.path}) ne valide pas ce serveur. Retélécharge-le
+        ? `Le certificat fourni ne valide pas ce serveur. Retélécharge-le
 depuis Project Settings → Database → SSL Configuration de CE projet.`
         : `Il manque le certificat racine de Supabase.
 Télécharge-le dans Project Settings → Database → SSL Configuration et place
@@ -259,8 +265,8 @@ try {
 
   // Premier gestionnaire : sans lui, aucun badge ne pourrait être déclaré et
   // personne ne pourrait se connecter.
-  const badge = (env.MANAGER_BADGE ?? '').trim()
-  const name = (env.MANAGER_NAME ?? '').trim()
+  const badge = (managerBadge ?? '').trim()
+  const name = (managerName ?? '').trim()
 
   if (badge) {
     if (!/^\d{4,12}$/.test(badge)) {

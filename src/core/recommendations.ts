@@ -307,7 +307,7 @@ const versusTarget: Rule = (days, targetRate) => {
       delta >= 0
         ? `Objectif tenu : ${Math.round(actual)} colis/h sur la période`
         : `${Math.round(-delta)} colis/h sous l'objectif`,
-    detail: `${colis} colis pour ${formatShort(worked)} travaillés, hors pauses, sur ${days.length} vacation(s).`,
+    detail: `${colis} colis pour ${formatShort(worked)} comptés, pause de 30 min exclue, sur ${days.length} vacation(s).`,
     action:
       delta >= 0
         ? 'Rien à corriger sur ce plan.'

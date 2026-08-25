@@ -27,13 +27,19 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSCameraUsageDescription</key>
-	<string>PrepaTrack utilise la caméra avant uniquement lorsque vous démarrez volontairement l’enregistrement de votre journée.</string>
+	<string>PrepaTrack utilise simultanément les caméras avant et arrière uniquement lorsque vous démarrez volontairement l’enregistrement de votre journée.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>PrepaTrack utilise le microphone uniquement lorsque vous démarrez volontairement l’enregistrement de votre journée.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>PrepaTrack utilise les capteurs de mouvement uniquement pour détecter localement les déplacements du chariot lorsque cette option est activée.</string>
+	<key>NSAlwaysAllowMicrophoneModeControl</key>
+	<true/>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>PrepaTrack ajoute dans Photos les vidéos que vous enregistrez volontairement.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>PrepaTrack vérifie uniquement ses propres vidéos après une interruption afin de récupérer un couple avant/arrière sans doublon.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

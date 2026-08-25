@@ -196,7 +196,8 @@ function IncidentList() {
         Types d'aléas
       </h3>
       <p className="mb-3 mt-1 text-sm text-slate-500">
-        Ces aléas sont identiques sur l'iPhone et le PC, y compris hors ligne.
+        Matériel, circulation, supports, stock et sécurité : les mêmes motifs restent
+        disponibles sur l'iPhone et le PC, même hors ligne.
       </p>
 
       <ul className="flex flex-col gap-2">

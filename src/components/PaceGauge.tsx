@@ -1,5 +1,6 @@
 import type { LiveStatus } from '../core/metrics'
 import type { ContextualTarget } from '../core/contextualTarget'
+import type { DailyProductionStatus } from '../core/productionPlan'
 import { hhmm } from '../core/time'
 import { TargetReference } from './TargetReference'
 
@@ -7,13 +8,14 @@ interface Props {
   live: LiveStatus
   reference: ContextualTarget
   compact?: boolean
+  daily?: DailyProductionStatus
 }
 
 /**
  * Avance/retard en direct, exprimé en colis plutôt qu'en minutes : c'est
  * l'unité dans laquelle la cadence est jugée à l'entrepôt.
  */
-export function PaceGauge({ live, reference, compact = false }: Props) {
+export function PaceGauge({ live, reference, compact = false, daily }: Props) {
   const delta = Math.round(live.delta)
   const ahead = delta >= 0
   const tone = live.provisional
@@ -76,6 +78,38 @@ export function PaceGauge({ live, reference, compact = false }: Props) {
               : '—'}
         </span>
       </div>
+
+      {daily && (
+        <div className="mt-1.5 border-t border-ink-600 pt-1.5 text-xs text-slate-400">
+          <div className="flex items-center justify-between gap-2">
+            <span className="tabular font-semibold text-slate-300">
+              Journée {daily.actual}/{daily.target}
+            </span>
+            <span
+              className={`tabular font-semibold ${
+                daily.delta >= 0 ? 'text-ok' : daily.delta > -15 ? 'text-warn' : 'text-bad'
+              }`}
+            >
+              attendu {Math.round(daily.expected)} · {daily.delta >= 0 ? '+' : ''}
+              {Math.round(daily.delta)}
+            </span>
+          </div>
+          <div className="mt-0.5 flex items-center justify-between gap-2 text-slate-500">
+            <span>
+              {daily.nextCheckpoint
+                ? `${daily.nextCheckpoint.target} à ${hhmm(daily.nextCheckpoint.at)}`
+                : 'Commandes terminées'}
+            </span>
+            <span className="tabular">
+              {daily.requiredRate === undefined
+                ? 'objectif hors délai'
+                : daily.actual >= daily.target
+                  ? 'objectif atteint'
+                  : `besoin ${Math.round(daily.requiredRate)}/h`}
+            </span>
+          </div>
+        </div>
+      )}
 
       {!compact && <TargetReference reference={reference} className="mt-3" />}
     </div>

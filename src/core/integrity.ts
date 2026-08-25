@@ -227,9 +227,20 @@ function duplicateIssues(orders: Order[], segments: Segment[], events: ColisEven
     Math.abs(left.startedAt - right.startedAt) <= 1_000 && closeEnough(left.endedAt, right.endedAt))) {
     issues.push(duplicateIssue('segment', a, b, 'Deux chronos presque identiques ont probablement été importés deux fois.'))
   }
-  for (const [a, b] of pairs(events, (left, right) =>
-    left.id !== right.id && left.orderId === right.orderId && left.delta === right.delta &&
-    Math.abs(left.at - right.at) <= 250)) {
+  // Deux appuis rapides sont parfaitement légitimes avec les boutons +1/+10.
+  // Une copie issue d'une restauration conserve en revanche le même horodatage.
+  // Le regroupement exact évite aussi un parcours quadratique sur les centaines
+  // d'événements qu'une vacation peut contenir.
+  const eventGroups = new Map<string, ColisEvent[]>()
+  for (const event of events) {
+    const key = `${event.orderId}|${event.palletId ?? ''}|${event.delta}|${event.at}`
+    const group = eventGroups.get(key) ?? []
+    group.push(event)
+    eventGroups.set(key, group)
+  }
+  for (const group of eventGroups.values()) {
+    if (group.length < 2) continue
+    const [a, b] = group
     issues.push(duplicateIssue('order', a, b, 'Deux appuis identiques ont été enregistrés au même instant.'))
   }
   return issues

@@ -27,20 +27,62 @@ const supported = () => Capacitor.isNativePlatform() && Capacitor.getPlatform() 
 export async function recoverDurableBackup(): Promise<void> {
   if (!supported()) return
   try {
-    const session = await plugin.loadSession()
-    if (session.data) window.localStorage.setItem('prepatrack-auth', session.data)
+    await restoreDurableAuthSession()
     const { data } = await plugin.load()
     if (!data) return
     const parsed = JSON.parse(data) as { nativeState?: NativeState }
     if (Array.isArray(parsed.nativeState?.meta)) {
-      const { db } = await import('../db/db')
-      await db.meta.bulkPut(parsed.nativeState.meta)
+      const { restoreMissingMeta } = await import('../db/db')
+      await restoreMissingMeta(parsed.nativeState.meta)
     }
     const { restoreBackup } = await import('../db/backup')
     await restoreBackup(data)
   } catch {
     // IndexedDB reste la source principale. Une copie native illisible ne doit
     // jamais empêcher l'application de démarrer.
+  }
+}
+
+/** Choisit la session Supabase la plus récente sans rétrograder le jeton local. */
+export function newestAuthSession(
+  local: string | null | undefined,
+  durable: string | null | undefined,
+): string | undefined {
+  if (!local) return durable ?? undefined
+  if (!durable) return local
+  const localExpiry = authExpiry(local)
+  const durableExpiry = authExpiry(durable)
+  // À égalité ou si le format est inconnu, la copie actuellement utilisée par
+  // Supabase reste prioritaire. Le Keychain est un filet, pas la source active.
+  return durableExpiry > localExpiry ? durable : local
+}
+
+export interface AuthSessionTokens {
+  access_token: string
+  refresh_token: string
+}
+
+/** Extrait uniquement les jetons nécessaires à `setSession`, sans faire confiance au JSON. */
+export function authSessionTokens(value: string | null | undefined): AuthSessionTokens | undefined {
+  if (!value) return undefined
+  try {
+    const parsed = JSON.parse(value) as Partial<AuthSessionTokens>
+    if (typeof parsed.access_token !== 'string' || !parsed.access_token) return undefined
+    if (typeof parsed.refresh_token !== 'string' || !parsed.refresh_token) return undefined
+    return { access_token: parsed.access_token, refresh_token: parsed.refresh_token }
+  } catch {
+    return undefined
+  }
+}
+
+function authExpiry(value: string): number {
+  try {
+    const parsed = JSON.parse(value) as { expires_at?: unknown }
+    return typeof parsed.expires_at === 'number' && Number.isFinite(parsed.expires_at)
+      ? parsed.expires_at
+      : Number.NEGATIVE_INFINITY
+  } catch {
+    return Number.NEGATIVE_INFINITY
   }
 }
 
@@ -65,10 +107,31 @@ export async function clearDurableAuthSession(): Promise<void> {
   try { await plugin.clearSession() } catch { /* La déconnexion Supabase reste prioritaire. */ }
 }
 
+/** Relit la session protégée sans la supprimer lorsqu'iOS ou le réseau sont indisponibles. */
+export async function loadDurableAuthSession(): Promise<string | undefined> {
+  if (!supported()) return window.localStorage.getItem('prepatrack-auth') ?? undefined
+  try {
+    return (await plugin.loadSession()).data ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Réinjecte dans la WebView la meilleure session disponible avant de créer Supabase. */
+export async function restoreDurableAuthSession(): Promise<string | undefined> {
+  const localSession = window.localStorage.getItem('prepatrack-auth')
+  const durableSession = await loadDurableAuthSession()
+  const selectedSession = newestAuthSession(localSession, durableSession)
+  if (selectedSession && selectedSession !== localSession) {
+    window.localStorage.setItem('prepatrack-auth', selectedSession)
+  }
+  return selectedSession
+}
+
 /** Recopie immédiatement la session courante après connexion ou renouvellement. */
-export async function persistDurableAuthSession(): Promise<void> {
+export async function persistDurableAuthSession(value?: string): Promise<void> {
   if (!supported()) return
-  const authSession = window.localStorage.getItem('prepatrack-auth')
+  const authSession = value ?? window.localStorage.getItem('prepatrack-auth')
   if (!authSession) return
   try { await plugin.saveSession({ data: authSession }) } catch { /* Le miroir périodique réessaiera. */ }
 }

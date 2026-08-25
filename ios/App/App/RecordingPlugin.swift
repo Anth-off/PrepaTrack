@@ -4,7 +4,7 @@ import Capacitor
 import Photos
 
 @objc(RecordingPlugin)
-public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOutputRecordingDelegate {
+public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "RecordingPlugin"
     public let jsName = "NativeRecording"
     public let pluginMethods: [CAPPluginMethod] = [
@@ -12,22 +12,117 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
         CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "status", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "test", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "recover", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "showMicrophoneModes", returnType: CAPPluginReturnPromise),
     ]
 
-    private let captureSession = AVCaptureSession()
-    private let movieOutput = AVCaptureMovieFileOutput()
+    private let videoPipeline = DualCameraVideoPipeline()
+    private let audioEngine = AVAudioEngine()
+    private let audioStateLock = NSLock()
     private let sessionQueue = DispatchQueue(label: "com.n0thytvoff.prepatrack.recording")
-    private var configured = false
     private var startedAt: Date?
-    private var currentURL: URL?
+    private var activeSegment: NativeRecordingSegment?
+    private var segmentDurationSeconds: TimeInterval = 1_800
+    private var segmentTimer: DispatchWorkItem?
+    private var rotationInProgress = false
+    private var audioFile: AVAudioFile?
+    private var audioCaptureFormat: AVAudioFormat?
+    private var audioTapInstalled = false
+    private var acceptsAudioBuffers = false
+    private var audioWriteError: String?
+    // Un démarrage n'est confirmé qu'après plusieurs buffers réellement
+    // écrits. Cela empêche l'interface d'annoncer une capture alors que le
+    // moteur audio tourne sans produire de fichier exploitable.
+    private let minimumConfirmedAudioBuffers = 10
+    private var audioReadySignal = DispatchSemaphore(value: 0)
+    private var audioCaptureConfirmed = false
+    private var audioBuffersWritten = 0
+    private var audioFramesWritten: AVAudioFramePosition = 0
+    private var audioCaptureStartedAt: Date?
+    private var lastAudioBufferWrittenAt: Date?
+    private var audioCaptureURL: URL?
+    private var audioCaptureSegmentID: UUID?
+    private var audioFirstHostSeconds: TimeInterval?
+    private let timingStore = SegmentTimingJournalStore()
+    private var audioHealthTimer: DispatchSourceTimer?
+    private let audioStallTimeoutSeconds: TimeInterval = 8
+    private var microphoneModePreviewStop: DispatchWorkItem?
     private var stopCalls: [CAPPluginCall] = []
     // L'intention utilisateur reste active quand iOS coupe matériellement la
     // caméra au verrouillage. Elle permet une reprise dans un nouveau fichier.
     private var recordingRequested = false
-    private var suspendedForBackground = false
+    private var suspendedForInterruption = false
+    private var audioInterruptionActive = false
     private var applicationIsActive = true
+    private var resumeRetryAttempt = 0
+    private var resumeRetryWorkItem: DispatchWorkItem?
+    private var finalizingSegmentIDs = Set<UUID>()
+    private var recoveryInProgress = false
+    private var recoveryRequested = false
+    private var queuedRecoveryAllowsAmbiguousRetry = false
+    private var queuedRecoveryAllowsRemux = false
+    private var queuedRecoveryCompletion: ((RecordingRecoverySummary) -> Void)?
+    private var backgroundFinalizationTask = UIBackgroundTaskIdentifier.invalid
+    private var terminalStopPending = false
+    private var terminalHadSegments = false
+    private var terminalAllSaved = true
+    private var terminalRetained = false
+    private var terminalError: String?
+    private var terminalStartedAt: Date?
+    // Les exports lisent et écrivent beaucoup de données. Une file série évite
+    // de concurrencer les deux encodeurs MultiCam de la tranche suivante.
+    private var pendingDualPreparationJobs: [() -> Void] = []
+    private var dualPreparationInProgress = false
+    // Deux vidéos 720p/30, leurs exports audio+vidéo et la copie PhotoKit
+    // peuvent coexister brièvement. Cette réserve évite une corruption ENOSPC.
+    private let minimumFreeBytesForNewSegment: Int64 = 8_000_000_000
 
     public override func load() {
+        videoPipeline.onDurationLimitReached = { [weak self] segmentID in
+            self?.sessionQueue.async { self?.rotateActiveSegment(expectedID: segmentID) }
+        }
+        videoPipeline.onFirstVideoHostAnchors = { [weak self] segmentID, front, rear in
+            self?.timingStore.recordVideoStarts(
+                segmentID: segmentID,
+                front: front,
+                rear: rear
+            )
+        }
+        videoPipeline.onRenderingFailed = { [weak self] error in
+            self?.sessionQueue.async {
+                guard let self,
+                      self.recordingRequested,
+                      !self.suspendedForInterruption,
+                      self.activeSegment != nil else { return }
+                // Une panne durable du rendu ne doit jamais laisser tourner
+                // l'audio en donnant l'impression que les deux vidéos sont
+                // encore capturées. Fermer le segment, conserver ses sources,
+                // puis repartir dans un nouveau fichier avec un backoff.
+                self.suspendedForInterruption = true
+                self.finishActiveSegment(
+                    terminal: false,
+                    interrupted: true,
+                    forcedError: error.localizedDescription
+                )
+                self.scheduleResumeRetry()
+            }
+        }
+        videoPipeline.onSessionInterrupted = { [weak self] in
+            self?.sessionQueue.async {
+                guard let self, self.recordingRequested else { return }
+                self.suspendedForInterruption = true
+                self.finishActiveSegment(terminal: false, interrupted: true)
+            }
+        }
+        videoPipeline.onSessionInterruptionEnded = { [weak self] in
+            self?.sessionQueue.async { self?.resumeRecordingIfNeeded() }
+        }
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationWillResignActive),
+            name: UIApplication.willResignActiveNotification,
+            object: nil
+        )
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(applicationDidEnterBackground),
@@ -40,7 +135,18 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
             name: UIApplication.didBecomeActiveNotification,
             object: nil
         )
-        recoverPendingRecordings()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(audioSessionInterrupted),
+            name: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+        // Différer la récupération sur la file native : les écouteurs JavaScript
+        // ont ainsi le temps de s'installer et les résultats ne sont plus perdus
+        // pendant le chargement du pont Capacitor.
+        sessionQueue.asyncAfter(deadline: .now() + 1) {
+            self.recoverPendingRecordings()
+        }
     }
 
     private var recordingsDirectory: URL {
@@ -56,43 +162,163 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
         return directory
     }
 
+    private func pendingRecordingCount() -> Int {
+        makeRecoverySnapshot().pending
+    }
+
+    /**
+     * Le journal empêche une seconde insertion dans Photos après un crash.
+     * Il ne doit donc disparaître qu'une fois toutes les sources réellement
+     * supprimées du conteneur privé de l'application.
+     */
+    @discardableResult
+    private func removeImportedMedia(
+        _ mediaURLs: [URL],
+        journals journalURLs: [URL] = []
+    ) -> Bool {
+        let manager = FileManager.default
+        let media = Set(mediaURLs)
+        for url in media where manager.fileExists(atPath: url.path) {
+            try? manager.removeItem(at: url)
+        }
+        let mediaRemoved = !media.contains(where: { manager.fileExists(atPath: $0.path) })
+        if mediaRemoved {
+            for journal in Set(journalURLs) where manager.fileExists(atPath: journal.path) {
+                try? manager.removeItem(at: journal)
+            }
+        }
+        return mediaRemoved
+    }
+
+    private func isRecordingJournalURL(_ url: URL) -> Bool {
+        let name = url.lastPathComponent
+        return name.hasSuffix(".photo-import.json") || name.hasSuffix(".timing.json")
+    }
+
+    private func beginBackgroundFinalizationTaskIfNeeded() {
+        guard backgroundFinalizationTask == .invalid else { return }
+        var identifier = UIBackgroundTaskIdentifier.invalid
+        DispatchQueue.main.sync {
+            identifier = UIApplication.shared.beginBackgroundTask(
+                withName: "PrepaTrack vidéo"
+            ) { [weak self] in
+                self?.sessionQueue.async {
+                    self?.endBackgroundFinalizationTask(force: true)
+                }
+            }
+        }
+        backgroundFinalizationTask = identifier
+    }
+
+    private func endBackgroundFinalizationTask(force: Bool = false) {
+        guard backgroundFinalizationTask != .invalid else { return }
+        guard force || (finalizingSegmentIDs.isEmpty && !recoveryInProgress) else { return }
+        let identifier = backgroundFinalizationTask
+        backgroundFinalizationTask = .invalid
+        DispatchQueue.main.async {
+            UIApplication.shared.endBackgroundTask(identifier)
+        }
+    }
+
+    @objc private func applicationWillResignActive() {
+        sessionQueue.async {
+            if self.recordingRequested
+                || !self.finalizingSegmentIDs.isEmpty
+                || self.recoveryInProgress {
+                self.beginBackgroundFinalizationTaskIfNeeded()
+            }
+        }
+    }
+
     @objc private func applicationDidEnterBackground() {
         sessionQueue.async {
             self.applicationIsActive = false
+            self.cancelResumeRetry()
             guard self.recordingRequested else { return }
-            self.suspendedForBackground = true
-            if self.movieOutput.isRecording { self.movieOutput.stopRecording() }
+            self.suspendedForInterruption = true
+            self.finishActiveSegment(terminal: false, interrupted: true)
+            if self.activeSegment == nil && self.finalizingSegmentIDs.isEmpty {
+                self.endBackgroundFinalizationTask(force: true)
+            }
         }
     }
 
     @objc private func applicationDidBecomeActive() {
         sessionQueue.async {
             self.applicationIsActive = true
+            self.endBackgroundFinalizationTask(force: true)
+            // Certaines suspensions iOS ne livrent pas le callback `.ended`.
+            // Une nouvelle activation confirme que l'app peut retenter la route.
+            self.audioInterruptionActive = false
+            self.cancelResumeRetry()
             self.resumeRecordingIfNeeded()
+            if !self.recordingRequested,
+               self.activeSegment == nil,
+               self.finalizingSegmentIDs.isEmpty {
+                self.recoverPendingRecordings()
+            }
         }
+    }
+
+    @objc private func audioSessionInterrupted(_ notification: Notification) {
+        guard let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
+        sessionQueue.async {
+            self.audioInterruptionActive = type == .began
+            if type == .began {
+                self.cancelResumeRetry()
+                self.interruptActiveRecordingIfNeeded()
+            } else {
+                self.resumeRecordingIfNeeded()
+            }
+        }
+    }
+
+    /** Coupe le fichier complet plutôt que de laisser une vidéo continuer sans piste audio. */
+    private func interruptActiveRecordingIfNeeded() {
+        guard recordingRequested,
+              !suspendedForInterruption,
+              activeSegment != nil else { return }
+        suspendedForInterruption = true
+        finishActiveSegment(terminal: false, interrupted: true)
     }
 
     @objc func start(_ call: CAPPluginCall) {
         requestPermissions { [weak self] granted in
             guard let self else { return }
             guard granted else {
-                call.reject("Autorise la caméra, le microphone et l’ajout à Photos dans Réglages iOS.")
+                call.reject("Autorise la caméra et le microphone dans Réglages iOS.")
                 return
             }
             self.sessionQueue.async {
                 do {
-                    self.recordingRequested = true
-                    self.suspendedForBackground = false
-                    guard !self.movieOutput.isRecording else {
+                    guard !self.recoveryInProgress else {
+                        throw RecordingError.recoveryInProgress
+                    }
+                    if self.recordingRequested, self.activeSegment != nil {
+                        self.recordingRequested = true
+                        self.suspendedForInterruption = false
                         DispatchQueue.main.async {
-                            call.resolve(["startedAt": (self.startedAt ?? Date()).timeIntervalSince1970 * 1_000])
+                            call.resolve([
+                                "startedAt": (self.startedAt ?? Date()).timeIntervalSince1970 * 1_000,
+                                "captureProfile": self.captureProfilePayload(),
+                            ])
                         }
                         return
                     }
+                    let requestedDuration = call.getInt("maxDurationSeconds") ?? 1_800
+                    self.segmentDurationSeconds = TimeInterval(min(max(requestedDuration, 1), 1_800))
+                    self.cancelResumeRetry()
+                    self.resumeRetryAttempt = 0
+                    self.recordingRequested = true
+                    self.suspendedForInterruption = false
                     let startedAt = try self.startCapture()
                     DispatchQueue.main.async {
                         UIApplication.shared.isIdleTimerDisabled = true
-                        call.resolve(["startedAt": startedAt.timeIntervalSince1970 * 1_000])
+                        call.resolve([
+                            "startedAt": startedAt.timeIntervalSince1970 * 1_000,
+                            "captureProfile": self.captureProfilePayload(),
+                        ])
                     }
                 } catch {
                     self.recordingRequested = false
@@ -105,112 +331,745 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
     @objc func stop(_ call: CAPPluginCall) {
         sessionQueue.async {
             self.recordingRequested = false
-            self.suspendedForBackground = false
-            guard self.movieOutput.isRecording else {
-                if self.currentURL != nil {
-                    // Le fichier est déjà arrêté mais Photos termine encore son
-                    // import : la clôture doit attendre le même accusé final.
-                    self.stopCalls.append(call)
-                    return
-                }
+            self.suspendedForInterruption = false
+            self.cancelSegmentTimer()
+            self.cancelResumeRetry()
+            guard self.activeSegment != nil || !self.finalizingSegmentIDs.isEmpty else {
                 DispatchQueue.main.async { call.resolve(["saved": false]) }
                 return
             }
             self.stopCalls.append(call)
-            self.movieOutput.stopRecording()
+            self.beginTerminalStop(startedAt: self.activeSegment?.startedAt)
+            if self.activeSegment != nil {
+                self.finishActiveSegment(terminal: true, interrupted: false)
+            } else {
+                self.completeTerminalStopIfReady()
+            }
         }
     }
 
     @objc func status(_ call: CAPPluginCall) {
-        var result: [String: Any] = ["recording": movieOutput.isRecording]
-        if let startedAt { result["startedAt"] = startedAt.timeIntervalSince1970 * 1_000 }
-        call.resolve(result)
-    }
-
-    @objc func test(_ call: CAPPluginCall) {
-        requestPermissions { granted in
-            granted ? call.resolve() : call.reject("Permissions caméra, microphone ou Photos refusées.")
-        }
-    }
-
-    public func fileOutput(
-        _ output: AVCaptureFileOutput,
-        didFinishRecordingTo outputFileURL: URL,
-        from connections: [AVCaptureConnection],
-        error: Error?
-    ) {
-        let successfullyFinished = (error as NSError?)?
-            .userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool ?? (error == nil)
-        guard FileManager.default.fileExists(atPath: outputFileURL.path) else {
-            finish(saved: false, error: error?.localizedDescription ?? "Enregistrement interrompu", sourceURL: nil)
-            return
-        }
-        // Même si AVFoundation signale une interruption, le conteneur fragmenté
-        // peut rester lisible. On tente donc l'import et on ne supprime jamais
-        // le fichier durable tant que Photos ne l'a pas confirmé.
-        saveToPhotos(outputFileURL) { [weak self] saved, photoError in
-            let reason = photoError ?? (!successfullyFinished ? error?.localizedDescription : nil)
-            self?.finish(saved: saved, error: reason, sourceURL: outputFileURL)
-        }
-    }
-
-    private func finish(saved: Bool, error: String?, sourceURL: URL?) {
         sessionQueue.async {
-            self.captureSession.stopRunning()
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            if saved, let url = sourceURL { try? FileManager.default.removeItem(at: url) }
-            self.currentURL = nil
-            self.startedAt = nil
-            let calls = self.stopCalls
-            self.stopCalls.removeAll()
-            let interruptedForBackground = self.recordingRequested && self.suspendedForBackground
-            DispatchQueue.main.async {
-                UIApplication.shared.isIdleTimerDisabled = false
-                var payload: [String: Any] = ["saved": saved]
-                if let error { payload["error"] = error }
-                if interruptedForBackground {
-                    payload["interrupted"] = true
-                    payload["willResume"] = true
-                }
-                calls.forEach { saved ? $0.resolve(payload) : $0.reject(error ?? "La vidéo n’a pas pu être ajoutée à Photos.") }
-                self.notifyListeners("recordingFinished", data: payload)
+            var result: [String: Any] = [
+                "recording": self.recordingRequested,
+                "capturing": self.activeSegment != nil,
+                "suspended": self.suspendedForInterruption,
+            ]
+            if let startedAt = self.startedAt {
+                result["startedAt"] = startedAt.timeIntervalSince1970 * 1_000
             }
-            // Le déverrouillage peut arriver pendant l'import dans Photos.
-            // Retenter ici évite de perdre cette course entre les callbacks.
-            self.resumeRecordingIfNeeded()
+            if !self.videoPipeline.profilePayload().isEmpty {
+                result["captureProfile"] = self.captureProfilePayload()
+            }
+            DispatchQueue.main.async { call.resolve(result) }
         }
-    }
-
-    /** Démarre un nouveau fichier avec la configuration déjà validée. */
-    private func startCapture() throws -> Date {
-        try configureIfNeeded()
-        let audioChannels = try configureAudioSession()
-        configureAudioOutput(channels: audioChannels)
-        if !captureSession.isRunning { captureSession.startRunning() }
-        let url = recordingsDirectory
-            .appendingPathComponent("prepatrack-\(UUID().uuidString).mov")
-        let start = Date()
-        currentURL = url
-        startedAt = start
-        movieOutput.maxRecordedDuration = CMTime(seconds: 3_600, preferredTimescale: 600)
-        movieOutput.movieFragmentInterval = CMTime(seconds: 5, preferredTimescale: 600)
-        movieOutput.startRecording(to: url, recordingDelegate: self)
-        return start
     }
 
     /**
-     * Reprend uniquement une capture interrompue par le verrouillage. L'arrêt
-     * manuel remet `recordingRequested` à false et reste toujours prioritaire.
+     * Relance explicitement l'import des sources durables. L'accès en lecture
+     * à Photos sert uniquement à confirmer un couple dont l'import précédent
+     * a été interrompu entre la transaction PhotoKit et son accusé de réception.
+     */
+    @objc func recover(_ call: CAPPluginCall) {
+        sessionQueue.async {
+            guard !self.recordingRequested,
+                  self.activeSegment == nil,
+                  self.finalizingSegmentIDs.isEmpty else {
+                DispatchQueue.main.async {
+                    call.reject("Arrête d’abord l’enregistrement avant de récupérer les vidéos locales.")
+                }
+                return
+            }
+            let pending = self.pendingRecordingCount()
+            guard pending > 0 else {
+                DispatchQueue.main.async {
+                    call.resolve([
+                        "pending": 0,
+                        "recovered": 0,
+                        "retained": 0,
+                        "started": false,
+                    ])
+                }
+                return
+            }
+
+            let launchRecovery: (PHAuthorizationStatus) -> Void = { status in
+                self.sessionQueue.async {
+                    self.recoverPendingRecordings(
+                        allowAmbiguousRetry: true,
+                        allowRemux: true
+                    ) { summary in
+                        var result: [String: Any] = [
+                            "pending": summary.pending,
+                            "recovered": summary.recovered,
+                            "retained": summary.retained,
+                            "fullPhotoAccess": status == .authorized,
+                        ]
+                        if let error = summary.error { result["error"] = error }
+                        call.resolve(result)
+                    }
+                }
+            }
+            let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+            if status == .notDetermined {
+                DispatchQueue.main.async {
+                    PHPhotoLibrary.requestAuthorization(for: .readWrite, handler: launchRecovery)
+                }
+            } else {
+                launchRecovery(status)
+            }
+        }
+    }
+
+    /**
+     * Ouvre le panneau iOS officiel. Apple réserve le choix du mode micro à
+     * l'utilisateur : l'application peut rendre les modes compatibles et
+     * présenter ce panneau, mais ne peut pas imposer « Large spectre ».
+     */
+    @objc func showMicrophoneModes(_ call: CAPPluginCall) {
+        sessionQueue.async {
+            do {
+                // Le panneau ne rend pas un mode compatible à lui seul. Lorsque
+                // aucune capture n'est active, garder Voice Processing I/O actif
+                // quelques secondes permet à iOS de proposer réellement les
+                // trois modes sur le micro intégré.
+                if !self.audioEngine.isRunning {
+                    try self.startMicrophoneModePreview()
+                }
+            } catch {
+                DispatchQueue.main.async { call.reject(error.localizedDescription) }
+                return
+            }
+            DispatchQueue.main.async {
+                AVCaptureDevice.showSystemUserInterface(.microphoneModes)
+                call.resolve()
+            }
+        }
+    }
+
+    @objc func test(_ call: CAPPluginCall) {
+        requestPermissions { [weak self] granted in
+            guard let self else { return }
+            guard granted else {
+                call.reject("Permissions caméra ou microphone refusées.")
+                return
+            }
+            self.sessionQueue.async {
+                do {
+                    guard !self.recordingRequested, self.activeSegment == nil else {
+                        throw RecordingError.testUnavailableWhileRecording
+                    }
+                    try self.videoPipeline.configureIfNeeded()
+                    try self.videoPipeline.validateOverlayResources(at: Date())
+                    try self.videoPipeline.startSession()
+                    let testID = UUID()
+                    let testBase = "prepatrack-capture-test-\(testID.uuidString)"
+                    let temporaryDirectory = FileManager.default.temporaryDirectory
+                    let frontTestURL = temporaryDirectory
+                        .appendingPathComponent("\(testBase).front.video.mov")
+                    let rearTestURL = temporaryDirectory
+                        .appendingPathComponent("\(testBase).rear.video.mov")
+                    let audioTestURL = temporaryDirectory
+                        .appendingPathComponent("\(testBase).audio.caf")
+                    var testSegmentActive = false
+                    defer {
+                        self.stopAudioCapture()
+                        if testSegmentActive {
+                            let stopped = DispatchSemaphore(value: 0)
+                            self.videoPipeline.stopSegment { _ in stopped.signal() }
+                            _ = stopped.wait(timeout: .now() + 10)
+                        }
+                        self.videoPipeline.stopSession()
+                        try? AVAudioSession.sharedInstance().setActive(
+                            false,
+                            options: .notifyOthersOnDeactivation
+                        )
+                        for url in [frontTestURL, rearTestURL, audioTestURL] {
+                            try? FileManager.default.removeItem(at: url)
+                        }
+                    }
+                    try self.startAudioCapture(to: audioTestURL)
+                    try self.videoPipeline.startSegment(
+                        frontURL: frontTestURL,
+                        rearURL: rearTestURL,
+                        id: testID,
+                        startedAt: Date(),
+                        maxDurationSeconds: 30
+                    )
+                    testSegmentActive = true
+                    guard self.videoPipeline.waitUntilSegmentHasFrames(id: testID, timeout: 20) else {
+                        throw self.videoCaptureTimeoutError()
+                    }
+                    try self.waitUntilAudioHasData(timeout: 5)
+                    self.stopAudioCapture()
+                    let stopped = DispatchSemaphore(value: 0)
+                    var stopResult: Result<DualCameraSegmentFiles, Error>?
+                    self.videoPipeline.stopSegment { result in
+                        stopResult = result
+                        stopped.signal()
+                    }
+                    guard stopped.wait(timeout: .now() + 10) == .success else {
+                        throw RecordingError.videoCaptureTimedOut("finalisation du test expirée")
+                    }
+                    testSegmentActive = false
+                    guard let stopResult else {
+                        throw RecordingError.videoCaptureTimedOut("résultat de finalisation absent")
+                    }
+                    switch stopResult {
+                    case .success(_):
+                        break
+                    case .failure(let error):
+                        throw error
+                    }
+                    let validationFinished = DispatchSemaphore(value: 0)
+                    var mediaAreReadable = false
+                    Task {
+                        let frontIsReadable = await self.hasReadableVideoRecording(frontTestURL)
+                        let rearIsReadable = await self.hasReadableVideoRecording(rearTestURL)
+                        let audioIsReadable = await self.hasReadableAudioRecording(audioTestURL)
+                        mediaAreReadable = frontIsReadable && rearIsReadable && audioIsReadable
+                        validationFinished.signal()
+                    }
+                    guard validationFinished.wait(timeout: .now() + 10) == .success,
+                          mediaAreReadable else {
+                        throw RecordingError.videoCaptureTimedOut("fichiers finalisés illisibles")
+                    }
+                    let frontSize = self.recordingFileSize(at: frontTestURL)
+                    let rearSize = self.recordingFileSize(at: rearTestURL)
+                    let audioSize = self.recordingFileSize(at: audioTestURL)
+                    guard audioSize > 10_000 else { throw RecordingError.audioCaptureTimedOut }
+                    var testedProfile = self.captureProfilePayload()
+                    testedProfile["captureConfirmed"] = true
+                    testedProfile["audioCaptureConfirmed"] = true
+                    testedProfile["framePairsWritten"] = 60
+                    testedProfile["frontFileBytes"] = frontSize
+                    testedProfile["rearFileBytes"] = rearSize
+                    testedProfile["audioFileBytes"] = audioSize
+                    DispatchQueue.main.async {
+                        call.resolve(["captureProfile": testedProfile])
+                    }
+                } catch {
+                    DispatchQueue.main.async { call.reject(error.localizedDescription) }
+                }
+            }
+        }
+    }
+
+    /** Démarre un nouveau segment sans dépendre des imports Photos précédents. */
+    private func videoCaptureTimeoutError() -> RecordingError {
+        let health = videoPipeline.activeSegmentHealthPayload()
+        let frontCallbacks = health["frontSampleCallbacks"] as? Int ?? 0
+        let rearCallbacks = health["rearSampleCallbacks"] as? Int ?? 0
+        let frontEnabled = health["frontConnectionEnabled"] as? Bool ?? false
+        let rearEnabled = health["rearConnectionEnabled"] as? Bool ?? false
+        let frontActive = health["frontConnectionActive"] as? Bool ?? false
+        let rearActive = health["rearConnectionActive"] as? Bool ?? false
+        let lastPTSDelta = health["lastSourcePTSDeltaMilliseconds"] as? Double ?? 0
+        let maximumPTSDelta = health["maximumSourcePTSDeltaMilliseconds"] as? Double ?? 0
+        let synchronized = health["synchronizedCollections"] as? Int ?? 0
+        let droppedFront = health["droppedFrontSamples"] as? Int ?? 0
+        let droppedRear = health["droppedRearSamples"] as? Int ?? 0
+        let rendered = health["renderedFramePairs"] as? Int ?? 0
+        let fallback = health["overlayFallbackFramePairs"] as? Int ?? 0
+        let written = health["framePairsWritten"] as? Int ?? 0
+        let backpressured = health["backpressuredFramePairs"] as? Int ?? 0
+        let frontBytes = health["frontFileBytes"] as? Int ?? 0
+        let rearBytes = health["rearFileBytes"] as? Int ?? 0
+        var details = "connexions actives \(frontActive)/\(rearActive), activées \(frontEnabled)/\(rearEnabled), callbacks \(frontCallbacks)/\(rearCallbacks), paires \(synchronized), écart PTS \(Int(lastPTSDelta))/\(Int(maximumPTSDelta)) ms, chutes \(droppedFront)/\(droppedRear), rendu \(rendered), secours \(fallback), écrit \(written), attente \(backpressured), fichiers \(frontBytes)/\(rearBytes) octets"
+        if let failure = health["writerFailure"] as? String { details += ", erreur : \(failure)" }
+        NSLog("[PrepaTrack Recording] Confirmation vidéo expirée : %@", details)
+        return .videoCaptureTimedOut(details)
+    }
+
+    private func startCapture() throws -> Date {
+        try ensureRecordingSpaceAvailable()
+        let segment = makeSegment(startedAt: Date())
+        do {
+            try timingStore.begin(segmentID: segment.id, url: segment.timingURL)
+            try videoPipeline.configureIfNeeded()
+            // Valider les textures AVANT/ARRIÈRE avant d'allumer les caméras
+            // ou le micro. Une ressource de bandeau invalide ne peut ainsi
+            // plus créer une fausse capture ni un segment partiel.
+            try videoPipeline.validateOverlayResources(at: segment.startedAt)
+            try videoPipeline.startSession()
+            try startAudioCapture(
+                to: segment.audioURL,
+                segmentID: segment.id
+            )
+            try videoPipeline.startSegment(
+                frontURL: segment.frontVideoURL,
+                rearURL: segment.rearVideoURL,
+                id: segment.id,
+                startedAt: segment.startedAt,
+                maxDurationSeconds: segmentDurationSeconds
+            )
+            guard videoPipeline.waitUntilSegmentHasFrames(id: segment.id, timeout: 20) else {
+                throw videoCaptureTimeoutError()
+            }
+            try waitUntilAudioHasData(timeout: 5)
+        } catch {
+            stopAudioCapture()
+            let segmentStopped = DispatchSemaphore(value: 0)
+            videoPipeline.stopSegment { _ in segmentStopped.signal() }
+            videoPipeline.stopSession()
+            let writerStopped = segmentStopped.wait(timeout: .now() + 10) == .success
+            if writerStopped { removeAudioOnlyFailedSegmentIfSafe(segment) }
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            // Une erreur de démarrage peut arriver après les premières
+            // écritures. Ne jamais supprimer ces sources : le récupérateur
+            // pourra les remuxer ou les sauver sans audio au prochain lancement.
+            throw error
+        }
+        activeSegment = segment
+        startedAt = segment.startedAt
+        armAudioHealthWatchdog()
+        scheduleSegmentTimer()
+        return segment.startedAt
+    }
+
+    /** Passe au fichier suivant avant de finaliser le précédent. */
+    private func rotateActiveSegment(expectedID: UUID? = nil) {
+        guard recordingRequested,
+              !rotationInProgress,
+              !suspendedForInterruption,
+              applicationIsActive,
+              !audioInterruptionActive,
+              let previous = activeSegment,
+              expectedID == nil || expectedID == previous.id else { return }
+        rotationInProgress = true
+        cancelSegmentTimer()
+        do {
+            try ensureRecordingSpaceAvailable()
+        } catch {
+            rotationInProgress = false
+            recordingRequested = false
+            suspendedForInterruption = false
+            beginTerminalStop(startedAt: previous.startedAt)
+            finishActiveSegment(
+                terminal: true,
+                interrupted: false,
+                forcedError: error.localizedDescription
+            )
+            return
+        }
+        var previousAudioError: String?
+        let next = makeSegment(startedAt: Date())
+        registerFinalization(previous)
+        do {
+            try timingStore.begin(segmentID: next.id, url: next.timingURL)
+            let nextAudioFile = try makeAudioFile(at: next.audioURL)
+            try videoPipeline.rotateSegment(
+                frontURL: next.frontVideoURL,
+                rearURL: next.rearVideoURL,
+                id: next.id,
+                startedAt: next.startedAt,
+                maxDurationSeconds: segmentDurationSeconds,
+                didSwitch: {
+                    previousAudioError = self.swapAudioFile(
+                        with: nextAudioFile,
+                        segmentID: next.id
+                    )
+                }
+            ) { [weak self] result in
+                self?.finalizeSegment(
+                    previous,
+                    videoResult: result,
+                    audioError: previousAudioError,
+                    terminal: false,
+                    interrupted: false
+                )
+            }
+            activeSegment = next
+            startedAt = next.startedAt
+            guard videoPipeline.waitUntilSegmentHasFrames(id: next.id, timeout: 20) else {
+                throw videoCaptureTimeoutError()
+            }
+            try waitUntilAudioHasData(timeout: 5)
+            rotationInProgress = false
+            scheduleSegmentTimer()
+            DispatchQueue.main.async {
+                self.notifyListeners("recordingResumed", data: [
+                    "startedAt": next.startedAt.timeIntervalSince1970 * 1_000,
+                    "rotated": true,
+                ])
+            }
+        } catch {
+            rotationInProgress = false
+            removeAudioOnlyFailedSegmentIfSafe(next)
+            // Une tranche suivante non confirmée ne doit jamais être annoncée.
+            // Fermer proprement le writer encore actif, garder l'intention de
+            // filmer et retenter dans un nouveau jeu de fichiers.
+            suspendedForInterruption = true
+            finishActiveSegment(
+                terminal: false,
+                interrupted: true,
+                forcedError: error.localizedDescription
+            )
+            scheduleResumeRetry()
+        }
+    }
+
+    private func finishActiveSegment(
+        terminal: Bool,
+        interrupted: Bool,
+        forcedError: String? = nil
+    ) {
+        guard let segment = activeSegment else { return }
+        registerFinalization(segment)
+        if terminal { beginTerminalStop(startedAt: segment.startedAt) }
+        cancelSegmentTimer()
+        let audioError = currentAudioWriteError() ?? forcedError
+        activeSegment = nil
+        startedAt = nil
+        rotationInProgress = false
+        stopAudioCapture()
+        videoPipeline.stopSegment { [weak self] result in
+            self?.finalizeSegment(
+                segment,
+                videoResult: result,
+                audioError: audioError,
+                terminal: terminal,
+                interrupted: interrupted
+            )
+        }
+        videoPipeline.stopSession()
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if terminal {
+            DispatchQueue.main.async { UIApplication.shared.isIdleTimerDisabled = false }
+        }
+    }
+
+    private func finalizeSegment(
+        _ segment: NativeRecordingSegment,
+        videoResult: Result<DualCameraSegmentFiles, Error>,
+        audioError: String?,
+        terminal: Bool,
+        interrupted: Bool
+    ) {
+        switch videoResult {
+        case .failure(let error):
+            removeAudioOnlyFailedSegmentIfSafe(segment)
+            completeSegmentFinalization(
+                segment,
+                saved: false,
+                error: audioError ?? error.localizedDescription,
+                terminal: terminal,
+                interrupted: interrupted,
+                cleanupURLs: []
+            )
+        case .success(let videos):
+            let timing = timingStore.snapshot(segmentID: segment.id)
+            prepareDualFinalRecordings(
+                videos: videos,
+                audioURL: segment.audioURL,
+                timing: timing,
+                // Toute nouvelle tranche est contractuellement horodatée : une
+                // disparition du sidecar ne doit jamais réactiver le mux legacy.
+                timingSidecarExists: true
+            ) { [weak self] front, rear in
+                guard let self else { return }
+                guard front.merged, rear.merged else {
+                    let details = [front.error, rear.error, audioError]
+                        .compactMap { $0 }
+                        .joined(separator: " ")
+                    self.completeSegmentFinalization(
+                        segment,
+                        saved: false,
+                        error: details.isEmpty
+                            ? "La finalisation d’au moins une caméra a échoué; toutes les sources ont été conservées."
+                            : details,
+                        terminal: terminal,
+                        interrupted: interrupted,
+                        cleanupURLs: []
+                    )
+                    return
+                }
+                self.savePairToPhotos(
+                    front: front.finalURL,
+                    rear: rear.finalURL,
+                    capturedAt: segment.startedAt
+                ) { saved, photoError in
+                    var cleanup = [
+                        videos.frontURL,
+                        videos.rearURL,
+                        segment.audioURL,
+                        segment.timingURL,
+                    ]
+                    if front.finalURL != videos.frontURL { cleanup.append(front.finalURL) }
+                    if rear.finalURL != videos.rearURL { cleanup.append(rear.finalURL) }
+                    if let journal = self.photoImportJournalURL(for: front.finalURL) {
+                        cleanup.append(journal)
+                    }
+                    self.completeSegmentFinalization(
+                        segment,
+                        saved: saved,
+                        error: photoError ?? front.error ?? rear.error ?? audioError,
+                        terminal: terminal,
+                        interrupted: interrupted,
+                        cleanupURLs: cleanup
+                    )
+                }
+            }
+        }
+    }
+
+    private func completeSegmentFinalization(
+        _ segment: NativeRecordingSegment,
+        saved: Bool,
+        error: String?,
+        terminal: Bool,
+        interrupted: Bool,
+        cleanupURLs: [URL]
+    ) {
+        if saved {
+            let unique = Set(cleanupURLs)
+            // Le journal est le verrou anti-doublon : il doit être supprimé
+            // seulement après toutes les sources et sorties finales.
+            let mediaURLs = unique.filter { !self.isRecordingJournalURL($0) }
+            let journalURLs = unique.filter { self.isRecordingJournalURL($0) }
+            removeImportedMedia(Array(mediaURLs), journals: Array(journalURLs))
+        }
+        sessionQueue.async {
+            self.finalizingSegmentIDs.remove(segment.id)
+            self.endBackgroundFinalizationTask()
+            if self.terminalStopPending {
+                self.terminalHadSegments = true
+                if !saved {
+                    self.terminalAllSaved = false
+                    self.terminalRetained = true
+                    if self.terminalError == nil { self.terminalError = error }
+                }
+                if terminal, self.terminalStartedAt == nil {
+                    self.terminalStartedAt = segment.startedAt
+                }
+            }
+
+            var payload: [String: Any] = [
+                "saved": saved,
+                "startedAt": segment.startedAt.timeIntervalSince1970 * 1_000,
+                "retained": !saved,
+                "continuing": self.recordingRequested,
+            ]
+            if let error { payload["error"] = error }
+            if interrupted {
+                payload["interrupted"] = true
+                payload["willResume"] = self.recordingRequested
+            }
+            if !terminal {
+                DispatchQueue.main.async {
+                    self.notifyListeners("recordingSegmentFinished", data: payload)
+                }
+            }
+            self.completeTerminalStopIfReady()
+            if self.recoveryRequested,
+               !self.recordingRequested,
+               self.activeSegment == nil,
+               self.finalizingSegmentIDs.isEmpty {
+                self.recoveryRequested = false
+                self.recoverPendingRecordings()
+            }
+        }
+    }
+
+    private func registerFinalization(_ segment: NativeRecordingSegment) {
+        finalizingSegmentIDs.insert(segment.id)
+    }
+
+    /**
+     * Un CAF sans la moindre image n'est pas une vidéo récupérable et ne doit
+     * pas remplir le téléphone après des échecs de caméra répétés. Dès qu'un
+     * seul MOV contient un octet, tout est conservé sans exception.
+     */
+    private func removeAudioOnlyFailedSegmentIfSafe(_ segment: NativeRecordingSegment) {
+        let frontBytes = recordingFileSize(at: segment.frontVideoURL)
+        let rearBytes = recordingFileSize(at: segment.rearVideoURL)
+        guard frontBytes == 0, rearBytes == 0 else { return }
+        for url in [
+            segment.frontVideoURL,
+            segment.rearVideoURL,
+            segment.audioURL,
+            segment.timingURL,
+        ] {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private func recordingFileSize(at url: URL) -> Int {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return 0 }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return 0 }
+        return Int(min(size, UInt64(Int.max)))
+    }
+
+    /**
+     * Sort une piste audio non fusionnable de la file de récupération active
+     * sans la détruire. Le journal timing est déplacé en dernier et sert de
+     * marqueur de commit : tant qu'un CAF n'est pas archivé, le segment reste
+     * récupérable et aucun chemin ne peut supprimer cette piste à la racine.
+     */
+    private func preserveUnmergedAudioSources(
+        _ audioSources: [URL],
+        timingURL: URL,
+        baseName: String
+    ) -> Bool {
+        let manager = FileManager.default
+        let existingAudio = audioSources.filter { manager.fileExists(atPath: $0.path) }
+        let timingExists = manager.fileExists(atPath: timingURL.path)
+        guard timingExists || !existingAudio.isEmpty else { return true }
+
+        let archiveRoot = recordingsDirectory
+            .appendingPathComponent("PreservedAudio", isDirectory: true)
+        let archiveDirectory = archiveRoot.appendingPathComponent(
+            "\(baseName)-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        do {
+            try manager.createDirectory(
+                at: archiveDirectory,
+                withIntermediateDirectories: true
+            )
+            try? manager.setAttributes(
+                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                ofItemAtPath: archiveRoot.path
+            )
+            try? manager.setAttributes(
+                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                ofItemAtPath: archiveDirectory.path
+            )
+
+            for source in existingAudio {
+                do {
+                    try manager.moveItem(
+                        at: source,
+                        to: archiveDirectory.appendingPathComponent(source.lastPathComponent)
+                    )
+                } catch {
+                    NSLog(
+                        "[PrepaTrack Recording] Archivage piste audio conservée : %@",
+                        error.localizedDescription
+                    )
+                    return false
+                }
+            }
+            if timingExists {
+                try manager.moveItem(
+                    at: timingURL,
+                    to: archiveDirectory.appendingPathComponent(timingURL.lastPathComponent)
+                )
+            }
+            return true
+        } catch {
+            NSLog(
+                "[PrepaTrack Recording] Archivage timing/audio impossible : %@",
+                error.localizedDescription
+            )
+            return false
+        }
+    }
+
+    private func beginTerminalStop(startedAt: Date?) {
+        guard !terminalStopPending else {
+            if terminalStartedAt == nil { terminalStartedAt = startedAt }
+            return
+        }
+        terminalStopPending = true
+        terminalHadSegments = activeSegment != nil || !finalizingSegmentIDs.isEmpty
+        terminalAllSaved = true
+        terminalRetained = false
+        terminalError = nil
+        terminalStartedAt = startedAt
+    }
+
+    private func completeTerminalStopIfReady() {
+        guard terminalStopPending, finalizingSegmentIDs.isEmpty else { return }
+        let saved = terminalHadSegments && terminalAllSaved
+        var payload: [String: Any] = [
+            "saved": saved,
+            "retained": terminalRetained,
+        ]
+        if let terminalStartedAt {
+            payload["startedAt"] = terminalStartedAt.timeIntervalSince1970 * 1_000
+        }
+        let finalError = terminalError
+        if let finalError { payload["error"] = finalError }
+        let calls = stopCalls
+        stopCalls.removeAll()
+        terminalStopPending = false
+        terminalHadSegments = false
+        terminalAllSaved = true
+        terminalRetained = false
+        self.terminalError = nil
+        self.terminalStartedAt = nil
+
+        DispatchQueue.main.async {
+            UIApplication.shared.isIdleTimerDisabled = false
+            calls.forEach {
+                if saved || finalError == nil {
+                    $0.resolve(payload)
+                } else {
+                    $0.reject(finalError ?? "La vidéo n’a pas pu être ajoutée à Photos.")
+                }
+            }
+            self.notifyListeners("recordingFinished", data: payload)
+        }
+    }
+
+    private func makeSegment(startedAt: Date) -> NativeRecordingSegment {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "fr_FR_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let baseName = "prepatrack-\(formatter.string(from: startedAt))-\(UUID().uuidString)"
+        return NativeRecordingSegment(
+            id: UUID(),
+            startedAt: startedAt,
+            frontVideoURL: recordingsDirectory.appendingPathComponent("\(baseName).front.video.mov"),
+            rearVideoURL: recordingsDirectory.appendingPathComponent("\(baseName).rear.video.mov"),
+            audioURL: recordingsDirectory.appendingPathComponent("\(baseName).audio.caf"),
+            timingURL: recordingsDirectory.appendingPathComponent("\(baseName).timing.json")
+        )
+    }
+
+    private func scheduleSegmentTimer() {
+        cancelSegmentTimer()
+        guard let segmentID = activeSegment?.id else { return }
+        let work = DispatchWorkItem { [weak self] in
+            self?.rotateActiveSegment(expectedID: segmentID)
+        }
+        segmentTimer = work
+        sessionQueue.asyncAfter(deadline: .now() + segmentDurationSeconds, execute: work)
+    }
+
+    private func cancelSegmentTimer() {
+        segmentTimer?.cancel()
+        segmentTimer = nil
+    }
+
+    private func ensureRecordingSpaceAvailable() throws {
+        let values = try recordingsDirectory.resourceValues(forKeys: [
+            .volumeAvailableCapacityForImportantUsageKey,
+        ])
+        if let available = values.volumeAvailableCapacityForImportantUsage,
+           available < minimumFreeBytesForNewSegment {
+            throw RecordingError.insufficientStorage
+        }
+    }
+
+    /**
+     * Reprend une capture interrompue sans attendre la sauvegarde Photos du
+     * segment précédent. L'arrêt manuel reste toujours prioritaire.
      */
     private func resumeRecordingIfNeeded() {
         guard recordingRequested,
-              suspendedForBackground,
-              currentURL == nil,
-              !movieOutput.isRecording,
-              applicationIsActive else { return }
+              suspendedForInterruption,
+              activeSegment == nil,
+              applicationIsActive,
+              !audioInterruptionActive else { return }
         do {
             let resumedAt = try startCapture()
-            suspendedForBackground = false
+            suspendedForInterruption = false
+            resumeRetryAttempt = 0
+            cancelResumeRetry()
             DispatchQueue.main.async {
                 UIApplication.shared.isIdleTimerDisabled = true
                 self.notifyListeners("recordingResumed", data: [
@@ -218,23 +1077,167 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
                 ])
             }
         } catch {
-            recordingRequested = false
-            suspendedForBackground = false
+            suspendedForInterruption = true
+            scheduleResumeRetry()
             DispatchQueue.main.async {
-                UIApplication.shared.isIdleTimerDisabled = false
                 self.notifyListeners("recordingResumeFailed", data: [
                     "error": error.localizedDescription,
+                    "retrying": true,
                 ])
             }
         }
     }
 
-    private func saveToPhotos(_ url: URL, completion: @escaping (Bool, String?) -> Void) {
+    private func scheduleResumeRetry() {
+        guard recordingRequested, applicationIsActive else { return }
+        cancelResumeRetry()
+        let delay = min(pow(2.0, Double(resumeRetryAttempt)), 30.0)
+        resumeRetryAttempt += 1
+        let work = DispatchWorkItem { [weak self] in self?.resumeRecordingIfNeeded() }
+        resumeRetryWorkItem = work
+        sessionQueue.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func cancelResumeRetry() {
+        resumeRetryWorkItem?.cancel()
+        resumeRetryWorkItem = nil
+    }
+
+    private func saveToPhotos(
+        _ url: URL,
+        capturedAt: Date? = nil,
+        completion: @escaping (Bool, String?) -> Void
+    ) {
         PHPhotoLibrary.shared().performChanges({
-            PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
+            // Contrairement à la factory optionnelle, cette requête existe
+            // toujours. Une transaction PhotoKit vide ne peut donc jamais être
+            // interprétée comme un succès puis provoquer la suppression de la
+            // seule source récupérable.
+            let request = PHAssetCreationRequest.forAsset()
+            request.creationDate = capturedAt
+            request.addResource(with: .video, fileURL: url, options: nil)
         }) { saved, error in
             completion(saved, error?.localizedDescription)
         }
+    }
+
+    /**
+     * Ajoute les deux angles dans une seule transaction PhotoKit. Ainsi, un
+     * segment ne peut pas être annoncé comme sauvegardé avec seulement l'une
+     * des deux caméras.
+     */
+    private func savePairToPhotos(
+        front: URL,
+        rear: URL,
+        capturedAt: Date,
+        completion: @escaping (Bool, String?) -> Void
+    ) {
+        guard let journalURL = photoImportJournalURL(for: front) else {
+            completion(false, "Impossible d'identifier durablement le couple de vidéos; les sources ont été conservées.")
+            return
+        }
+        do {
+            try writePhotoImportJournal(
+                PhotoImportJournal(
+                    state: "preparing",
+                    createdAt: Date(),
+                    frontLocalIdentifier: nil,
+                    rearLocalIdentifier: nil
+                ),
+                to: journalURL
+            )
+        } catch {
+            completion(false, "Le journal de sauvegarde Photos n'a pas pu être écrit; les sources ont été conservées.")
+            return
+        }
+
+        PHPhotoLibrary.shared().performChanges({
+            let frontRequest = PHAssetCreationRequest.forAsset()
+            frontRequest.creationDate = capturedAt
+            frontRequest.addResource(with: .video, fileURL: front, options: nil)
+            let rearRequest = PHAssetCreationRequest.forAsset()
+            rearRequest.creationDate = capturedAt.addingTimeInterval(0.001)
+            rearRequest.addResource(with: .video, fileURL: rear, options: nil)
+            let journal = PhotoImportJournal(
+                state: "importing",
+                createdAt: Date(),
+                frontLocalIdentifier: frontRequest.placeholderForCreatedAsset?.localIdentifier,
+                rearLocalIdentifier: rearRequest.placeholderForCreatedAsset?.localIdentifier
+            )
+            try? self.writePhotoImportJournal(journal, to: journalURL)
+        }) { saved, error in
+            if saved {
+                let importing = self.readPhotoImportJournal(from: journalURL)
+                try? self.writePhotoImportJournal(
+                    PhotoImportJournal(
+                        state: "committed",
+                        createdAt: Date(),
+                        frontLocalIdentifier: importing?.frontLocalIdentifier,
+                        rearLocalIdentifier: importing?.rearLocalIdentifier
+                    ),
+                    to: journalURL
+                )
+            } else {
+                try? FileManager.default.removeItem(at: journalURL)
+            }
+            completion(saved, error?.localizedDescription)
+        }
+    }
+
+    /** Prépare AVANT puis ARRIÈRE, et un seul segment à la fois. */
+    private func prepareDualFinalRecordings(
+        videos: DualCameraSegmentFiles,
+        audioURL: URL,
+        timing: SegmentTimingJournal?,
+        timingSidecarExists: Bool,
+        completion: @escaping (PreparedCameraRecording, PreparedCameraRecording) -> Void
+    ) {
+        sessionQueue.async {
+            self.pendingDualPreparationJobs.append { [weak self] in
+                guard let self else { return }
+                self.prepareFinalRecording(
+                    videoURL: videos.frontURL,
+                    audioURL: audioURL,
+                    timing: timing,
+                    timingSidecarExists: timingSidecarExists,
+                    angle: .front
+                ) { frontURL, frontMerged, frontError in
+                    let front = PreparedCameraRecording(
+                        finalURL: frontURL,
+                        merged: frontMerged,
+                        error: frontError
+                    )
+                    self.prepareFinalRecording(
+                        videoURL: videos.rearURL,
+                        audioURL: audioURL,
+                        timing: timing,
+                        timingSidecarExists: timingSidecarExists,
+                        angle: .rear
+                    ) { rearURL, rearMerged, rearError in
+                        let rear = PreparedCameraRecording(
+                            finalURL: rearURL,
+                            merged: rearMerged,
+                            error: rearError
+                        )
+                        self.sessionQueue.async {
+                            completion(front, rear)
+                            self.dualPreparationInProgress = false
+                            self.startNextDualPreparationIfNeeded()
+                        }
+                    }
+                }
+            }
+            self.startNextDualPreparationIfNeeded()
+        }
+    }
+
+    private func startNextDualPreparationIfNeeded() {
+        dispatchPrecondition(condition: .onQueue(sessionQueue))
+        guard !dualPreparationInProgress,
+              !pendingDualPreparationJobs.isEmpty else { return }
+        dualPreparationInProgress = true
+        let job = pendingDualPreparationJobs.removeFirst()
+        job()
     }
 
     /**
@@ -242,162 +1245,1659 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
      * ancienne version. Le dossier temporaire est aussi inspecté pour sauver
      * les fichiers laissés par les builds précédentes.
      */
-    private func recoverPendingRecordings() {
+    private func recoverPendingRecordings(
+        allowAmbiguousRetry: Bool = false,
+        allowRemux: Bool = false,
+        completion: ((RecordingRecoverySummary) -> Void)? = nil
+    ) {
+        guard !recordingRequested,
+              activeSegment == nil,
+              finalizingSegmentIDs.isEmpty else {
+            recoveryRequested = true
+            if let completion {
+                let pending = pendingRecordingCount()
+                DispatchQueue.main.async {
+                    completion(RecordingRecoverySummary(
+                        pending: pending,
+                        recovered: 0,
+                        retained: pending,
+                        error: "Une capture ou une finalisation est encore en cours."
+                    ))
+                }
+            }
+            return
+        }
+        guard !recoveryInProgress else {
+            recoveryRequested = true
+            queuedRecoveryAllowsAmbiguousRetry = queuedRecoveryAllowsAmbiguousRetry
+                || allowAmbiguousRetry
+            queuedRecoveryAllowsRemux = queuedRecoveryAllowsRemux || allowRemux
+            if let completion { queuedRecoveryCompletion = completion }
+            return
+        }
+
+        let snapshot = makeRecoverySnapshot()
+        guard snapshot.pending > 0 else {
+            recoveryRequested = false
+            if let completion {
+                DispatchQueue.main.async {
+                    completion(RecordingRecoverySummary(pending: 0, recovered: 0, retained: 0, error: nil))
+                }
+            }
+            endBackgroundFinalizationTask()
+            return
+        }
+        recoveryInProgress = true
+
+        let start = { [weak self] in
+            guard let self else { return }
+            Task {
+                let summary = await self.performRecovery(
+                    snapshot,
+                    allowAmbiguousRetry: allowAmbiguousRetry,
+                    allowRemux: allowRemux
+                )
+                self.sessionQueue.async {
+                    self.completeRecovery(summary, directCompletion: completion)
+                }
+            }
+        }
+
+        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        if status == .authorized || status == .limited {
+            start()
+        } else if status == .notDetermined {
+            DispatchQueue.main.async {
+                PHPhotoLibrary.requestAuthorization(for: .addOnly) { next in
+                    self.sessionQueue.async {
+                        if next == .authorized || next == .limited {
+                            start()
+                        } else {
+                            self.completeRecovery(
+                                RecordingRecoverySummary(
+                                    pending: snapshot.pending,
+                                    recovered: 0,
+                                    retained: snapshot.pending,
+                                    error: "L’ajout à Photos n’est pas autorisé."
+                                ),
+                                directCompletion: completion
+                            )
+                        }
+                    }
+                }
+            }
+        } else {
+            completeRecovery(
+                RecordingRecoverySummary(
+                    pending: snapshot.pending,
+                    recovered: 0,
+                    retained: snapshot.pending,
+                    error: "L’ajout à Photos n’est pas autorisé."
+                ),
+                directCompletion: completion
+            )
+        }
+    }
+
+    /** Termine un passage et transmet sans perte une demande explicite arrivée
+     * pendant l'auto-récupération. */
+    private func completeRecovery(
+        _ summary: RecordingRecoverySummary,
+        directCompletion: ((RecordingRecoverySummary) -> Void)?
+    ) {
+        recoveryInProgress = false
+        endBackgroundFinalizationTask()
+        let shouldRetry = recoveryRequested
+            && !recordingRequested
+            && activeSegment == nil
+            && finalizingSegmentIDs.isEmpty
+        let retryAllowsAmbiguous = queuedRecoveryAllowsAmbiguousRetry
+        let retryAllowsRemux = queuedRecoveryAllowsRemux
+        let retryCompletion = queuedRecoveryCompletion
+        recoveryRequested = false
+        queuedRecoveryAllowsAmbiguousRetry = false
+        queuedRecoveryAllowsRemux = false
+        queuedRecoveryCompletion = nil
+
+        if let directCompletion {
+            DispatchQueue.main.async { directCompletion(summary) }
+        }
+        guard shouldRetry else { return }
+        if retryAllowsAmbiguous, summary.retained == 0 {
+            if let retryCompletion {
+                DispatchQueue.main.async { retryCompletion(summary) }
+            }
+            return
+        }
+        recoverPendingRecordings(
+            allowAmbiguousRetry: retryAllowsAmbiguous,
+            allowRemux: retryAllowsRemux,
+            completion: retryCompletion
+        )
+    }
+
+    private func makeRecoverySnapshot() -> RecordingRecoverySnapshot {
         let manager = FileManager.default
-        let durable = (try? manager.contentsOfDirectory(
+        let durable = ((try? manager.contentsOfDirectory(
             at: recordingsDirectory,
             includingPropertiesForKeys: [.fileSizeKey],
             options: [.skipsHiddenFiles]
-        )) ?? []
+        )) ?? []).filter {
+            ((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0
+        }
         let temporary = ((try? manager.contentsOfDirectory(
             at: manager.temporaryDirectory,
             includingPropertiesForKeys: [.fileSizeKey],
             options: [.skipsHiddenFiles]
-        )) ?? []).filter { $0.lastPathComponent.hasPrefix("prepatrack-") && $0.pathExtension == "mov" }
-        let pending = (durable + temporary).filter {
-            ((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0
+        )) ?? []).filter {
+            $0.lastPathComponent.hasPrefix("prepatrack-")
+                && $0.pathExtension == "mov"
+                && ((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0
         }
-        guard !pending.isEmpty else { return }
-
-        let importFiles = { [weak self] in
-            guard let self else { return }
-            for url in pending {
-                self.saveToPhotos(url) { saved, error in
-                    if saved { try? manager.removeItem(at: url) }
-                    DispatchQueue.main.async {
-                        var payload: [String: Any] = ["saved": saved, "recovered": true]
-                        if let error { payload["error"] = error }
-                        self.notifyListeners("recordingFinished", data: payload)
-                    }
-                }
-            }
+        let finalVideos = durable.filter {
+            $0.pathExtension == "mov"
+                && !$0.lastPathComponent.hasSuffix(".video.mov")
+                && !$0.lastPathComponent.hasSuffix(".merging.mov")
         }
-        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
-        if status == .authorized || status == .limited {
-            importFiles()
-        } else if status == .notDetermined {
-            PHPhotoLibrary.requestAuthorization(for: .addOnly) { next in
-                if next == .authorized || next == .limited { importFiles() }
-            }
-        }
-        // En cas de refus, les fichiers restent intacts pour une prochaine
-        // ouverture après réactivation de l'autorisation dans Réglages iOS.
+        let rawVideos = durable.filter { $0.lastPathComponent.hasSuffix(".video.mov") }
+        let mergingVideos = durable.filter { $0.lastPathComponent.hasSuffix(".merging.mov") }
+        let photoImportJournals = durable.filter { $0.lastPathComponent.hasSuffix(".photo-import.json") }
+        let timingJournals = durable.filter { $0.lastPathComponent.hasSuffix(".timing.json") }
+        let dualBases = Set(
+            (finalVideos + rawVideos + mergingVideos + photoImportJournals + timingJournals)
+                .compactMap { dualCameraBaseName(for: $0) }
+        )
+        let legacyBases = Set(
+            (finalVideos + rawVideos + mergingVideos)
+                .filter { !isDualCameraVideo($0) }
+                .map { legacyRecordingBaseName(for: $0) }
+        )
+        return RecordingRecoverySnapshot(
+            finalVideos: finalVideos,
+            rawVideos: rawVideos,
+            mergingVideos: mergingVideos,
+            temporaryVideos: temporary,
+            dualBases: dualBases,
+            pending: dualBases.count * 2 + legacyBases.count + temporary.count
+        )
     }
 
-    private func configureIfNeeded() throws {
-        guard !configured else { return }
-        captureSession.beginConfiguration()
-        defer { captureSession.commitConfiguration() }
-        captureSession.automaticallyConfiguresApplicationAudioSession = false
-        captureSession.sessionPreset = .hd1280x720
-        guard let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front),
-              let microphone = AVCaptureDevice.default(for: .audio) else {
-            throw RecordingError.deviceUnavailable
-        }
-        let cameraInput = try AVCaptureDeviceInput(device: camera)
-        let microphoneInput = try AVCaptureDeviceInput(device: microphone)
-        guard captureSession.canAddInput(cameraInput), captureSession.canAddInput(microphoneInput),
-              captureSession.canAddOutput(movieOutput) else {
-            throw RecordingError.configurationFailed
-        }
-        captureSession.addInput(cameraInput)
-        captureSession.addInput(microphoneInput)
-        captureSession.addOutput(movieOutput)
-        // 1× est le champ de vision natif maximal. Sur l'iPhone 15 Plus, la
-        // caméra TrueDepth avant est un capteur unique : un facteur inférieur
-        // à 1× n'existe pas et ne ferait qu'inventer des pixels.
-        do {
-            try camera.lockForConfiguration()
-            camera.videoZoomFactor = max(1, camera.minAvailableVideoZoomFactor)
-            if camera.isGeometricDistortionCorrectionSupported {
-                camera.isGeometricDistortionCorrectionEnabled = true
+    private func performRecovery(
+        _ snapshot: RecordingRecoverySnapshot,
+        allowAmbiguousRetry: Bool,
+        allowRemux: Bool
+    ) async -> RecordingRecoverySummary {
+        let manager = FileManager.default
+        var recovered = 0
+        var retained = 0
+        var errors: [String] = []
+        let notify: (Bool, String?, Date?) -> Void = { saved, error, capturedAt in
+            DispatchQueue.main.async {
+                var payload: [String: Any] = ["saved": saved, "recovered": true]
+                if let error { payload["error"] = error }
+                if let capturedAt { payload["startedAt"] = capturedAt.timeIntervalSince1970 * 1_000 }
+                self.notifyListeners("recordingSegmentFinished", data: payload)
             }
-            // Une cadence fixe donne à la stabilisation cinématique une
-            // fenêtre temporelle régulière, particulièrement importante sur
-            // un chariot qui vibre. On garde 30 i/s pour limiter le flou de
-            // mouvement sans augmenter la définition ni la taille du fichier.
-            let preferredFPS = 30.0
-            if camera.activeFormat.videoSupportedFrameRateRanges.contains(where: {
-                $0.minFrameRate <= preferredFPS && $0.maxFrameRate >= preferredFPS
-            }) {
-                let duration = CMTime(value: 1, timescale: 30)
-                camera.activeVideoMinFrameDuration = duration
-                camera.activeVideoMaxFrameDuration = duration
-            }
-            camera.unlockForConfiguration()
-        } catch {
-            // Le réglage par défaut reste utilisable si iOS réserve brièvement
-            // la caméra pendant une transition système.
         }
-        if let connection = movieOutput.connection(with: .video) {
-            if connection.isVideoOrientationSupported { connection.videoOrientation = .portrait }
-            if connection.isVideoStabilizationSupported {
-                let format = camera.activeFormat
-                if #available(iOS 18.0, *),
-                   format.isVideoStabilizationModeSupported(.cinematicExtendedEnhanced) {
-                    // Mode recommandé par Apple pour la meilleure stabilité.
-                    // Il recadre davantage, mais le zoom optique reste à son
-                    // minimum afin de conserver tout le champ encore disponible.
-                    connection.preferredVideoStabilizationMode = .cinematicExtendedEnhanced
-                } else if format.isVideoStabilizationModeSupported(.cinematicExtended) {
-                    connection.preferredVideoStabilizationMode = .cinematicExtended
-                } else if format.isVideoStabilizationModeSupported(.cinematic) {
-                    connection.preferredVideoStabilizationMode = .cinematic
-                } else if format.isVideoStabilizationModeSupported(.standard) {
-                    connection.preferredVideoStabilizationMode = .standard
+
+        for base in snapshot.dualBases.sorted() {
+            let outcome = await recoverDualCameraPair(
+                baseName: base,
+                allowAmbiguousRetry: allowAmbiguousRetry,
+                allowRemux: allowRemux
+            )
+            recovered += outcome.recovered
+            retained += outcome.retained
+            if let error = outcome.error { errors.append(error) }
+            notify(outcome.recovered > 0, outcome.error, outcome.capturedAt)
+        }
+
+        var processedLegacyBases = Set<String>()
+        for partial in snapshot.mergingVideos where !isDualCameraVideo(partial) {
+            let base = legacyRecordingBaseName(for: partial)
+            let raw = partial.deletingLastPathComponent().appendingPathComponent("\(base).video.mov")
+            let final = partial.deletingLastPathComponent().appendingPathComponent("\(base).mov")
+            let audio = sharedAudioURL(forVideo: partial)
+            let hasAlternative = manager.fileExists(atPath: raw.path)
+                || manager.fileExists(atPath: final.path)
+            let validMerged = await isValidMergedRecording(partial)
+            let partialIsReadable = await hasReadableVideoRecording(partial)
+            let externalAudioIsReadable = await hasReadableAudioRecording(audio)
+            let readableFallback = !hasAlternative
+                && !externalAudioIsReadable
+                && partialIsReadable
+            guard validMerged || readableFallback else {
+                if !hasAlternative {
+                    processedLegacyBases.insert(base)
+                    retained += 1
+                    let error = "Un export vidéo interrompu reste conservé localement car il est illisible."
+                    errors.append(error)
+                    notify(false, error, captureDate(from: partial))
+                }
+                continue
+            }
+            processedLegacyBases.insert(base)
+            let result = await saveToPhotosAsync(partial, capturedAt: captureDate(from: partial))
+            if result.0 {
+                recovered += 1
+                removeImportedMedia([partial, raw, final, audio])
+            } else {
+                retained += 1
+                if let error = result.1 { errors.append(error) }
+            }
+            notify(result.0, result.1, captureDate(from: partial))
+        }
+
+        for finalURL in snapshot.finalVideos where !isDualCameraVideo(finalURL) {
+            let base = legacyRecordingBaseName(for: finalURL)
+            guard !processedLegacyBases.contains(base) else { continue }
+            let raw = finalURL.deletingLastPathComponent().appendingPathComponent("\(base).video.mov")
+            let merging = finalURL.deletingLastPathComponent().appendingPathComponent("\(base).merging.mov")
+            let audio = sharedAudioURL(forVideo: finalURL)
+            guard await isValidMergedRecording(finalURL) else {
+                if manager.fileExists(atPath: raw.path) {
+                    // La source brute sera tentée ensuite. Le fichier final
+                    // existant reste intact jusqu'au succès de son remplacement.
                 } else {
-                    connection.preferredVideoStabilizationMode = .auto
+                    processedLegacyBases.insert(base)
+                    let externalAudioIsReadable = await hasReadableAudioRecording(audio)
+                    if !externalAudioIsReadable,
+                       await hasReadableVideoRecording(finalURL) {
+                        let result = await saveToPhotosAsync(finalURL, capturedAt: captureDate(from: finalURL))
+                        if result.0 {
+                            recovered += 1
+                            removeImportedMedia([finalURL, merging, audio])
+                        } else {
+                            retained += 1
+                            if let error = result.1 { errors.append(error) }
+                        }
+                        notify(result.0, result.1, captureDate(from: finalURL))
+                    } else {
+                        retained += 1
+                        let error = "Une vidéo finale incomplète a été conservée pour diagnostic."
+                        errors.append(error)
+                        notify(false, error, captureDate(from: finalURL))
+                    }
+                }
+                continue
+            }
+            processedLegacyBases.insert(base)
+            let result = await saveToPhotosAsync(finalURL, capturedAt: captureDate(from: finalURL))
+            if result.0 {
+                recovered += 1
+                removeImportedMedia([finalURL, raw, merging, audio])
+            } else {
+                retained += 1
+                if let error = result.1 { errors.append(error) }
+            }
+            notify(result.0, result.1, captureDate(from: finalURL))
+        }
+
+        for rawURL in snapshot.rawVideos where !isDualCameraVideo(rawURL) {
+            let base = legacyRecordingBaseName(for: rawURL)
+            guard !processedLegacyBases.contains(base) else { continue }
+            processedLegacyBases.insert(base)
+            let audioURL = sharedAudioURL(forVideo: rawURL)
+            let existingFinalURL = rawURL.deletingLastPathComponent().appendingPathComponent("\(base).mov")
+            let existingMergingURL = rawURL.deletingLastPathComponent().appendingPathComponent("\(base).merging.mov")
+            guard allowRemux else {
+                let readableAudio = await hasReadableAudioRecording(audioURL)
+                let readableVideo = await hasReadableVideoRecording(rawURL)
+                if !readableAudio && readableVideo {
+                    let result = await saveToPhotosAsync(rawURL, capturedAt: captureDate(from: rawURL))
+                    if result.0 {
+                        recovered += 1
+                        removeImportedMedia([rawURL, audioURL, existingFinalURL, existingMergingURL])
+                    } else {
+                        retained += 1
+                        if let error = result.1 { errors.append(error) }
+                    }
+                    notify(result.0, result.1, captureDate(from: rawURL))
+                } else {
+                    retained += 1
+                    let message = "Une fusion audio/vidéo est en attente. Utilise « Récupérer les vidéos locales » pour la terminer."
+                    errors.append(message)
+                    notify(false, message, captureDate(from: rawURL))
+                }
+                continue
+            }
+            let prepared = await prepareFinalRecordingAsync(videoURL: rawURL, audioURL: audioURL)
+            var saved = false
+            var error = prepared.error
+            var savedURL = prepared.finalURL
+            let readableAudio = await hasReadableAudioRecording(audioURL)
+            if prepared.merged {
+                let result = await saveToPhotosAsync(prepared.finalURL, capturedAt: captureDate(from: rawURL))
+                saved = result.0
+                error = result.1 ?? error
+            } else {
+                let readableVideo = await hasReadableVideoRecording(rawURL)
+                if !readableAudio && readableVideo {
+                    let result = await saveToPhotosAsync(rawURL, capturedAt: captureDate(from: rawURL))
+                    saved = result.0
+                    error = result.1 ?? "La piste audio était irrécupérable; la vidéo a été sauvée sans son."
+                    savedURL = rawURL
                 }
             }
+            if !saved && !readableAudio {
+                let existingFinalIsReadable = await hasReadableVideoRecording(existingFinalURL)
+                if existingFinalIsReadable {
+                    let result = await saveToPhotosAsync(existingFinalURL, capturedAt: captureDate(from: existingFinalURL))
+                    saved = result.0
+                    error = result.1
+                    savedURL = existingFinalURL
+                }
+            }
+            if !saved && !readableAudio {
+                let existingMergingIsReadable = await hasReadableVideoRecording(existingMergingURL)
+                if existingMergingIsReadable {
+                    let result = await saveToPhotosAsync(existingMergingURL, capturedAt: captureDate(from: existingMergingURL))
+                    saved = result.0
+                    error = result.1
+                    savedURL = existingMergingURL
+                }
+            }
+            if saved {
+                recovered += 1
+                removeImportedMedia([
+                    rawURL,
+                    audioURL,
+                    savedURL,
+                    existingFinalURL,
+                    existingMergingURL,
+                ])
+            } else {
+                retained += 1
+                if let error { errors.append(error) }
+            }
+            notify(saved, error, captureDate(from: rawURL))
         }
-        configured = true
+
+        for temporaryURL in snapshot.temporaryVideos {
+            let result = await saveToPhotosAsync(temporaryURL, capturedAt: captureDate(from: temporaryURL))
+            if result.0 {
+                recovered += 1
+                try? manager.removeItem(at: temporaryURL)
+            } else {
+                retained += 1
+                if let error = result.1 { errors.append(error) }
+            }
+            notify(result.0, result.1, captureDate(from: temporaryURL))
+        }
+
+        return RecordingRecoverySummary(
+            pending: snapshot.pending,
+            recovered: recovered,
+            retained: retained,
+            error: errors.first
+        )
+    }
+
+    private func isDualCameraVideo(_ url: URL) -> Bool {
+        let name = url.lastPathComponent
+        return name.contains(".front.") || name.contains(".rear.")
+    }
+
+    private func dualCameraBaseName(for url: URL) -> String? {
+        let name = url.lastPathComponent
+        for suffix in [
+            ".front.video.mov",
+            ".rear.video.mov",
+            ".front.merging.mov",
+            ".rear.merging.mov",
+            ".front.mov",
+            ".rear.mov",
+            ".photo-import.json",
+            ".timing.json",
+        ] where name.hasSuffix(suffix) {
+            return String(name.dropLast(suffix.count))
+        }
+        return nil
+    }
+
+    private func legacyRecordingBaseName(for url: URL) -> String {
+        let name = url.lastPathComponent
+        for suffix in [".video.mov", ".merging.mov", ".mov"] where name.hasSuffix(suffix) {
+            return String(name.dropLast(suffix.count))
+        }
+        return url.deletingPathExtension().lastPathComponent
     }
 
     /**
-     * Utilise le traitement audio prévu par Apple pour une captation vidéo,
-     * le micro dirigé vers la caméra avant et le stéréo lorsqu'il existe.
+     * Récupère un segment double caméra comme une unité atomique. Les sources
+     * et la piste audio partagée ne sont supprimées qu'après l'ajout confirmé
+     * des deux angles dans Photos.
      */
-    private func configureAudioSession() throws -> Int {
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .videoRecording, options: [])
-        try? session.setPreferredSampleRate(48_000)
-        try session.setActive(true)
+    private func recoverDualCameraPair(
+        baseName: String,
+        allowAmbiguousRetry: Bool = false,
+        allowRemux: Bool = false
+    ) async -> DualCameraRecoveryOutcome {
+        let directory = recordingsDirectory
+        let frontRaw = directory.appendingPathComponent("\(baseName).front.video.mov")
+        let rearRaw = directory.appendingPathComponent("\(baseName).rear.video.mov")
+        let frontFinal = directory.appendingPathComponent("\(baseName).front.mov")
+        let rearFinal = directory.appendingPathComponent("\(baseName).rear.mov")
+        let frontMerging = directory.appendingPathComponent("\(baseName).front.merging.mov")
+        let rearMerging = directory.appendingPathComponent("\(baseName).rear.merging.mov")
+        let manager = FileManager.default
+        let audioSources = sharedAudioSourceURLs(baseName: baseName, directory: directory)
+        let audio = await firstReadableAudioRecording(in: audioSources)
+            ?? audioSources.first(where: { manager.fileExists(atPath: $0.path) })
+            ?? audioSources[0]
+        let capturedAt = captureDate(from: frontRaw)
+        let journalURL = directory.appendingPathComponent("\(baseName).photo-import.json")
+        let timingURL = directory.appendingPathComponent("\(baseName).timing.json")
+        let timingSidecarExists = manager.fileExists(atPath: timingURL.path)
+        let timing = timingSidecarExists ? timingStore.load(from: timingURL) : nil
+        let outcome: (Int, Int, String?) -> DualCameraRecoveryOutcome = {
+            DualCameraRecoveryOutcome(
+                recovered: $0,
+                retained: $1,
+                error: $2,
+                capturedAt: capturedAt
+            )
+        }
 
+        if manager.fileExists(atPath: journalURL.path) {
+            let fullAccess = PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized
+            guard let journal = readPhotoImportJournal(from: journalURL) else {
+                guard allowAmbiguousRetry && fullAccess else {
+                    return outcome(
+                        0,
+                        2,
+                        "Le journal Photos est illisible. Utilise la récupération manuelle avec l'accès complet à Photos; les sources restent intactes."
+                    )
+                }
+                try? manager.removeItem(at: journalURL)
+                return await recoverDualCameraPair(
+                    baseName: baseName,
+                    allowAmbiguousRetry: false,
+                    allowRemux: allowRemux
+                )
+            }
+            if journal.state == "committed" {
+                let videoSources = [
+                    frontRaw,
+                    rearRaw,
+                    frontFinal,
+                    rearFinal,
+                    frontMerging,
+                    rearMerging,
+                ]
+                if timingSidecarExists, timing?.isComplete != true {
+                    guard preserveUnmergedAudioSources(
+                        audioSources,
+                        timingURL: timingURL,
+                        baseName: baseName
+                    ) else {
+                        return outcome(
+                            2,
+                            2,
+                            "Les deux vidéos sont déjà dans Photos, mais la piste audio locale n'a pas encore pu être archivée. Toutes les sources restent conservées."
+                        )
+                    }
+                    removeImportedMedia(videoSources, journals: [journalURL])
+                    return outcome(
+                        2,
+                        0,
+                        "Les deux vidéos sont dans Photos. La piste audio non fusionnée reste archivée localement pour une réparation ultérieure."
+                    )
+                }
+                removeImportedMedia(
+                    videoSources + audioSources,
+                    journals: [journalURL, timingURL]
+                )
+                return outcome(2, 0, nil)
+            } else if journal.state == "preparing" {
+                guard allowAmbiguousRetry && fullAccess else {
+                    return outcome(
+                        0,
+                        2,
+                        "Appuie sur « Récupérer les vidéos locales » et autorise l’accès complet à Photos pour débloquer ce couple sans perdre les sources."
+                    )
+                }
+                // Ancien journal sans identifiants. La relance est réservée à
+                // une action explicite après confirmation de l'utilisateur et
+                // accès complet à Photos. Une éventuelle copie vaut mieux que
+                // de laisser les deux sources invisibles indéfiniment.
+                try? manager.removeItem(at: journalURL)
+            } else if let importedCount = photoImportConfirmationCount(journal) {
+                if importedCount == 2 {
+                    let sources = [
+                        frontRaw,
+                        rearRaw,
+                        frontFinal,
+                        rearFinal,
+                        frontMerging,
+                        rearMerging,
+                    ] + audioSources
+                    removeImportedMedia(sources, journals: [journalURL, timingURL])
+                    return outcome(2, 0, nil)
+                }
+                if importedCount == 0 && allowAmbiguousRetry {
+                    // Les identifiants n'existent pas dans Photos : la
+                    // transaction a échoué avant son commit, on peut retenter
+                    // sans produire de doublon.
+                    try? manager.removeItem(at: journalURL)
+                } else if importedCount == 1 && allowAmbiguousRetry {
+                    let frontWasImported = photoAssetExists(journal.frontLocalIdentifier)
+                    let rearWasImported = photoAssetExists(journal.rearLocalIdentifier)
+                    let alreadyRecovered = (frontWasImported ? 1 : 0) + (rearWasImported ? 1 : 0)
+                    guard alreadyRecovered == 1 else {
+                        return outcome(
+                            0,
+                            2,
+                            "L’import Photos partiel n’a pas pu être identifié; toutes les sources restent conservées."
+                        )
+                    }
+                    let cleaned = frontWasImported
+                        ? removeImportedMedia([frontRaw, frontFinal, frontMerging])
+                        : removeImportedMedia([rearRaw, rearFinal, rearMerging])
+                    guard cleaned else {
+                        return outcome(
+                            1,
+                            1,
+                            "Un angle est déjà dans Photos, mais sa copie locale n’a pas pu être nettoyée. Le journal est conservé pour éviter un doublon."
+                        )
+                    }
+                    do {
+                        try manager.removeItem(at: journalURL)
+                    } catch {
+                        return outcome(
+                            1,
+                            1,
+                            "Un angle est déjà dans Photos; le journal local est conservé pour éviter un doublon."
+                        )
+                    }
+                    let retry = await recoverDualCameraPair(
+                        baseName: baseName,
+                        allowAmbiguousRetry: false,
+                        allowRemux: allowRemux
+                    )
+                    let totalRecovered = min(2, alreadyRecovered + retry.recovered)
+                    let totalRetained = max(0, 2 - totalRecovered)
+                    return outcome(
+                        totalRecovered,
+                        totalRetained,
+                        totalRetained > 0 ? retry.error : nil
+                    )
+                } else {
+                    return outcome(
+                        0,
+                        2,
+                        importedCount == 1
+                            ? "Une seule des deux vidéos est visible dans Photos. Les sources sont conservées pour réparer le couple sans perte."
+                            : "L’import Photos précédent reste ambigu. Utilise le bouton de récupération pour le confirmer sans perte."
+                    )
+                }
+            } else {
+                guard allowAmbiguousRetry && fullAccess else {
+                    return outcome(
+                        0,
+                        2,
+                        "Autorise l’accès complet à Photos pour vérifier puis récupérer ce couple de vidéos. Les sources sont conservées."
+                    )
+                }
+                // Journaux anciens ou incomplets : seule une action explicite
+                // avec accès complet peut autoriser une nouvelle tentative.
+                try? manager.removeItem(at: journalURL)
+            }
+        }
+
+        // Les anciens couples sans sidecar gardent le comportement historique.
+        // En revanche, la présence d'un sidecar nouveau prouve que l'alignement
+        // devait être horodaté : s'il est illisible ou incomplet, un mux à zéro
+        // fabriquerait sciemment une vidéo désynchronisée.
+        if timingSidecarExists, timing?.isComplete != true {
+            if allowRemux,
+               await hasReadableVideoRecording(frontRaw),
+               await hasReadableVideoRecording(rearRaw) {
+                let result = await savePairToPhotosAsync(
+                    front: frontRaw,
+                    rear: rearRaw,
+                    capturedAt: capturedAt ?? Date()
+                )
+                if result.0 {
+                    guard preserveUnmergedAudioSources(
+                        audioSources,
+                        timingURL: timingURL,
+                        baseName: baseName
+                    ) else {
+                        return outcome(
+                            2,
+                            2,
+                            "Les deux vidéos ont été sauvées dans Photos, mais la piste audio locale n'a pas encore pu être archivée. Toutes les sources restent conservées."
+                        )
+                    }
+                    // Les deux angles sont désormais protégés dans Photos, mais
+                    // un sidecar incomplet ne prouve pas que le CAF est inutile.
+                    // Conserver audio + timing permet une réparation ultérieure
+                    // au lieu de détruire définitivement une piste récupérable.
+                    removeImportedMedia(
+                        [
+                            frontRaw,
+                            rearRaw,
+                            frontFinal,
+                            rearFinal,
+                            frontMerging,
+                            rearMerging,
+                        ],
+                        journals: [journalURL]
+                    )
+                    return outcome(
+                        2,
+                        0,
+                        "Le journal de synchronisation était irrécupérable; les deux vidéos ont été sauvées sans son. La piste audio et son journal restent conservés localement pour une réparation ultérieure."
+                    )
+                }
+                return outcome(0, 2, result.1)
+            }
+            return outcome(
+                0,
+                2,
+                "Le journal de synchronisation audio/vidéo est incomplet. Les sources restent conservées; la récupération manuelle pourra sauver les deux images sans son."
+            )
+        }
+
+        if !allowRemux {
+            let frontPrepared = await firstValidMergedRecording(in: [frontFinal, frontMerging])
+            let rearPrepared = await firstValidMergedRecording(in: [rearFinal, rearMerging])
+            var automaticFront = frontPrepared
+            var automaticRear = rearPrepared
+            let readableAudio = await hasReadableAudioRecording(audio)
+            if !readableAudio {
+                if automaticFront == nil, await hasReadableVideoRecording(frontRaw) {
+                    automaticFront = frontRaw
+                }
+                if automaticRear == nil, await hasReadableVideoRecording(rearRaw) {
+                    automaticRear = rearRaw
+                }
+            }
+            guard let automaticFront, let automaticRear else {
+                return outcome(
+                    0,
+                    2,
+                    "Une fusion avant/arrière est en attente. Utilise « Récupérer les vidéos locales » pour la terminer."
+                )
+            }
+            let result = await savePairToPhotosAsync(
+                front: automaticFront,
+                rear: automaticRear,
+                capturedAt: capturedAt ?? Date()
+            )
+            guard result.0 else { return outcome(0, 2, result.1) }
+            removeImportedMedia(
+                [frontRaw, rearRaw, frontFinal, rearFinal, frontMerging, rearMerging] + audioSources,
+                journals: [journalURL, timingURL]
+            )
+            return outcome(2, 0, nil)
+        }
+
+        let front = await recoverPreparedCamera(
+            finalURL: frontFinal,
+            rawURL: frontRaw,
+            audioURL: audio,
+            timing: timing,
+            timingSidecarExists: timingSidecarExists,
+            angle: .front
+        )
+        let rear = await recoverPreparedCamera(
+            finalURL: rearFinal,
+            rawURL: rearRaw,
+            audioURL: audio,
+            timing: timing,
+            timingSidecarExists: timingSidecarExists,
+            angle: .rear
+        )
+        var saved = false
+        var error: String?
+        var savedURLs: [URL] = []
+        let readableAudio = await hasReadableAudioRecording(audio)
+        let readableFront = await hasReadableVideoRecording(frontRaw)
+        let readableRear = await hasReadableVideoRecording(rearRaw)
+
+        if front.merged, rear.merged {
+            let result = await savePairToPhotosAsync(
+                front: front.finalURL,
+                rear: rear.finalURL,
+                capturedAt: capturedAt ?? Date()
+            )
+            saved = result.0
+            error = result.1
+            savedURLs = [front.finalURL, rear.finalURL]
+        } else if !readableAudio, readableFront, readableRear {
+            let result = await savePairToPhotosAsync(
+                front: frontRaw,
+                rear: rearRaw,
+                capturedAt: capturedAt ?? Date()
+            )
+            saved = result.0
+            error = result.1 ?? "La piste audio était irrécupérable; les deux vidéos ont été sauvées sans son."
+            savedURLs = [frontRaw, rearRaw]
+        } else {
+            error = [front.error, rear.error]
+                .compactMap { $0 }
+                .joined(separator: " ")
+            if error?.isEmpty != false {
+                error = "Le couple avant/arrière est incomplet; toutes les sources ont été conservées."
+            }
+        }
+
+        if saved {
+            let cleanup = [
+                frontRaw,
+                rearRaw,
+                frontFinal,
+                rearFinal,
+                frontMerging,
+                rearMerging,
+                journalURL,
+                timingURL,
+            ] + audioSources + savedURLs
+            let unique = Set(cleanup)
+            let mediaURLs = unique.filter { !isRecordingJournalURL($0) }
+            removeImportedMedia(Array(mediaURLs), journals: [journalURL, timingURL])
+            return outcome(2, 0, nil)
+        }
+
+        // Si le couple complet ne peut plus être reconstruit, sauver chaque
+        // angle encore lisible vaut mieux que laisser toutes les preuves dans
+        // le conteneur privé. L'autre angle et l'audio restent conservés.
+        var frontCandidate: URL?
+        if front.merged {
+            frontCandidate = front.finalURL
+        } else if !readableAudio, readableFront {
+            frontCandidate = frontRaw
+        } else if !readableAudio, await hasReadableVideoRecording(frontFinal) {
+            frontCandidate = frontFinal
+        } else if !readableAudio, await hasReadableVideoRecording(frontMerging) {
+            frontCandidate = frontMerging
+        }
+
+        var rearCandidate: URL?
+        if rear.merged {
+            rearCandidate = rear.finalURL
+        } else if !readableAudio, readableRear {
+            rearCandidate = rearRaw
+        } else if !readableAudio, await hasReadableVideoRecording(rearFinal) {
+            rearCandidate = rearFinal
+        } else if !readableAudio, await hasReadableVideoRecording(rearMerging) {
+            rearCandidate = rearMerging
+        }
+
+        var recoveredAngles = 0
+        var partialErrors: [String] = []
+        if let frontCandidate {
+            let result = await saveToPhotosAsync(frontCandidate, capturedAt: capturedAt)
+            if result.0 {
+                recoveredAngles += 1
+                removeImportedMedia([frontRaw, frontFinal, frontMerging])
+            } else if let message = result.1 {
+                partialErrors.append("Avant : \(message)")
+            }
+        }
+        if let rearCandidate {
+            let result = await saveToPhotosAsync(rearCandidate, capturedAt: capturedAt?.addingTimeInterval(0.001))
+            if result.0 {
+                recoveredAngles += 1
+                removeImportedMedia([rearRaw, rearFinal, rearMerging])
+            } else if let message = result.1 {
+                partialErrors.append("Arrière : \(message)")
+            }
+        }
+
+        let retainedAngles = 2 - recoveredAngles
+        let remainingAngleMedia = [
+            frontRaw,
+            rearRaw,
+            frontFinal,
+            rearFinal,
+            frontMerging,
+            rearMerging,
+        ]
+        if !remainingAngleMedia.contains(where: { manager.fileExists(atPath: $0.path) }) {
+            removeImportedMedia(
+                remainingAngleMedia + audioSources,
+                journals: [journalURL, timingURL]
+            )
+        }
+        if recoveredAngles == 0, let error, !error.isEmpty {
+            partialErrors.insert(error, at: 0)
+        } else if retainedAngles > 0 {
+            partialErrors.append("L’angle manquant et ses sources restent conservés pour une prochaine tentative.")
+        }
+        return outcome(
+            recoveredAngles,
+            retainedAngles,
+            partialErrors.first
+                ?? (retainedAngles > 0 ? "Le couple avant/arrière reste incomplet." : nil)
+        )
+    }
+
+    private func recoverPreparedCamera(
+        finalURL: URL,
+        rawURL: URL,
+        audioURL: URL,
+        timing: SegmentTimingJournal?,
+        timingSidecarExists: Bool,
+        angle: CameraAngle
+    ) async -> PreparedCameraRecording {
+        if await isValidMergedRecording(finalURL) {
+            return PreparedCameraRecording(finalURL: finalURL, merged: true, error: nil)
+        }
+        guard FileManager.default.fileExists(atPath: rawURL.path) else {
+            return PreparedCameraRecording(
+                finalURL: finalURL,
+                merged: false,
+                error: "Une des deux vidéos brutes est absente."
+            )
+        }
+        return await withCheckedContinuation { continuation in
+            prepareFinalRecording(
+                videoURL: rawURL,
+                audioURL: audioURL,
+                timing: timing,
+                timingSidecarExists: timingSidecarExists,
+                angle: angle
+            ) { url, merged, error in
+                continuation.resume(returning: PreparedCameraRecording(
+                    finalURL: url,
+                    merged: merged,
+                    error: error
+                ))
+            }
+        }
+    }
+
+    private func firstValidMergedRecording(in candidates: [URL]) async -> URL? {
+        for candidate in candidates {
+            if await isValidMergedRecording(candidate) { return candidate }
+        }
+        return nil
+    }
+
+    private func firstReadableAudioRecording(in candidates: [URL]) async -> URL? {
+        for candidate in candidates {
+            if await hasReadableAudioRecording(candidate) { return candidate }
+        }
+        return nil
+    }
+
+    private func savePairToPhotosAsync(
+        front: URL,
+        rear: URL,
+        capturedAt: Date
+    ) async -> (Bool, String?) {
+        await withCheckedContinuation { continuation in
+            savePairToPhotos(front: front, rear: rear, capturedAt: capturedAt) { saved, error in
+                continuation.resume(returning: (saved, error))
+            }
+        }
+    }
+
+    private func saveToPhotosAsync(
+        _ url: URL,
+        capturedAt: Date?
+    ) async -> (Bool, String?) {
+        await withCheckedContinuation { continuation in
+            saveToPhotos(url, capturedAt: capturedAt) { saved, error in
+                continuation.resume(returning: (saved, error))
+            }
+        }
+    }
+
+    private func prepareFinalRecordingAsync(
+        videoURL: URL,
+        audioURL: URL?
+    ) async -> PreparedCameraRecording {
+        await withCheckedContinuation { continuation in
+            prepareFinalRecording(videoURL: videoURL, audioURL: audioURL) { url, merged, error in
+                continuation.resume(returning: PreparedCameraRecording(
+                    finalURL: url,
+                    merged: merged,
+                    error: error
+                ))
+            }
+        }
+    }
+
+    private func hasReadableVideoRecording(_ url: URL) async -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        let asset = AVURLAsset(url: url)
+        do {
+            let duration = try await asset.load(.duration)
+            let tracks = try await asset.loadTracks(withMediaType: .video)
+            return duration.isValid && duration.seconds > 0 && !tracks.isEmpty
+        } catch {
+            return false
+        }
+    }
+
+    /**
+     * Les nouveaux segments utilisent un CAF PCM résistant à une extinction
+     * avant fermeture du fichier. L'ancien AAC reste lisible afin de ne jamais
+     * abandonner les captures créées par une version précédente.
+    */
+    private func sharedAudioURL(forVideo url: URL) -> URL {
+        let base = dualCameraBaseName(for: url) ?? legacyRecordingBaseName(for: url)
+        return preferredSharedAudioURL(
+            baseName: base,
+            directory: url.deletingLastPathComponent()
+        )
+    }
+
+    private func sharedAudioSourceURLs(baseName: String, directory: URL) -> [URL] {
+        [
+            directory.appendingPathComponent("\(baseName).audio.caf"),
+            directory.appendingPathComponent("\(baseName).audio.m4a"),
+        ]
+    }
+
+    private func preferredSharedAudioURL(baseName: String, directory: URL) -> URL {
+        let candidates = sharedAudioSourceURLs(baseName: baseName, directory: directory)
+        return candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) })
+            ?? candidates[0]
+    }
+
+    private func photoImportJournalURL(for videoURL: URL) -> URL? {
+        guard let base = dualCameraBaseName(for: videoURL) else { return nil }
+        return videoURL.deletingLastPathComponent().appendingPathComponent("\(base).photo-import.json")
+    }
+
+    private func writePhotoImportJournal(_ journal: PhotoImportJournal, to url: URL) throws {
+        let data = try JSONEncoder().encode(journal)
+        try data.write(to: url, options: .atomic)
+        try? FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUnlessOpen],
+            ofItemAtPath: url.path
+        )
+    }
+
+    private func readPhotoImportJournal(from url: URL) -> PhotoImportJournal? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(PhotoImportJournal.self, from: data)
+    }
+
+    private func photoImportConfirmationCount(_ journal: PhotoImportJournal) -> Int? {
+        guard let front = journal.frontLocalIdentifier,
+              let rear = journal.rearLocalIdentifier else { return nil }
+        let authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard authorization == .authorized else { return nil }
+        return PHAsset.fetchAssets(
+            withLocalIdentifiers: [front, rear],
+            options: nil
+        ).count
+    }
+
+    private func photoAssetExists(_ localIdentifier: String?) -> Bool {
+        guard let localIdentifier,
+              PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized else {
+            return false
+        }
+        return PHAsset.fetchAssets(
+            withLocalIdentifiers: [localIdentifier],
+            options: nil
+        ).count == 1
+    }
+
+    private func captureDate(from url: URL) -> Date? {
+        let name = url.lastPathComponent
+        let pattern = #"prepatrack-(\d{8}-\d{6})-"#
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(
+                  in: name,
+                  range: NSRange(name.startIndex..., in: name)
+              ),
+              let range = Range(match.range(at: 1), in: name) else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "fr_FR_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter.date(from: String(name[range]))
+    }
+
+    private func captureProfilePayload() -> [String: Any] {
+        let audioSession = AVAudioSession.sharedInstance()
+        var result = videoPipeline.profilePayload()
+        for (key, value) in videoPipeline.activeSegmentHealthPayload() {
+            result[key] = value
+        }
+        result["preferredMicrophoneMode"] = microphoneModeName(AVCaptureDevice.preferredMicrophoneMode)
+        result["activeMicrophoneMode"] = microphoneModeName(AVCaptureDevice.activeMicrophoneMode)
+        result["audioChannels"] = audioSession.inputNumberOfChannels
+        result["voiceProcessingEnabled"] = audioEngine.inputNode.isVoiceProcessingEnabled
+        result["audioSessionCategory"] = audioSession.category.rawValue
+        result["audioSessionMode"] = audioSession.mode.rawValue
+        result["audioInputRoute"] = audioSession.currentRoute.inputs.first?.portName ?? "none"
+        audioStateLock.lock()
+        result["audioStorageContainer"] = "caf"
+        result["audioStorageCodec"] = "linearPCM16"
+        result["audioStorageSampleRate"] = 48_000
+        result["audioCaptureConfirmed"] = audioCaptureConfirmed
+        result["audioBuffersWritten"] = audioBuffersWritten
+        result["audioFramesWritten"] = audioFramesWritten
+        let captureURL = audioCaptureURL
+        if let lastAudioBufferWrittenAt {
+            result["lastAudioBufferAt"] = lastAudioBufferWrittenAt.timeIntervalSince1970 * 1_000
+        }
+        audioStateLock.unlock()
+        if let captureURL {
+            result["audioFileBytes"] = recordingFileSize(at: captureURL)
+        }
+        return result
+    }
+
+    private func microphoneModeName(_ mode: AVCaptureDevice.MicrophoneMode) -> String {
+        switch mode {
+        case .standard: return "standard"
+        case .voiceIsolation: return "voiceIsolation"
+        case .wideSpectrum: return "wideSpectrum"
+        @unknown default: return "automatic"
+        }
+    }
+
+    /** Configure la route qui permet à iOS de mémoriser un mode micro avant la capture. */
+    private func prepareAudioSessionForMicrophoneModes() throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playAndRecord, mode: .videoChat, options: [.defaultToSpeaker])
+        try? session.setPreferredSampleRate(48_000)
+        try? session.setPreferredInputNumberOfChannels(1)
+    }
+
+    private func activateVoiceProcessingInput() throws -> (AVAudioInputNode, AVAudioFormat) {
+        try prepareAudioSessionForMicrophoneModes()
+        let session = AVAudioSession.sharedInstance()
+        try session.setActive(true)
         if let builtIn = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
             try? session.setPreferredInput(builtIn)
             if let front = builtIn.dataSources?.first(where: { $0.orientation == .front }) {
-                if front.supportedPolarPatterns?.contains(.stereo) == true {
-                    try? front.setPreferredPolarPattern(.stereo)
-                }
+                // Ne pas imposer de polar pattern : iOS doit pouvoir appliquer
+                // Standard, Isolement de la voix ou Large spectre librement.
                 try? builtIn.setPreferredDataSource(front)
             }
         }
-        if session.inputNumberOfChannels >= 2 {
-            try? session.setPreferredInputOrientation(.portrait)
+
+        let input = audioEngine.inputNode
+        try input.setVoiceProcessingEnabled(true)
+        guard input.isVoiceProcessingEnabled else { throw RecordingError.voiceProcessingUnavailable }
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw RecordingError.voiceProcessingUnavailable
         }
-        return max(1, min(2, session.inputNumberOfChannels))
+        return (input, format)
     }
 
-    /** Encode le son en AAC 48 kHz avec le débit maximal utile à 1 ou 2 canaux. */
-    private func configureAudioOutput(channels: Int) {
-        guard let connection = movieOutput.connection(with: .audio) else { return }
-        let supported = Set(movieOutput.supportedOutputSettingsKeys(for: connection))
-        let candidates: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
+    private func startMicrophoneModePreview() throws {
+        microphoneModePreviewStop?.cancel()
+        microphoneModePreviewStop = nil
+        let (input, format) = try activateVoiceProcessingInput()
+        guard input.isVoiceProcessingEnabled else { throw RecordingError.voiceProcessingUnavailable }
+        input.installTap(onBus: 0, bufferSize: 2_048, format: format) { _, _ in }
+        audioTapInstalled = true
+        do {
+            audioEngine.prepare()
+            try audioEngine.start()
+        } catch {
+            stopAudioCapture()
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            throw error
+        }
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.activeSegment == nil else { return }
+            self.stopAudioCapture()
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
+        microphoneModePreviewStop = work
+        sessionQueue.asyncAfter(deadline: .now() + 30, execute: work)
+    }
+
+    /**
+     * Les modes micro Apple exigent Voice Processing I/O. Le moteur enregistre
+     * donc la piste réellement traitée dans un CAF PCM linéaire. Contrairement
+     * à un AAC/M4A qui doit finaliser son index, le CAF reste récupérable après
+     * une extinction brutale, tandis que
+     * le pipeline MultiCam conserve la vidéo stabilisée sans posséder le micro.
+     */
+    private func startAudioCapture(
+        to url: URL,
+        segmentID: UUID? = nil
+    ) throws {
+        stopAudioCapture()
+        let (input, format) = try activateVoiceProcessingInput()
+        let file = try makeAudioFile(at: url, format: format)
+        audioStateLock.lock()
+        audioFile = file
+        audioCaptureFormat = format
+        acceptsAudioBuffers = true
+        audioCaptureSegmentID = segmentID
+        audioFirstHostSeconds = nil
+        audioWriteError = nil
+        audioReadySignal = DispatchSemaphore(value: 0)
+        audioCaptureConfirmed = false
+        audioBuffersWritten = 0
+        audioFramesWritten = 0
+        audioCaptureStartedAt = Date()
+        lastAudioBufferWrittenAt = nil
+        audioCaptureURL = url
+        audioStateLock.unlock()
+
+        input.installTap(onBus: 0, bufferSize: 2_048, format: format) { [weak self, weak input] buffer, when in
+            guard let self else { return }
+            let resolvedHostSeconds: TimeInterval? = {
+                if when.isHostTimeValid {
+                    let seconds = AVAudioTime.seconds(forHostTime: when.hostTime)
+                    return seconds.isFinite ? seconds : nil
+                }
+                guard when.isSampleTimeValid,
+                      let anchor = input?.lastRenderTime,
+                      anchor.isHostTimeValid,
+                      anchor.isSampleTimeValid,
+                      let extrapolated = when.extrapolateTime(fromAnchor: anchor),
+                      extrapolated.isHostTimeValid else { return nil }
+                let seconds = AVAudioTime.seconds(forHostTime: extrapolated.hostTime)
+                return seconds.isFinite ? seconds : nil
+            }()
+            var timingUpdate: (segmentID: UUID, hostSeconds: TimeInterval)?
+            self.audioStateLock.lock()
+            guard self.acceptsAudioBuffers, let target = self.audioFile else {
+                self.audioStateLock.unlock()
+                return
+            }
+            var readySignal: DispatchSemaphore?
+            do {
+                try target.write(from: buffer)
+                self.audioBuffersWritten += 1
+                self.audioFramesWritten += AVAudioFramePosition(buffer.frameLength)
+                self.lastAudioBufferWrittenAt = Date()
+                if self.audioFirstHostSeconds == nil,
+                   let hostSeconds = resolvedHostSeconds,
+                   let segmentID = self.audioCaptureSegmentID {
+                    self.audioFirstHostSeconds = hostSeconds
+                    timingUpdate = (segmentID, hostSeconds)
+                }
+                let hasRequiredTimingAnchor = self.audioCaptureSegmentID == nil
+                    || self.audioFirstHostSeconds != nil
+                if !self.audioCaptureConfirmed,
+                   self.audioBuffersWritten >= self.minimumConfirmedAudioBuffers,
+                   hasRequiredTimingAnchor,
+                   target.length > 0 {
+                    self.audioCaptureConfirmed = true
+                    readySignal = self.audioReadySignal
+                }
+            } catch {
+                if self.audioWriteError == nil { self.audioWriteError = error.localizedDescription }
+            }
+            self.audioStateLock.unlock()
+            if let timingUpdate {
+                self.timingStore.recordAudioStart(
+                    segmentID: timingUpdate.segmentID,
+                    hostSeconds: timingUpdate.hostSeconds
+                )
+            }
+            // Mettre la mutation du journal en file avant de réveiller le
+            // démarrage/la rotation. Un snapshot immédiat drainera ainsi
+            // toujours l'ancre audio au lieu de voir un sidecar incomplet.
+            readySignal?.signal()
+        }
+        audioTapInstalled = true
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+        } catch {
+            stopAudioCapture()
+            throw error
+        }
+    }
+
+    private func makeAudioFile(at url: URL) throws -> AVAudioFile {
+        audioStateLock.lock()
+        let format = audioCaptureFormat
+        audioStateLock.unlock()
+        guard let format else { throw RecordingError.voiceProcessingUnavailable }
+        return try makeAudioFile(at: url, format: format)
+    }
+
+    private func makeAudioFile(at url: URL, format: AVAudioFormat) throws -> AVAudioFile {
+        guard abs(format.sampleRate - 48_000) < 1,
+              format.channelCount == 1 else {
+            throw RecordingError.unsupportedAudioFormat(
+                sampleRate: format.sampleRate,
+                channels: format.channelCount
+            )
+        }
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: 48_000,
-            AVNumberOfChannelsKey: channels,
-            AVEncoderBitRateKey: channels >= 2 ? 256_000 : 160_000,
-            AVEncoderAudioQualityKey: AVAudioQuality.max.rawValue,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
         ]
-        let settings = candidates.filter { supported.contains($0.key) }
-        if !settings.isEmpty { movieOutput.setOutputSettings(settings, for: connection) }
+        let file = try AVAudioFile(
+            forWriting: url,
+            settings: settings,
+            commonFormat: format.commonFormat,
+            interleaved: format.isInterleaved
+        )
+        try? FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            ofItemAtPath: url.path
+        )
+        return file
+    }
+
+    private func swapAudioFile(with file: AVAudioFile, segmentID: UUID) -> String? {
+        audioStateLock.lock()
+        let previousError = audioWriteError
+        audioFile = file
+        acceptsAudioBuffers = true
+        audioCaptureSegmentID = segmentID
+        audioFirstHostSeconds = nil
+        audioWriteError = nil
+        audioReadySignal = DispatchSemaphore(value: 0)
+        audioCaptureConfirmed = false
+        audioBuffersWritten = 0
+        audioFramesWritten = 0
+        audioCaptureStartedAt = Date()
+        lastAudioBufferWrittenAt = nil
+        audioCaptureURL = file.url
+        audioStateLock.unlock()
+        return previousError
+    }
+
+    private func stopAudioCapture() {
+        disarmAudioHealthWatchdog()
+        microphoneModePreviewStop?.cancel()
+        microphoneModePreviewStop = nil
+        audioStateLock.lock()
+        acceptsAudioBuffers = false
+        audioStateLock.unlock()
+        if audioTapInstalled {
+            audioEngine.inputNode.removeTap(onBus: 0)
+            audioTapInstalled = false
+        }
+        if audioEngine.isRunning { audioEngine.stop() }
+        audioStateLock.lock()
+        audioFile = nil
+        audioCaptureFormat = nil
+        audioCaptureStartedAt = nil
+        audioCaptureURL = nil
+        audioCaptureSegmentID = nil
+        audioFirstHostSeconds = nil
+        audioStateLock.unlock()
+        audioEngine.reset()
+    }
+
+    /** Attend une vraie écriture PCM, pas seulement un moteur AVAudioEngine actif. */
+    private func waitUntilAudioHasData(timeout: TimeInterval) throws {
+        audioStateLock.lock()
+        let alreadyConfirmed = audioCaptureConfirmed
+        let signal = audioReadySignal
+        let initialError = audioWriteError
+        audioStateLock.unlock()
+
+        if let initialError { throw RecordingError.audioWriteFailed(initialError) }
+        if !alreadyConfirmed,
+           signal.wait(timeout: .now() + timeout) != .success {
+            audioStateLock.lock()
+            let error = audioWriteError
+            let confirmed = audioCaptureConfirmed
+            audioStateLock.unlock()
+            if let error { throw RecordingError.audioWriteFailed(error) }
+            guard confirmed else { throw RecordingError.audioCaptureTimedOut }
+        }
+
+        audioStateLock.lock()
+        let confirmed = audioCaptureConfirmed
+        let error = audioWriteError
+        let frames = audioFramesWritten
+        let captureURL = audioCaptureURL
+        audioStateLock.unlock()
+        if let error { throw RecordingError.audioWriteFailed(error) }
+        let fileBytes = captureURL.map { recordingFileSize(at: $0) } ?? 0
+        guard confirmed, frames > 0, fileBytes > 10_000 else {
+            throw RecordingError.audioCaptureTimedOut
+        }
+    }
+
+    private func armAudioHealthWatchdog() {
+        disarmAudioHealthWatchdog()
+        let timer = DispatchSource.makeTimerSource(queue: sessionQueue)
+        timer.schedule(deadline: .now() + 2, repeating: 2, leeway: .milliseconds(250))
+        timer.setEventHandler { [weak self] in self?.checkAudioCaptureHealth() }
+        audioHealthTimer = timer
+        timer.resume()
+    }
+
+    private func disarmAudioHealthWatchdog() {
+        audioHealthTimer?.setEventHandler {}
+        audioHealthTimer?.cancel()
+        audioHealthTimer = nil
+    }
+
+    private func checkAudioCaptureHealth() {
+        guard recordingRequested,
+              !suspendedForInterruption,
+              applicationIsActive,
+              !audioInterruptionActive,
+              activeSegment != nil else { return }
+        audioStateLock.lock()
+        let writeError = audioWriteError
+        let captureStartedAt = audioCaptureStartedAt
+        let lastWrite = lastAudioBufferWrittenAt
+        audioStateLock.unlock()
+
+        let healthReference = lastWrite ?? captureStartedAt
+        let stalled = healthReference.map {
+            Date().timeIntervalSince($0) > audioStallTimeoutSeconds
+        } ?? false
+        guard writeError != nil || stalled else { return }
+        let message = writeError
+            ?? "Aucun buffer microphone n'a été écrit depuis \(Int(audioStallTimeoutSeconds)) secondes."
+        suspendedForInterruption = true
+        finishActiveSegment(terminal: false, interrupted: true, forcedError: message)
+        scheduleResumeRetry()
+    }
+
+    private func currentAudioWriteError() -> String? {
+        audioStateLock.lock()
+        defer { audioStateLock.unlock() }
+        return audioWriteError
+    }
+
+    private func alignedAudioRange(
+        videoDuration: TimeInterval,
+        audioDuration: TimeInterval,
+        videoHostStart: TimeInterval,
+        audioHostStart: TimeInterval
+    ) -> AlignedAudioRange? {
+        guard videoDuration.isFinite, videoDuration > 0,
+              audioDuration.isFinite, audioDuration > 0,
+              videoHostStart.isFinite, audioHostStart.isFinite else { return nil }
+        let measuredOffset = audioHostStart - videoHostStart
+        let rawOffset = abs(measuredOffset) <= 0.05 ? 0 : measuredOffset
+        // Un tel écart indique un journal associé au mauvais segment. Ne jamais
+        // le masquer en rognant arbitrairement plusieurs secondes de preuve.
+        guard abs(rawOffset) <= 5 else { return nil }
+        let sourceStart = max(0, -rawOffset)
+        let targetStart = max(0, rawOffset)
+        let duration = min(audioDuration - sourceStart, videoDuration - targetStart)
+        guard duration > 0 else { return nil }
+        return AlignedAudioRange(
+            sourceStart: sourceStart,
+            targetStart: targetStart,
+            duration: duration,
+            rawOffset: rawOffset
+        )
+    }
+
+    private func insertAlignedAudio(
+        sourceAudio: AVAssetTrack,
+        sourceAudioTimeRange: CMTimeRange,
+        targetAudio: AVMutableCompositionTrack,
+        videoDuration: CMTime,
+        timing: SegmentTimingJournal,
+        angle: CameraAngle
+    ) throws -> AlignedAudioRange {
+        guard let audioHostStart = timing.audioStartHostSeconds,
+              let videoHostStart = timing.videoHostStart(for: angle),
+              let placement = alignedAudioRange(
+                videoDuration: CMTimeGetSeconds(videoDuration),
+                audioDuration: CMTimeGetSeconds(sourceAudioTimeRange.duration),
+                videoHostStart: videoHostStart,
+                audioHostStart: audioHostStart
+              ) else {
+            throw RecordingError.invalidTimingAnchors
+        }
+        let scale: CMTimeScale = 48_000
+        let sourceOffset = CMTime(seconds: placement.sourceStart, preferredTimescale: scale)
+        let targetStart = CMTime(seconds: placement.targetStart, preferredTimescale: scale)
+        let insertDuration = CMTime(seconds: placement.duration, preferredTimescale: scale)
+        if CMTimeCompare(targetStart, .zero) > 0 {
+            targetAudio.insertEmptyTimeRange(CMTimeRange(start: .zero, duration: targetStart))
+        }
+        try targetAudio.insertTimeRange(
+            CMTimeRange(
+                start: CMTimeAdd(sourceAudioTimeRange.start, sourceOffset),
+                duration: insertDuration
+            ),
+            of: sourceAudio,
+            at: targetStart
+        )
+        let coveredEnd = CMTimeAdd(targetStart, insertDuration)
+        if CMTimeCompare(coveredEnd, videoDuration) < 0 {
+            targetAudio.insertEmptyTimeRange(CMTimeRange(
+                start: coveredEnd,
+                duration: CMTimeSubtract(videoDuration, coveredEnd)
+            ))
+        }
+        return placement
+    }
+
+    /** Réunit sans réencodage la vidéo stabilisée et l'audio Voice Processing. */
+    private func prepareFinalRecording(
+        videoURL: URL,
+        audioURL: URL?,
+        timing: SegmentTimingJournal? = nil,
+        timingSidecarExists: Bool = false,
+        angle: CameraAngle? = nil,
+        completion: @escaping (URL, Bool, String?) -> Void
+    ) {
+        let stem = videoURL.deletingPathExtension().lastPathComponent
+        let baseName = stem.hasSuffix(".video") ? String(stem.dropLast(".video".count)) : stem
+        let finalURL = videoURL.deletingLastPathComponent().appendingPathComponent("\(baseName).mov")
+        let mergingURL = videoURL.deletingLastPathComponent().appendingPathComponent("\(baseName).merging.mov")
+
+        Task {
+            if timingSidecarExists,
+               (timing?.isComplete != true || angle == nil) {
+                completion(
+                    videoURL,
+                    false,
+                    "Le journal de synchronisation audio/vidéo est incomplet; toutes les sources ont été conservées."
+                )
+                return
+            }
+            // Un export peut avoir terminé juste avant une extinction, sans que
+            // son callback ait eu le temps de le promouvoir. Ne jamais l'écraser
+            // s'il contient déjà les deux pistes valides.
+            if await self.isValidMergedRecording(mergingURL) {
+                completion(mergingURL, true, nil)
+                return
+            }
+            guard let audioURL,
+                  FileManager.default.fileExists(atPath: audioURL.path) else {
+                completion(videoURL, false, "La piste audio Voice Processing est absente; la vidéo seule a été conservée.")
+                return
+            }
+            do {
+                let videoAsset = AVURLAsset(url: videoURL)
+                let audioAsset = AVURLAsset(url: audioURL)
+                guard let sourceVideo = try await videoAsset.loadTracks(withMediaType: .video).first,
+                      let sourceAudio = try await audioAsset.loadTracks(withMediaType: .audio).first else {
+                    completion(videoURL, false, "La piste audio ou vidéo est illisible; la vidéo source a été conservée.")
+                    return
+                }
+                let videoDuration = try await videoAsset.load(.duration)
+                let audioTimeRange = try await sourceAudio.load(.timeRange)
+                let audioDuration = audioTimeRange.duration
+                let audioTrackDurationSeconds = audioTimeRange.duration.seconds
+                guard videoDuration.isValid, videoDuration.seconds > 0,
+                      audioDuration.isValid, audioDuration.seconds > 0,
+                      audioTrackDurationSeconds.isFinite,
+                      audioTrackDurationSeconds > 0 else {
+                    completion(videoURL, false, "La piste audio ou vidéo est vide; la vidéo source a été conservée.")
+                    return
+                }
+                let durationDifference = audioTrackDurationSeconds - videoDuration.seconds
+                if !timingSidecarExists, durationDifference > 3 {
+                    // Compatibilité des anciennes captures sans journal timing.
+                    completion(
+                        videoURL,
+                        false,
+                        "La vidéo s'est interrompue avant l'audio; toutes les sources ont été conservées pour récupération."
+                    )
+                    return
+                }
+                var durationWarning: String?
+
+                let composition = AVMutableComposition()
+                guard let targetVideo = composition.addMutableTrack(
+                    withMediaType: .video,
+                    preferredTrackID: kCMPersistentTrackID_Invalid
+                ), let targetAudio = composition.addMutableTrack(
+                    withMediaType: .audio,
+                    preferredTrackID: kCMPersistentTrackID_Invalid
+                ) else {
+                    completion(videoURL, false, "Impossible de préparer les pistes finales; la vidéo source a été conservée.")
+                    return
+                }
+                try targetVideo.insertTimeRange(
+                    CMTimeRange(start: .zero, duration: videoDuration),
+                    of: sourceVideo,
+                    at: .zero
+                )
+                targetVideo.preferredTransform = try await sourceVideo.load(.preferredTransform)
+                if timingSidecarExists, let timing, let angle {
+                    let placement = try insertAlignedAudio(
+                        sourceAudio: sourceAudio,
+                        sourceAudioTimeRange: audioTimeRange,
+                        targetAudio: targetAudio,
+                        videoDuration: videoDuration,
+                        timing: timing,
+                        angle: angle
+                    )
+                    let audioEndOnVideoTimeline = placement.rawOffset + audioTrackDurationSeconds
+                    if audioEndOnVideoTimeline - videoDuration.seconds > 3 {
+                        completion(
+                            videoURL,
+                            false,
+                            "La vidéo s'est interrompue avant l'audio; toutes les sources ont été conservées pour récupération."
+                        )
+                        return
+                    }
+                    if videoDuration.seconds - audioEndOnVideoTimeline > 3 {
+                        durationWarning = "La piste audio était plus courte que la vidéo; la fin reste silencieuse mais la vidéo complète a été sauvegardée."
+                    }
+                } else {
+                    let audioRangeDuration = CMTimeCompare(audioDuration, videoDuration) > 0
+                        ? videoDuration
+                        : audioDuration
+                    try targetAudio.insertTimeRange(
+                        CMTimeRange(start: audioTimeRange.start, duration: audioRangeDuration),
+                        of: sourceAudio,
+                        at: .zero
+                    )
+                    if CMTimeCompare(audioRangeDuration, videoDuration) < 0 {
+                        targetAudio.insertEmptyTimeRange(CMTimeRange(
+                            start: audioRangeDuration,
+                            duration: CMTimeSubtract(videoDuration, audioRangeDuration)
+                        ))
+                        if durationDifference < -3 {
+                            durationWarning = "La piste audio était plus courte que la vidéo; la fin reste silencieuse mais la vidéo complète a été sauvegardée."
+                        }
+                    }
+                }
+
+                guard let export = AVAssetExportSession(
+                    asset: composition,
+                    presetName: AVAssetExportPresetPassthrough
+                ) else {
+                    completion(videoURL, false, "Impossible de finaliser la vidéo; les sources ont été conservées.")
+                    return
+                }
+                if FileManager.default.fileExists(atPath: mergingURL.path) {
+                    try FileManager.default.removeItem(at: mergingURL)
+                }
+                // Écrire dans un nom non final : si iOS tue l'app pendant
+                // l'export, ce fichier partiel ne pourra jamais masquer les
+                // sources au prochain lancement.
+                export.outputURL = mergingURL
+                export.outputFileType = .mov
+                export.shouldOptimizeForNetworkUse = false
+                export.exportAsynchronously {
+                    if export.status == .completed,
+                       FileManager.default.fileExists(atPath: mergingURL.path) {
+                        Task {
+                            guard await self.isValidMergedRecording(mergingURL) else {
+                                try? FileManager.default.removeItem(at: mergingURL)
+                                completion(videoURL, false, "La vidéo fusionnée est incomplète; les sources ont été conservées.")
+                                return
+                            }
+                            do {
+                                if FileManager.default.fileExists(atPath: finalURL.path) {
+                                    try FileManager.default.removeItem(at: finalURL)
+                                }
+                                try FileManager.default.moveItem(at: mergingURL, to: finalURL)
+                                completion(finalURL, true, durationWarning)
+                            } catch {
+                                completion(videoURL, false, error.localizedDescription)
+                            }
+                        }
+                    } else {
+                        try? FileManager.default.removeItem(at: mergingURL)
+                        completion(
+                            videoURL,
+                            false,
+                            export.error?.localizedDescription
+                                ?? "La fusion audio/vidéo a échoué; les sources ont été conservées."
+                        )
+                    }
+                }
+            } catch {
+                completion(videoURL, false, error.localizedDescription)
+            }
+        }
+    }
+
+    /** Un nom final n'est reconnu qu'après validation des deux pistes. */
+    private func isValidMergedRecording(_ url: URL) async -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        let asset = AVURLAsset(url: url)
+        do {
+            let duration = try await asset.load(.duration)
+            let videos = try await asset.loadTracks(withMediaType: .video)
+            let audios = try await asset.loadTracks(withMediaType: .audio)
+            guard duration.isValid, duration.seconds > 0,
+                  let video = videos.first,
+                  let audio = audios.first else { return false }
+            let videoRange = try await video.load(.timeRange)
+            let audioRange = try await audio.load(.timeRange)
+            return abs(videoRange.duration.seconds - audioRange.duration.seconds) <= 3
+        } catch {
+            return false
+        }
+    }
+
+    private func hasReadableAudioRecording(_ url: URL) async -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        if url.pathExtension.lowercased() == "caf",
+           let file = try? AVAudioFile(forReading: url),
+           file.length > 0,
+           file.fileFormat.sampleRate > 0,
+           file.fileFormat.channelCount > 0 {
+            // AVAudioFile sait relire directement un CAF PCM dont l'application
+            // n'a pas eu le temps de finaliser la fermeture après un crash.
+            return true
+        }
+        let asset = AVURLAsset(url: url)
+        do {
+            let duration = try await asset.load(.duration)
+            let tracks = try await asset.loadTracks(withMediaType: .audio)
+            return duration.isValid && duration.seconds > 0 && !tracks.isEmpty
+        } catch {
+            return false
+        }
     }
 
     private func requestPermissions(completion: @escaping (Bool) -> Void) {
         let group = DispatchGroup()
         var camera = AVCaptureDevice.authorizationStatus(for: .video) == .authorized
         var microphone = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        var photos = PHPhotoLibrary.authorizationStatus(for: .addOnly) == .authorized
         if AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined {
             group.enter(); AVCaptureDevice.requestAccess(for: .video) { camera = $0; group.leave() }
         }
@@ -405,22 +2905,243 @@ public final class RecordingPlugin: CAPPlugin, CAPBridgedPlugin, AVCaptureFileOu
             group.enter(); AVCaptureDevice.requestAccess(for: .audio) { microphone = $0; group.leave() }
         }
         if PHPhotoLibrary.authorizationStatus(for: .addOnly) == .notDetermined {
-            group.enter(); PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
-                photos = status == .authorized || status == .limited
+            group.enter(); PHPhotoLibrary.requestAuthorization(for: .addOnly) { _ in
                 group.leave()
             }
         }
-        group.notify(queue: .main) { completion(camera && microphone && photos) }
+        // Refuser Photos ne doit jamais empêcher de filmer : les sources
+        // restent alors dans Application Support et le bouton de récupération
+        // permettra l'import dès que l'autorisation sera accordée.
+        group.notify(queue: .main) { completion(camera && microphone) }
     }
 }
 
 private enum RecordingError: LocalizedError {
     case deviceUnavailable
     case configurationFailed
+    case stabilizationUnavailable
+    case voiceProcessingUnavailable
+    case unsupportedAudioFormat(sampleRate: Double, channels: AVAudioChannelCount)
+    case audioCaptureTimedOut
+    case audioWriteFailed(String)
+    case videoCaptureTimedOut(String)
+    case invalidTimingAnchors
+    case insufficientStorage
+    case testUnavailableWhileRecording
+    case recoveryInProgress
     var errorDescription: String? {
         switch self {
         case .deviceUnavailable: return "Caméra avant ou microphone introuvable."
         case .configurationFailed: return "Impossible de configurer la capture vidéo."
+        case .stabilizationUnavailable: return "iOS n’a pas activé la stabilisation vidéo sur ce profil."
+        case .voiceProcessingUnavailable: return "iOS n’a pas activé le traitement vocal requis pour les modes micro."
+        case .unsupportedAudioFormat(let sampleRate, let channels):
+            return "Le microphone n'a pas fourni le format fiable requis (\(Int(sampleRate)) Hz, \(channels) canal/canaux au lieu de 48 000 Hz mono)."
+        case .audioCaptureTimedOut:
+            return "Le microphone n'a produit aucun fichier audio confirmé. Les sources déjà écrites restent conservées."
+        case .audioWriteFailed(let message):
+            return "L'écriture audio a échoué (\(message)). Toutes les sources restent conservées."
+        case .videoCaptureTimedOut(let details):
+            return "Les deux caméras n'ont pas produit de fragments vidéo confirmés (\(details)). Toutes les sources restent conservées."
+        case .invalidTimingAnchors:
+            return "Les horodatages audio/vidéo sont invalides. Toutes les sources restent conservées sans fusion approximative."
+        case .insufficientStorage:
+            return "Moins de 8 Go sont disponibles. L’enregistrement a été arrêté proprement pour conserver les vidéos existantes."
+        case .testUnavailableWhileRecording:
+            return "Arrête l’enregistrement en cours avant de tester les caméras et le microphone."
+        case .recoveryInProgress:
+            return "La récupération des vidéos locales est en cours. Attends sa fin avant de démarrer une nouvelle capture."
         }
     }
+}
+
+private struct NativeRecordingSegment {
+    let id: UUID
+    let startedAt: Date
+    let frontVideoURL: URL
+    let rearVideoURL: URL
+    let audioURL: URL
+    let timingURL: URL
+}
+
+private struct PreparedCameraRecording {
+    let finalURL: URL
+    let merged: Bool
+    let error: String?
+}
+
+private struct PhotoImportJournal: Codable {
+    let state: String
+    let createdAt: Date
+    let frontLocalIdentifier: String?
+    let rearLocalIdentifier: String?
+}
+
+private enum CameraAngle {
+    case front
+    case rear
+}
+
+private struct AlignedAudioRange {
+    let sourceStart: TimeInterval
+    let targetStart: TimeInterval
+    let duration: TimeInterval
+    let rawOffset: TimeInterval
+}
+
+private struct SegmentTimingJournal: Codable {
+    static let currentVersion = 1
+    let version: Int
+    let segmentID: UUID
+    var frontVideoStartHostSeconds: TimeInterval?
+    var rearVideoStartHostSeconds: TimeInterval?
+    var audioStartHostSeconds: TimeInterval?
+
+    init(segmentID: UUID) {
+        version = Self.currentVersion
+        self.segmentID = segmentID
+    }
+
+    var isComplete: Bool {
+        frontVideoStartHostSeconds?.isFinite == true
+            && rearVideoStartHostSeconds?.isFinite == true
+            && audioStartHostSeconds?.isFinite == true
+    }
+
+    func videoHostStart(for angle: CameraAngle) -> TimeInterval? {
+        switch angle {
+        case .front: return frontVideoStartHostSeconds
+        case .rear: return rearVideoStartHostSeconds
+        }
+    }
+}
+
+/**
+ * Sérialise les ancres en mémoire et sur disque. Les callbacks caméra/micro ne
+ * font aucune I/O : leurs mutations sont soumises à cette file, et `snapshot`
+ * attend automatiquement toutes les mutations déjà soumises avant le mux.
+ */
+private final class SegmentTimingJournalStore {
+    private let queue = DispatchQueue(label: "com.n0thytvoff.prepatrack.recording.timing")
+    private var journals: [UUID: SegmentTimingJournal] = [:]
+    private var urls: [UUID: URL] = [:]
+
+    func begin(segmentID: UUID, url: URL) throws {
+        try queue.sync {
+            let journal = SegmentTimingJournal(segmentID: segmentID)
+            journals[segmentID] = journal
+            urls[segmentID] = url.standardizedFileURL
+            try persist(journal, to: url)
+        }
+    }
+
+    func recordVideoStarts(segmentID: UUID, front: TimeInterval, rear: TimeInterval) {
+        queue.async { [weak self] in
+            guard let self,
+                  front.isFinite,
+                  rear.isFinite,
+                  var journal = self.journals[segmentID],
+                  let url = self.urls[segmentID] else { return }
+            if journal.frontVideoStartHostSeconds == nil {
+                journal.frontVideoStartHostSeconds = front
+            }
+            if journal.rearVideoStartHostSeconds == nil {
+                journal.rearVideoStartHostSeconds = rear
+            }
+            self.journals[segmentID] = journal
+            self.persistWithoutThrowing(journal, to: url, source: "vidéo")
+        }
+    }
+
+    func recordAudioStart(segmentID: UUID, hostSeconds: TimeInterval) {
+        queue.async { [weak self] in
+            guard let self,
+                  hostSeconds.isFinite,
+                  var journal = self.journals[segmentID],
+                  let url = self.urls[segmentID] else { return }
+            if journal.audioStartHostSeconds == nil {
+                journal.audioStartHostSeconds = hostSeconds
+            }
+            self.journals[segmentID] = journal
+            self.persistWithoutThrowing(journal, to: url, source: "audio")
+        }
+    }
+
+    func snapshot(segmentID: UUID) -> SegmentTimingJournal? {
+        queue.sync {
+            guard let journal = journals[segmentID],
+                  let url = urls[segmentID] else { return nil }
+            do {
+                // Le mux ne peut commencer qu'après confirmation que la version
+                // complète visible en mémoire est aussi durable sur disque.
+                try persist(journal, to: url)
+                return journal
+            } catch {
+                NSLog(
+                    "[PrepaTrack Recording] Journal timing final non durable : %@",
+                    error.localizedDescription
+                )
+                return nil
+            }
+        }
+    }
+
+    func load(from url: URL) -> SegmentTimingJournal? {
+        queue.sync {
+            guard let data = try? Data(contentsOf: url),
+                  let journal = try? JSONDecoder().decode(SegmentTimingJournal.self, from: data),
+                  journal.version == SegmentTimingJournal.currentVersion else { return nil }
+            journals[journal.segmentID] = journal
+            urls[journal.segmentID] = url.standardizedFileURL
+            return journal
+        }
+    }
+
+    private func persistWithoutThrowing(
+        _ journal: SegmentTimingJournal,
+        to url: URL,
+        source: String
+    ) {
+        do {
+            try persist(journal, to: url)
+        } catch {
+            NSLog(
+                "[PrepaTrack Recording] Journal timing %@ : %@",
+                source,
+                error.localizedDescription
+            )
+        }
+    }
+
+    private func persist(_ journal: SegmentTimingJournal, to url: URL) throws {
+        let data = try JSONEncoder().encode(journal)
+        try data.write(to: url, options: .atomic)
+        try? FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            ofItemAtPath: url.path
+        )
+    }
+}
+
+private struct RecordingRecoverySnapshot {
+    let finalVideos: [URL]
+    let rawVideos: [URL]
+    let mergingVideos: [URL]
+    let temporaryVideos: [URL]
+    let dualBases: Set<String>
+    let pending: Int
+}
+
+private struct RecordingRecoverySummary {
+    let pending: Int
+    let recovered: Int
+    let retained: Int
+    let error: String?
+}
+
+private struct DualCameraRecoveryOutcome {
+    let recovered: Int
+    let retained: Int
+    let error: String?
+    let capturedAt: Date?
 }

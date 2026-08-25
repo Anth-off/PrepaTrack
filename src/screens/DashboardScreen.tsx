@@ -9,8 +9,10 @@ import { RateCards } from '../components/RateCards'
 import { RecoList } from '../components/RecoList'
 import { TimeBreakdown } from '../components/TimeBreakdown'
 import { byDensity, byHour, byOrderType, bySupport, byWeekday, losses } from '../core/analysis'
+import { filterByDatePeriod, type DatePeriod } from '../core/datePeriod'
 import { recommend } from '../core/recommendations'
 import { inspectIntegrity } from '../core/integrity'
+import { isRateMeaningful } from '../core/metrics'
 import { formatDayLabel, formatShort } from '../core/time'
 import { useRecentDays } from '../hooks/useRecentDays'
 import { useNow } from '../hooks/useNow'
@@ -24,7 +26,8 @@ interface Props {
 const PERIODS = [
   { key: 7, label: '7 jours' },
   { key: 30, label: '30 jours' },
-  { key: 365, label: 'Tout' },
+  { key: 'all', label: 'Tout' },
+  { key: 'custom', label: 'Dates' },
 ] as const
 
 /**
@@ -33,16 +36,26 @@ const PERIODS = [
  * pendant une pause, seule la place disponible change.
  */
 export function DashboardScreen({ onOpen }: Props) {
-  const [period, setPeriod] = useState<number>(30)
+  const [period, setPeriod] = useState<DatePeriod>(30)
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
   const now = useNow(60_000)
   const { days: allDays, settings, targetRate, loading } = useRecentDays(365)
   const storedDismissals = useLiveQuery(() => getIntegrityDismissals(), [])
 
   const inPeriod = useMemo(() => {
-    if (period >= 365) return allDays
-    const limit = now - period * 24 * 3600_000
-    return allDays.filter((d) => d.metrics.startedAt >= limit)
-  }, [allDays, now, period])
+    return filterByDatePeriod(allDays, period, now, fromDate, toDate)
+  }, [allDays, fromDate, now, period, toDate])
+
+  const oldestDate = allDays.at(-1)?.date
+  const newestDate = allDays[0]?.date
+
+  function selectPeriod(next: DatePeriod) {
+    setPeriod(next)
+    if (next !== 'custom') return
+    setFromDate((current) => current || oldestDate || '')
+    setToDate((current) => current || newestDate || '')
+  }
 
   // Une vacation oubliée ouverte compte des heures de présence fictives : la
   // laisser dans les moyennes ferait passer une bonne semaine pour une mauvaise.
@@ -111,6 +124,7 @@ export function DashboardScreen({ onOpen }: Props) {
     { colis: 0, orders: 0, worked: 0, waste: 0, overtime: 0 },
   )
   const averageRate = totals.worked > 0 ? totals.colis / (totals.worked / 3_600_000) : 0
+  const averageRateShown = averageRate > 0 && isRateMeaningful(totals.worked)
   const palletMetrics = days.flatMap((day) => day.metrics.orders.flatMap((order) => order.pallets))
   const palletOrders = days.flatMap((day) => day.metrics.orders).filter((order) => order.pallets.length > 0)
   const palletColis = palletMetrics.reduce((sum, pallet) => sum + pallet.colis, 0)
@@ -118,13 +132,13 @@ export function DashboardScreen({ onOpen }: Props) {
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-4 overflow-x-hidden px-4 pb-4 md:px-6 md:py-6">
-      <div className="flex gap-1.5">
+      <div className="grid min-w-0 grid-cols-4 gap-1.5">
         {PERIODS.map((p) => (
           <button
             key={p.key}
             type="button"
-            onClick={() => setPeriod(p.key)}
-            className={`pressable rounded-lg px-3 py-1.5 text-sm font-semibold ${
+            onClick={() => selectPeriod(p.key)}
+            className={`pressable min-h-11 min-w-0 rounded-xl px-2 py-2 text-sm font-semibold ${
               period === p.key ? 'bg-accent text-black' : 'bg-ink-700 text-slate-400'
             }`}
           >
@@ -132,6 +146,36 @@ export function DashboardScreen({ onOpen }: Props) {
           </button>
         ))}
       </div>
+
+      {period === 'custom' && (
+        <div className="grid min-w-0 grid-cols-2 gap-2 rounded-2xl bg-ink-800 p-3">
+          <label className="min-w-0 text-xs font-semibold text-slate-400">
+            Du
+            <input
+              type="date"
+              value={fromDate}
+              min={oldestDate}
+              max={toDate || newestDate}
+              onChange={(event) => setFromDate(event.target.value)}
+              className="mt-1 block min-h-11 w-full min-w-0 rounded-xl border border-ink-600 bg-ink-700 px-2 text-sm font-semibold text-slate-100 [color-scheme:dark]"
+            />
+          </label>
+          <label className="min-w-0 text-xs font-semibold text-slate-400">
+            Au
+            <input
+              type="date"
+              value={toDate}
+              min={fromDate || oldestDate}
+              max={newestDate}
+              onChange={(event) => setToDate(event.target.value)}
+              className="mt-1 block min-h-11 w-full min-w-0 rounded-xl border border-ink-600 bg-ink-700 px-2 text-sm font-semibold text-slate-100 [color-scheme:dark]"
+            />
+          </label>
+          <p className="col-span-2 text-xs text-slate-500">
+            {inPeriod.length} vacation{inPeriod.length > 1 ? 's' : ''} dans la période sélectionnée.
+          </p>
+        </div>
+      )}
 
       {stale.length > 0 && (
         <div className="rounded-2xl border border-warn/50 bg-warn/10 p-3">
@@ -196,13 +240,13 @@ export function DashboardScreen({ onOpen }: Props) {
       {/* Deux colonnes dès 768 px : avec l'affichage Windows à 125 ou 150 %, un
           écran de portable descend souvent sous les 1024 px de largeur CSS et
           resterait bloqué en présentation téléphone. */}
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5">
+      <div className="grid min-w-0 grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5">
         <Kpi label="Colis cumulés" value={String(totals.colis)} />
         <Kpi
           label="Cadence moyenne"
-          value={averageRate > 0 ? String(Math.round(averageRate)) : '—'}
-          unit={averageRate > 0 ? '/h' : undefined}
-          tone={averageRate >= targetRate ? 'ok' : 'warn'}
+          value={averageRateShown ? String(Math.round(averageRate)) : '—'}
+          unit={averageRateShown ? '/h' : undefined}
+          tone={averageRateShown ? (averageRate >= targetRate ? 'ok' : 'warn') : undefined}
         />
         <Kpi label="Commandes" value={String(totals.orders)} />
         <Kpi label="Temps perdu" value={formatShort(totals.waste)} />
@@ -225,8 +269,8 @@ export function DashboardScreen({ onOpen }: Props) {
           Aucune vacation sur cette période. Choisis une plage plus large.
         </p>
       ) : (
-        <div className="grid items-start gap-4 md:grid-cols-2 xl:grid-cols-3">
-          <div className="flex flex-col gap-4 xl:col-span-2">
+        <div className="grid min-w-0 items-start gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div className="flex min-w-0 flex-col gap-4 xl:col-span-2">
             <RecoList recommendations={analysis.recommendations} dayCount={days.length} />
             <DayBars days={days} targetRate={targetRate} onSelect={onOpen} />
             <HourChart points={analysis.hours} targetRate={targetRate} />
@@ -239,7 +283,7 @@ export function DashboardScreen({ onOpen }: Props) {
             </section>
           </div>
 
-          <div className="flex flex-col gap-4">
+          <div className="flex min-w-0 flex-col gap-4">
             <section>
               <button
                 type="button"

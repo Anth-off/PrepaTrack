@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { db, getMeta, setMeta } from '../db/db'
-import { getClient } from './client'
+import { getClient, recoverClientAuth } from './client'
 import { SYNC_TABLES, type AnySyncTable, type SyncRow } from './tables'
 
 /**
@@ -113,7 +113,11 @@ async function performSync(): Promise<SyncOutcome> {
     const client = await getClient()
     if (!client) return { state: 'unconfigured', pulled: 0, pushed: 0, at }
 
-    const { data: sessionData } = await client.auth.getSession()
+    let { data: sessionData } = await client.auth.getSession()
+    if (!sessionData.session) {
+      await recoverClientAuth(client)
+      ;({ data: sessionData } = await client.auth.getSession())
+    }
     if (!sessionData.session) return { state: 'signed_out', pulled: 0, pushed: 0, at }
 
     const progress = await syncTables(client)
