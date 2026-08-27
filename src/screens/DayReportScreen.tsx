@@ -31,6 +31,7 @@ import { OrderEditSheet } from './OrderEditSheet'
 import { StockShortageSheet } from './StockShortageSheet'
 import { PalletEditSheet } from './PalletEditSheet'
 import { RecordingArchive } from '../components/RecordingArchive'
+import { CoachingHistory } from '../components/CoachingHistory'
 import { deleteWorkdayRecordings } from '../db/recordings'
 import type { Order, Segment } from '../core/types'
 
@@ -249,6 +250,8 @@ export function DayReportScreen({ workdayId, initialSegmentId, onBack }: Props) 
         </section>
 
         <RecordingArchive workdayId={workdayId} />
+
+        <CoachingHistory workdayId={workdayId} />
 
         <section className="border-t border-ink-600 pt-4">
           {confirmDelete ? (

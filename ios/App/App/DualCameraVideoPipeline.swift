@@ -609,6 +609,10 @@ final class DualCameraVideoPipeline: NSObject, AVCaptureVideoDataOutputSampleBuf
               let frameRenderer,
               let writer = segmentWriter else { return }
 
+        // Copie logique non bloquante : l'analyse abandonne la frame si sa file
+        // précédente travaille encore. L'encodage des deux vidéos reste prioritaire.
+        OfflineVisionAnalyzer.shared.submit(backBuffer)
+
         let frontDuration = normalizedDuration(CMSampleBufferGetDuration(frontSample))
         let rearDuration = normalizedDuration(CMSampleBufferGetDuration(backSample))
         let samplesToWrite: (front: CMSampleBuffer, rear: CMSampleBuffer)

@@ -258,6 +258,64 @@ export interface RecordingSettings {
   retentionDays: number
 }
 
+export interface AISettings {
+  /** Module volontairement désactivé tant que le modèle n'est pas installé. */
+  enabled: boolean
+  /** Analyse visuelle locale du flux arrière, sans conserver les images. */
+  visionEnabled: boolean
+  /** Collecte manuelle distincte pour préparer un futur modèle métier. */
+  trainingCollectionEnabled: boolean
+}
+
+export type CoachingCause =
+  | 'picking_gap'
+  | 'travel'
+  | 'incident'
+  | 'idle'
+  | 'setup'
+  | 'wrapping'
+  | 'docking'
+  | 'pallet'
+  | 'shortage'
+  | 'break'
+  | 'density'
+  | 'visual_obstruction'
+
+export interface CoachingEvidence {
+  code: string
+  label: string
+  value: number
+  unit: 'colis' | 'minutes' | 'seconds' | 'percent' | 'count'
+  /** Une preuve vidéo reste une hypothèse, même avec une confiance élevée. */
+  confidence: number
+}
+
+export interface VisionObservation {
+  at: number
+  kind: 'person_in_path' | 'congestion' | 'possible_obstruction'
+  confidence: number
+  /** Aucune image ni donnée biométrique n'est conservée. */
+  durationMs: number
+}
+
+export interface CoachingAlert extends Syncable {
+  id: string
+  workdayId: string
+  orderId?: string
+  at: number
+  cause: CoachingCause
+  severity: 'medium' | 'high'
+  title: string
+  explanation: string
+  action: string
+  evidence: CoachingEvidence[]
+  confidence: number
+  delayPackages: number
+  modelVersion: string
+  readAt?: number
+  supersededAt?: number
+}
+
 export interface Settings {
   id: 'settings'
   /** Objectif de cadence en colis par heure. */
@@ -284,6 +342,8 @@ export interface Settings {
   cartMotion: CartMotionSettings
   /** Captation locale de la vacation, jamais synchronisée. */
   recording: RecordingSettings
+  /** Coach local : aucun calcul ne dépend du réseau ni de Supabase. */
+  ai: AISettings
   updatedAt: number
 }
 
@@ -303,5 +363,6 @@ export const DEFAULT_SETTINGS: Settings = {
   soundAlerts: true,
   cartMotion: { enabled: false },
   recording: { enabled: false, retentionDays: 3 },
+  ai: { enabled: false, visionEnabled: true, trainingCollectionEnabled: false },
   updatedAt: 0,
 }

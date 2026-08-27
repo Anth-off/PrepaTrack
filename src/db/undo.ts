@@ -46,7 +46,7 @@ export function performUndoable(
   return enqueue(() =>
     db.transaction(
       'rw',
-      [db.workdays, db.orders, db.orderPallets, db.segments, db.colisEvents, db.stockShortages, db.meta],
+      [db.workdays, db.orders, db.orderPallets, db.segments, db.colisEvents, db.stockShortages, db.coachingAlerts, db.meta],
       async () => {
         await clearUndoCheckpointInternal()
         const snap = await loadSnapshot()
@@ -124,7 +124,7 @@ async function undoLastActionInternal(at: number): Promise<boolean> {
 
   return db.transaction(
     'rw',
-    [db.workdays, db.orders, db.orderPallets, db.segments, db.colisEvents, db.stockShortages, db.meta],
+    [db.workdays, db.orders, db.orderPallets, db.segments, db.colisEvents, db.stockShortages, db.coachingAlerts, db.meta],
     async () => {
       const currentRows = await Promise.all(
         checkpoint.changes.map((change) => undoTable(change.table).get(change.id)),

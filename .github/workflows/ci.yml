@@ -108,14 +108,16 @@ jobs:
         run: npm ci
       - name: Synchroniser Capacitor
         run: npm run ios:sync
-      - name: Compiler pour le simulateur sans signature
+      # llama.cpp distribue son XCFramework pour les appareils iOS. Compiler la
+      # vraie architecture iPhone vérifie aussi le chemin utilisé par TestFlight.
+      - name: Compiler pour iPhone sans signature
         run: |
           xcodebuild \
             -project ios/App/App.xcodeproj \
             -scheme App \
             -configuration Debug \
-            -sdk iphonesimulator \
-            -destination 'generic/platform=iOS Simulator' \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
             build
 

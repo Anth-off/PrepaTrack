@@ -26,6 +26,7 @@ import type {
 } from '../core/types'
 import { EMPTY_SUPPORTS } from '../core/types'
 import { scheduleDurableBackup } from '../native/durableStorage'
+import { supersedeCoachingAlerts } from './coaching'
 
 /**
  * Toutes les écritures passent par ici. Chaque transition ferme le segment
@@ -57,7 +58,7 @@ function stamp<T extends { updatedAt: number; syncState: 'pending' | 'synced'; o
 function atomicStateChange<T>(change: () => Promise<T>): Promise<T> {
   return db.transaction(
     'rw',
-    [db.workdays, db.orders, db.orderPallets, db.segments, db.colisEvents, db.stockShortages],
+    [db.workdays, db.orders, db.orderPallets, db.segments, db.colisEvents, db.stockShortages, db.coachingAlerts],
     change,
   )
 }
@@ -568,6 +569,7 @@ export async function updateOrder(orderId: string, patch: Partial<Order>): Promi
   const order = await db.orders.get(orderId)
   if (!order) return
   await db.orders.put(stamp({ ...order, ...patch, id: order.id }))
+  await supersedeCoachingAlerts(order.workdayId, Math.min(order.startedAt, patch.startedAt ?? order.startedAt))
 }
 
 /** Corrige les informations d'une palette sans modifier la timeline globale. */
@@ -820,6 +822,7 @@ export async function updateStockShortage(
   await db.stockShortages.put(
     stamp({ ...current, ...cleaned, resolved: patch.resolved ?? current.resolved }),
   )
+  await supersedeCoachingAlerts(current.workdayId, current.at)
 }
 
 export async function setStockShortageResolved(id: string, resolved: boolean): Promise<void> {
@@ -833,6 +836,7 @@ export async function deleteStockShortage(id: string, at: number = Date.now()): 
   const deleted = stamp(shortage)
   deleted.updatedAt = Math.max(deleted.updatedAt, at)
   await db.stockShortages.put(deleted)
+  await supersedeCoachingAlerts(shortage.workdayId, shortage.at)
 }
 
 export async function stockShortagesFor(workdayId: string): Promise<StockShortage[]> {
@@ -906,6 +910,7 @@ export async function editSegmentBounds(
 
   segment.editedAt = Date.now()
   await db.segments.put(stamp(segment))
+  await supersedeCoachingAlerts(segment.workdayId, Math.min(segment.startedAt, bounds.startedAt ?? segment.startedAt))
   const stillOpen = await db.segments
     .where('workdayId')
     .equals(segment.workdayId)
@@ -943,6 +948,7 @@ export async function deleteSegment(segmentId: string): Promise<void> {
 
   segment.deletedAt = Date.now()
   await db.segments.put(stamp(segment))
+  await supersedeCoachingAlerts(segment.workdayId, segment.startedAt)
   await reconcileWorkdayBounds(segment.workdayId)
   })
 }
@@ -954,6 +960,7 @@ export async function retypeSegment(segmentId: string, type: SegmentType): Promi
   segment.type = type
   segment.editedAt = Date.now()
   await db.segments.put(stamp(segment))
+  await supersedeCoachingAlerts(segment.workdayId, segment.startedAt)
 }
 
 export async function setSegmentNote(segmentId: string, note: string): Promise<void> {
