@@ -111,6 +111,29 @@ create table if not exists public.stock_shortages (
   deleted_at bigint
 );
 
+-- --------------------------------------------------------- coaching_alerts --
+-- Seuls les diagnostics structurés sont synchronisés. Aucune image ni vidéo.
+create table if not exists public.coaching_alerts (
+  id text primary key,
+  user_id uuid not null default auth.uid() references auth.users on delete cascade,
+  workday_id text not null,
+  order_id text,
+  at bigint not null,
+  cause text not null,
+  severity text not null check (severity in ('medium', 'high')),
+  title text not null,
+  explanation text not null,
+  action text not null,
+  evidence jsonb not null default '[]'::jsonb,
+  confidence double precision not null,
+  delay_packages integer not null,
+  model_version text not null,
+  read_at bigint,
+  superseded_at bigint,
+  updated_at bigint not null,
+  deleted_at bigint
+);
+
 -- Index sur updated_at : la synchro ne redemande que ce qui a changé depuis le
 -- dernier passage, jamais l'historique complet.
 create index if not exists workdays_sync_idx on public.workdays (user_id, updated_at);
@@ -120,6 +143,7 @@ create unique index if not exists order_pallets_number_idx on public.order_palle
 create index if not exists segments_sync_idx on public.segments (user_id, updated_at);
 create index if not exists colis_events_sync_idx on public.colis_events (user_id, updated_at);
 create index if not exists stock_shortages_sync_idx on public.stock_shortages (user_id, updated_at);
+create index if not exists coaching_alerts_sync_idx on public.coaching_alerts (user_id, updated_at);
 
 -- ------------------------------------------------------ sécurité des lignes --
 -- Chaque ligne n'est lisible et modifiable que par son propriétaire. Même si la
@@ -130,6 +154,7 @@ alter table public.order_pallets enable row level security;
 alter table public.segments enable row level security;
 alter table public.colis_events enable row level security;
 alter table public.stock_shortages enable row level security;
+alter table public.coaching_alerts enable row level security;
 
 drop policy if exists "workdays owner" on public.workdays;
 create policy "workdays owner" on public.workdays
@@ -153,4 +178,8 @@ create policy "colis_events owner" on public.colis_events
 
 drop policy if exists "stock_shortages owner" on public.stock_shortages;
 create policy "stock_shortages owner" on public.stock_shortages
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+drop policy if exists "coaching_alerts owner" on public.coaching_alerts;
+create policy "coaching_alerts owner" on public.coaching_alerts
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);

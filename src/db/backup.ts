@@ -8,6 +8,7 @@ import type {
   Settings,
   StockShortage,
   Workday,
+  CoachingAlert,
 } from '../core/types'
 
 /**
@@ -20,7 +21,7 @@ import type {
  */
 
 export const BACKUP_FORMAT = 'prepatrack-backup'
-export const BACKUP_VERSION = 3
+export const BACKUP_VERSION = 4
 
 export interface Backup {
   format: typeof BACKUP_FORMAT
@@ -35,17 +36,20 @@ export interface Backup {
   colisEvents: ColisEvent[]
   /** Facultatif à la lecture pour rester compatible avec les sauvegardes v1. */
   stockShortages?: StockShortage[]
+  /** Facultatif pour les sauvegardes antérieures au coach hors ligne. */
+  coachingAlerts?: CoachingAlert[]
   settings: Settings
 }
 
 export async function buildBackup(): Promise<Backup> {
-  const [workdays, orders, orderPallets, segments, colisEvents, stockShortages, settings] = await Promise.all([
+  const [workdays, orders, orderPallets, segments, colisEvents, stockShortages, coachingAlerts, settings] = await Promise.all([
     db.workdays.toArray(),
     db.orders.toArray(),
     db.orderPallets.toArray(),
     db.segments.toArray(),
     db.colisEvents.toArray(),
     db.stockShortages.toArray(),
+    db.coachingAlerts.toArray(),
     getSettings(),
   ])
 
@@ -62,6 +66,7 @@ export async function buildBackup(): Promise<Backup> {
       segments: segments.length,
       colisEvents: colisEvents.length,
       stockShortages: stockShortages.length,
+      coachingAlerts: coachingAlerts.length,
     },
     workdays,
     orders,
@@ -69,6 +74,7 @@ export async function buildBackup(): Promise<Backup> {
     segments,
     colisEvents,
     stockShortages,
+    coachingAlerts,
     settings,
   }
 }
@@ -154,7 +160,7 @@ export async function restoreBackup(json: string): Promise<RestoreResult> {
 
   await db.transaction(
     'rw',
-    [db.workdays, db.orders, db.orderPallets, db.segments, db.colisEvents, db.stockShortages, db.settings],
+    [db.workdays, db.orders, db.orderPallets, db.segments, db.colisEvents, db.stockShortages, db.coachingAlerts, db.settings],
     async () => {
       await merge(db.workdays, parsed.workdays, result)
       await merge(db.orders, parsed.orders, result)
@@ -162,6 +168,7 @@ export async function restoreBackup(json: string): Promise<RestoreResult> {
       await merge(db.segments, parsed.segments, result)
       await merge(db.colisEvents, parsed.colisEvents, result)
       await merge(db.stockShortages, parsed.stockShortages ?? [], result)
+      await merge(db.coachingAlerts, parsed.coachingAlerts ?? [], result)
       await restoreSettings(parsed.settings)
     },
   )

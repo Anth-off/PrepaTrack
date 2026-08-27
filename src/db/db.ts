@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie'
-import type { ColisEvent, Order, OrderPallet, Segment, Settings, StockShortage, Workday } from '../core/types'
+import type { CoachingAlert, ColisEvent, Order, OrderPallet, Segment, Settings, StockShortage, Workday } from '../core/types'
 import type { RecordingChunk } from './recordings'
 import { DEFAULT_SETTINGS } from '../core/types'
 import { scheduleDurableBackup } from '../native/durableStorage'
@@ -22,6 +22,7 @@ export class PrepaDB extends Dexie {
   segments!: Table<Segment, string>
   colisEvents!: Table<ColisEvent, string>
   stockShortages!: Table<StockShortage, string>
+  coachingAlerts!: Table<CoachingAlert, string>
   settings!: Table<Settings, string>
   meta!: Table<MetaRow, string>
   /** Médias locaux uniquement : cette table est absente de SYNC_TABLES et des sauvegardes. */
@@ -47,6 +48,9 @@ export class PrepaDB extends Dexie {
     })
     this.version(5).stores({
       recordingChunks: 'id, workdayId, [workdayId+sequence], startedAt, createdAt',
+    })
+    this.version(6).stores({
+      coachingAlerts: 'id, workdayId, orderId, at, cause, syncState',
     })
   }
 }
@@ -80,14 +84,19 @@ export async function getSettings(): Promise<Settings> {
           ...DEFAULT_SETTINGS.recording,
           ...existing.recording,
         },
+        ai: {
+          ...DEFAULT_SETTINGS.ai,
+          ...existing.ai,
+        },
       }
     : DEFAULT_SETTINGS
 }
 
-export type SettingsPatch = Omit<Partial<Settings>, 'stuckThresholds' | 'cartMotion' | 'recording'> & {
+export type SettingsPatch = Omit<Partial<Settings>, 'stuckThresholds' | 'cartMotion' | 'recording' | 'ai'> & {
   stuckThresholds?: Partial<Settings['stuckThresholds']>
   cartMotion?: Partial<Settings['cartMotion']>
   recording?: Partial<Settings['recording']>
+  ai?: Partial<Settings['ai']>
 }
 
 export async function saveSettings(patch: SettingsPatch): Promise<Settings> {
@@ -108,6 +117,10 @@ export async function saveSettings(patch: SettingsPatch): Promise<Settings> {
     recording: {
       ...current.recording,
       ...patch.recording,
+    },
+    ai: {
+      ...current.ai,
+      ...patch.ai,
     },
     id: 'settings' as const,
     updatedAt: Date.now(),
@@ -156,7 +169,7 @@ export async function wipeAll(): Promise<void> {
   const at = Date.now()
   await db.transaction(
     'rw',
-    [db.workdays, db.orders, db.orderPallets, db.segments, db.colisEvents, db.stockShortages],
+    [db.workdays, db.orders, db.orderPallets, db.segments, db.colisEvents, db.stockShortages, db.coachingAlerts],
     async () => {
       for (const table of [
         db.workdays,
@@ -165,6 +178,7 @@ export async function wipeAll(): Promise<void> {
         db.segments,
         db.colisEvents,
         db.stockShortages,
+        db.coachingAlerts,
       ]) {
         // `modify()` réécrit en place, sans charger toute la table en mémoire.
         await (

@@ -183,7 +183,7 @@ try {
                and p.tablename = t.tablename) as policies
       from pg_tables t
      where schemaname = 'public'
-       and tablename in ('workdays', 'orders', 'order_pallets', 'segments', 'colis_events', 'stock_shortages', 'preparers')
+       and tablename in ('workdays', 'orders', 'order_pallets', 'segments', 'colis_events', 'stock_shortages', 'coaching_alerts', 'preparers')
      order by tablename
   `)
 

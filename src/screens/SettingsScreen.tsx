@@ -6,6 +6,8 @@ import type { SyncInfo } from '../hooks/useSync'
 import type { CartMotionControl } from '../hooks/useCartMotion'
 import type { AppUpdateControl } from '../hooks/useAppUpdate'
 import type { RecordingControl } from '../hooks/useRecording'
+import type { OfflineCoachControl } from '../hooks/useOfflineCoach'
+import { AISettingsSection } from './AISettingsSection'
 import { RecordingSettingsSection } from './RecordingSettingsSection'
 import { INCIDENT_TYPES, segmentDef } from '../core/segments'
 import { BackupSection } from './BackupSection'
@@ -20,11 +22,13 @@ export function SettingsScreen({
   motion,
   update,
   recording,
+  coach,
 }: {
   sync: SyncInfo
   motion: CartMotionControl
   update: AppUpdateControl
   recording: RecordingControl
+  coach: OfflineCoachControl
 }) {
   const settings = useLiveQuery(() => getSettings(), [])
   const [confirmWipe, setConfirmWipe] = useState(false)
@@ -57,6 +61,8 @@ export function SettingsScreen({
       <CartMotionSection settings={settings} motion={motion} />
 
       <RecordingSettingsSection settings={settings} recording={recording} />
+
+      <AISettingsSection settings={settings} coach={coach} />
 
       <section className="card">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">

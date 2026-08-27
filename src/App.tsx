@@ -11,6 +11,8 @@ import { useResumePrompt } from './hooks/useResumePrompt'
 import { useSync } from './hooks/useSync'
 import { useRecording } from './hooks/useRecording'
 import { useLiveActivity } from './hooks/useLiveActivity'
+import { useOfflineCoach } from './hooks/useOfflineCoach'
+import { CoachingBanner } from './components/CoachingBanner'
 import { formatShort, hhmm } from './core/time'
 import { DashboardScreen } from './screens/DashboardScreen'
 import { DayReportScreen } from './screens/DayReportScreen'
@@ -49,6 +51,7 @@ export default function App() {
     session.settings.recording.retentionDays,
   )
   useLiveActivity(session, recording.status)
+  const coach = useOfflineCoach(session)
   const sync = useSync()
   const isDesktop = useMediaQuery(DESKTOP_QUERY)
   // Sur grand écran on arrive sur les statistiques : le PC sert à consulter le
@@ -121,6 +124,13 @@ export default function App() {
         </div>
       )}
 
+      {isTodayScreen && coach.current && (
+        <CoachingBanner alert={coach.current} onOpen={() => {
+          void coach.dismissCurrent()
+          setReportId(coach.current!.workdayId)
+        }} />
+      )}
+
       {activeTab === 'today' && (
         <TodayScreen
           session={session}
@@ -152,7 +162,7 @@ export default function App() {
 
       {activeTab === 'settings' && (
         <div className="mx-auto w-full max-w-2xl">
-          <SettingsScreen sync={sync} motion={cartMotion} recording={recording} update={appUpdate} />
+          <SettingsScreen sync={sync} motion={cartMotion} recording={recording} update={appUpdate} coach={coach} />
         </div>
       )}
     </>

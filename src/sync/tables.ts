@@ -8,6 +8,7 @@ import type {
   StockShortage,
   SupportKind,
   Workday,
+  CoachingAlert,
 } from '../core/types'
 import { EMPTY_SUPPORTS } from '../core/types'
 
@@ -268,6 +269,32 @@ const stockShortages: SyncTable<StockShortage> = {
   }),
 }
 
+const coachingAlerts: SyncTable<CoachingAlert> = {
+  remote: 'coaching_alerts',
+  table: () => db.coachingAlerts,
+  toRow: (alert) => ({
+    id: alert.id, workday_id: alert.workdayId, order_id: alert.orderId ?? null,
+    at: alert.at, cause: alert.cause, severity: alert.severity, title: alert.title,
+    explanation: alert.explanation, action: alert.action, evidence: alert.evidence,
+    confidence: alert.confidence, delay_packages: alert.delayPackages,
+    model_version: alert.modelVersion, read_at: alert.readAt ?? null,
+    superseded_at: alert.supersededAt ?? null, updated_at: alert.updatedAt,
+    deleted_at: alert.deletedAt ?? null, ...owner(alert),
+  }),
+  fromRow: (row) => ({
+    id: String(row.id), workdayId: String(row.workday_id),
+    orderId: undef(row.order_id as string | null), at: num(row.at),
+    cause: row.cause as CoachingAlert['cause'],
+    severity: row.severity === 'high' ? 'high' : 'medium', title: String(row.title ?? ''),
+    explanation: String(row.explanation ?? ''), action: String(row.action ?? ''),
+    evidence: Array.isArray(row.evidence) ? row.evidence as CoachingAlert['evidence'] : [],
+    confidence: num(row.confidence), delayPackages: num(row.delay_packages),
+    modelVersion: String(row.model_version ?? ''), readAt: optNum(row.read_at),
+    supersededAt: optNum(row.superseded_at), updatedAt: num(row.updated_at),
+    deletedAt: optNum(row.deleted_at), ownerId: undef(row.user_id as string | null), syncState: 'synced',
+  }),
+}
+
 /** Ordre d'envoi : les journées avant ce qu'elles contiennent. */
 export const SYNC_TABLES: AnySyncTable[] = [
   define(workdays),
@@ -276,4 +303,5 @@ export const SYNC_TABLES: AnySyncTable[] = [
   define(segments),
   define(colisEvents),
   define(stockShortages),
+  define(coachingAlerts),
 ]
