@@ -9,6 +9,18 @@ export function AISettingsSection({ settings, coach }: { settings: Settings; coa
     ? Math.min(100, Math.round(coach.progress.downloaded / coach.progress.total * 100))
     : undefined
   const size = coach.status.bytes ? `${Math.round(coach.status.bytes / 1024 / 1024)} Mo` : 'environ 379 Mo'
+  const downloaded = coach.progress ? formatBytes(coach.progress.downloaded) : undefined
+  const total = coach.progress ? formatBytes(coach.progress.total) : undefined
+  const speed = coach.progress?.bytesPerSecond ? `${formatBytes(coach.progress.bytesPerSecond)}/s` : undefined
+  const downloadLabel = coach.progress?.message ?? ({
+    starting: 'Démarrage du téléchargement…',
+    'waiting-wifi': 'En attente d’une connexion Wi‑Fi…',
+    downloading: 'Téléchargement du modèle…',
+    verifying: 'Vérification de l’intégrité…',
+    completed: 'Modèle installé.',
+    failed: 'Le téléchargement a échoué.',
+    idle: '',
+  }[coach.progress?.state ?? 'idle'])
 
   return (
     <section className="card">
@@ -36,7 +48,12 @@ export function AISettingsSection({ settings, coach }: { settings: Settings; coa
             <div className="h-2 overflow-hidden rounded-full bg-ink-600">
               <div className="h-full bg-accent" style={{ width: `${percent}%` }} />
             </div>
-            <p className="mt-1 text-right text-xs text-slate-500">Téléchargement Wi‑Fi · {percent} %</p>
+            <div className="mt-2 flex items-start justify-between gap-3 text-xs text-slate-500" aria-live="polite">
+              <span>{downloadLabel}</span>
+              <span className="shrink-0 text-right">
+                {percent} % · {downloaded}/{total}{speed ? ` · ${speed}` : ''}
+              </span>
+            </div>
           </div>
         )}
       </div>
@@ -85,6 +102,12 @@ export function AISettingsSection({ settings, coach }: { settings: Settings; coa
       </p>
     </section>
   )
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 Mo'
+  const megabytes = bytes / 1024 / 1024
+  return megabytes >= 100 ? `${Math.round(megabytes)} Mo` : `${megabytes.toFixed(1)} Mo`
 }
 
 function SettingToggle({ label, detail, checked, onChange }: { label: string; detail: string; checked: boolean; onChange: (v: boolean) => void }) {

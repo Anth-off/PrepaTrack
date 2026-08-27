@@ -5,13 +5,18 @@ import { dailyProductionStatus } from '../core/productionPlan'
 import type { CoachingAlert, VisionObservation } from '../core/types'
 import { canRepeatCoachingAlert, coachingAlertsFor, markCoachingAlertRead, saveCoachingAlert } from '../db/coaching'
 import { saveSettings } from '../db/db'
-import { offlineAI, type OfflineAIStatus } from '../native/offlineAI'
+import {
+  offlineAI,
+  downloadProgressFromStatus,
+  type OfflineAIDownloadProgress,
+  type OfflineAIStatus,
+} from '../native/offlineAI'
 import type { Session } from './useSession'
 import { useRecentDays } from './useRecentDays'
 
 export interface OfflineCoachControl {
   status: OfflineAIStatus
-  progress?: { downloaded: number; total: number }
+  progress?: OfflineAIDownloadProgress
   busy: boolean
   error?: string
   current?: CoachingAlert
@@ -37,7 +42,7 @@ export function useOfflineCoach(session: Session): OfflineCoachControl {
   )
   const storedAlerts = useMemo(() => queriedAlerts ?? [], [queriedAlerts])
   const [status, setStatus] = useState<OfflineAIStatus>(EMPTY_STATUS)
-  const [progress, setProgress] = useState<{ downloaded: number; total: number }>()
+  const [progress, setProgress] = useState<OfflineAIDownloadProgress>()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
   const [vision, setVision] = useState<VisionObservation[]>([])
@@ -52,10 +57,20 @@ export function useOfflineCoach(session: Session): OfflineCoachControl {
   )
 
   const refresh = useCallback(async () => {
-    try { setStatus(await offlineAI.status()) } catch { setStatus(EMPTY_STATUS) }
+    try {
+      const next = await offlineAI.status()
+      setStatus(next)
+      const nativeProgress = downloadProgressFromStatus(next)
+      if (nativeProgress) setProgress(nativeProgress)
+    } catch { setStatus(EMPTY_STATUS) }
   }, [])
 
   useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    if (!busy || !offlineAI.supported()) return
+    const timer = window.setInterval(() => { void refresh() }, 1_000)
+    return () => window.clearInterval(timer)
+  }, [busy, refresh])
   useEffect(() => {
     if (!offlineAI.supported()) return
     let progressListener: Awaited<ReturnType<typeof offlineAI.onDownloadProgress>> | undefined
@@ -149,7 +164,10 @@ export function useOfflineCoach(session: Session): OfflineCoachControl {
   return {
     status, progress, busy, error, current,
     alerts: storedAlerts.filter((alert) => !alert.supersededAt),
-    download: () => withBusy(async () => { await offlineAI.downloadModel(); setProgress(undefined) }),
+    download: () => {
+      setProgress({ state: 'starting', downloaded: 0, total: status.bytes, message: 'Démarrage du téléchargement…' })
+      return withBusy(async () => { await offlineAI.downloadModel(); setProgress(undefined) })
+    },
     removeModel: () => withBusy(async () => { await offlineAI.deleteModel() }),
     setEnabled: async (enabled) => { await saveSettings({ ai: { enabled } }) },
     setVisionEnabled: async (visionEnabled) => { await saveSettings({ ai: { visionEnabled } }) },

@@ -24,12 +24,20 @@ public final class OfflineAIPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionDownl
     private let modelURL = URL(string: "https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/1208e45d782fe18602c5eaf10e5758d5b0f24c03/Qwen3-0.6B-Q4_K_M.gguf?download=true")!
     private var downloadCall: CAPPluginCall?
     private var downloadSession: URLSession!
+    private var downloadTask: URLSessionDownloadTask?
+    private var downloadState = "idle"
+    private var downloadedBytes: Int64 = 0
+    private var downloadTotalBytes: Int64 = 0
+    private var downloadStartedAt: Date?
+    private var downloadMessage: String?
 
     public override func load() {
         let configuration = URLSessionConfiguration.default
         configuration.allowsCellularAccess = false
         configuration.allowsExpensiveNetworkAccess = false
         configuration.waitsForConnectivity = true
+        configuration.timeoutIntervalForRequest = 60
+        configuration.timeoutIntervalForResource = 6 * 60 * 60
         downloadSession = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
         OfflineVisionAnalyzer.shared.onObservation = { [weak self] observation in
             self?.notifyListeners("visionObservation", data: [
@@ -47,7 +55,12 @@ public final class OfflineAIPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionDownl
             "ready": validInstalledModel(),
             "version": modelVersion,
             "bytes": modelBytes,
+            "downloadState": downloadState,
+            "downloaded": downloadedBytes,
+            "downloadTotal": downloadTotalBytes > 0 ? downloadTotalBytes : modelBytes,
+            "bytesPerSecond": downloadSpeed,
         ]
+        if let downloadMessage { result["downloadMessage"] = downloadMessage }
         result.merge(OfflineVisionAnalyzer.shared.diagnostics()) { _, new in new }
         call.resolve(result)
     }
@@ -56,7 +69,15 @@ public final class OfflineAIPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionDownl
         guard downloadCall == nil else { call.reject("Un téléchargement est déjà en cours."); return }
         if validInstalledModel() { call.resolve(["ready": true]); return }
         downloadCall = call
-        downloadSession.downloadTask(with: modelURL).resume()
+        downloadedBytes = 0
+        downloadTotalBytes = modelBytes
+        downloadStartedAt = Date()
+        downloadState = "starting"
+        downloadMessage = "Démarrage du téléchargement…"
+        emitDownloadProgress()
+        let task = downloadSession.downloadTask(with: modelURL)
+        downloadTask = task
+        task.resume()
     }
 
     @objc func deleteModel(_ call: CAPPluginCall) {
@@ -136,14 +157,32 @@ public final class OfflineAIPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionDownl
     }
 
     public func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        notifyListeners("modelDownloadProgress", data: [
-            "downloaded": totalBytesWritten,
-            "total": totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : modelBytes,
-        ])
+        DispatchQueue.main.async {
+            self.downloadState = "downloading"
+            self.downloadMessage = "Téléchargement du modèle…"
+            self.downloadedBytes = totalBytesWritten
+            self.downloadTotalBytes = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : self.modelBytes
+            self.emitDownloadProgress()
+        }
+    }
+
+    public func urlSession(_ session: URLSession, taskIsWaitingForConnectivity task: URLSessionTask) {
+        DispatchQueue.main.async {
+            self.downloadState = "waiting-wifi"
+            self.downloadMessage = "En attente d’une connexion Wi‑Fi…"
+            self.emitDownloadProgress()
+        }
     }
 
     public func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         guard let call = downloadCall else { return }
+        DispatchQueue.main.async {
+            self.downloadState = "verifying"
+            self.downloadMessage = "Vérification de l’intégrité…"
+            self.downloadedBytes = self.modelBytes
+            self.downloadTotalBytes = self.modelBytes
+            self.emitDownloadProgress()
+        }
         do {
             let values = try location.resourceValues(forKeys: [.fileSizeKey])
             guard Int64(values.fileSize ?? 0) == modelBytes, try sha256(location) == modelSHA256 else {
@@ -163,18 +202,53 @@ public final class OfflineAIPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionDownl
                 [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                 ofItemAtPath: installedModelURL.path
             )
-            downloadCall = nil
-            call.resolve(["ready": true])
+            DispatchQueue.main.async {
+                self.downloadCall = nil
+                self.downloadTask = nil
+                self.downloadState = "completed"
+                self.downloadMessage = "Modèle installé."
+                self.emitDownloadProgress()
+                call.resolve(["ready": true])
+            }
         } catch {
-            downloadCall = nil
-            call.reject(error.localizedDescription, nil, error)
+            DispatchQueue.main.async {
+                self.failDownload(error.localizedDescription, call: call, error: error)
+            }
         }
     }
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let error, let call = downloadCall else { return }
+        DispatchQueue.main.async {
+            self.failDownload("Le téléchargement Wi‑Fi a été interrompu : \(error.localizedDescription)", call: call, error: error)
+        }
+    }
+
+    private var downloadSpeed: Int64 {
+        guard let started = downloadStartedAt else { return 0 }
+        let elapsed = Date().timeIntervalSince(started)
+        return elapsed > 0 ? Int64(Double(downloadedBytes) / elapsed) : 0
+    }
+
+    private func emitDownloadProgress() {
+        var data: [String: Any] = [
+            "state": downloadState,
+            "downloaded": downloadedBytes,
+            "total": downloadTotalBytes > 0 ? downloadTotalBytes : modelBytes,
+            "bytesPerSecond": downloadSpeed,
+        ]
+        if let downloadMessage { data["message"] = downloadMessage }
+        notifyListeners("modelDownloadProgress", data: data)
+    }
+
+    private func failDownload(_ message: String, call: CAPPluginCall, error: Error) {
+        guard downloadCall != nil else { return }
         downloadCall = nil
-        call.reject("Le téléchargement Wi‑Fi a été interrompu.", nil, error)
+        downloadTask = nil
+        downloadState = "failed"
+        downloadMessage = message
+        emitDownloadProgress()
+        call.reject(message, nil, error)
     }
 
     private var modelDirectory: URL {
