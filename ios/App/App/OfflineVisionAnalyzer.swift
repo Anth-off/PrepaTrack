@@ -97,10 +97,14 @@ final class OfflineVisionAnalyzer {
         let image = CIImage(cvPixelBuffer: buffer)
         let context = CIContext(options: [.useSoftwareRenderer: true])
         guard let color = CGColorSpace(name: CGColorSpace.sRGB),
-              let data = context.jpegRepresentation(of: image, colorSpace: color, options: [.lossyCompressionQuality: 0.75]) else {
+              let data = context.jpegRepresentation(of: image, colorSpace: color, options: [:]) else {
             throw NSError(domain: "OfflineAI", code: 21, userInfo: [NSLocalizedDescriptionKey: "La miniature n’a pas pu être créée."])
         }
-        try data.write(to: url, options: .atomic)
+        try data.write(to: url, options: Data.WritingOptions.atomic)
+        try FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.complete],
+            ofItemAtPath: url.path
+        )
         return url
     }
 
@@ -110,7 +114,6 @@ final class OfflineVisionAnalyzer {
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
-        values.fileProtection = .complete
         var mutable = root
         try? mutable.setResourceValues(values)
         return root

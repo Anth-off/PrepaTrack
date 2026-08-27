@@ -157,9 +157,12 @@ public final class OfflineAIPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionDownl
             }
             var valuesToSet = URLResourceValues()
             valuesToSet.isExcludedFromBackup = true
-            valuesToSet.fileProtection = .completeUntilFirstUserAuthentication
             var mutable = installedModelURL
             try mutable.setResourceValues(valuesToSet)
+            try FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                ofItemAtPath: installedModelURL.path
+            )
             downloadCall = nil
             call.resolve(["ready": true])
         } catch {
