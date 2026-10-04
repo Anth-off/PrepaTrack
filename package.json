@@ -24,7 +24,7 @@
     "dexie": "^4.0.10",
     "dexie-react-hooks": "^1.1.7",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.5.0",
@@ -33,7 +33,7 @@
     "@types/node": "^26.1.2",
     "@types/pg": "^8.20.0",
     "@types/react": "^18.3.17",
-    "@types/react-dom": "^18.3.5",
+    "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
     "eslint": "^10.8.0",
