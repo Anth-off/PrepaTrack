@@ -34,7 +34,7 @@
     "@types/pg": "^8.20.0",
     "@types/react": "^18.3.17",
     "@types/react-dom": "^18.3.5",
-    "@vitejs/plugin-react": "^4.3.4",
+    "@vitejs/plugin-react": "^6.0.5",
     "autoprefixer": "^10.4.20",
     "eslint": "^10.8.0",
     "eslint-plugin-react-hooks": "^7.1.1",
