@@ -23,7 +23,7 @@
     "@supabase/supabase-js": "^2.111.0",
     "dexie": "^4.0.10",
     "dexie-react-hooks": "^1.1.7",
-    "react": "^18.3.1",
+    "react": "^19.2.8",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
@@ -32,7 +32,7 @@
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.1.2",
     "@types/pg": "^8.20.0",
-    "@types/react": "^18.3.17",
+    "@types/react": "^19.2.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
